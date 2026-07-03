@@ -1,0 +1,131 @@
+import * as THREE from 'three';
+import type { Entity, Game } from '../core/Game';
+import type { PlayerInput } from '../core/Input';
+import type { CameraTarget } from '../render/Viewports';
+import { Character } from './Character';
+import { Vehicle } from './Vehicle';
+import { Wanted } from '../gameplay/Wanted';
+
+const ENTER_RADIUS = 3.5;
+
+export class Player implements Entity, CameraTarget {
+  readonly character: Character;
+  readonly wanted: Wanted;
+  vehicle: Vehicle | null = null;
+  /** Set each fixed step by Game before update(). */
+  input: PlayerInput | null = null;
+  /** Camera view yaw, for camera-relative on-foot movement. */
+  cameraYaw = 0;
+  prompt: string | null = null;
+
+  constructor(
+    private game: Game,
+    readonly index: 0 | 1,
+    x: number,
+    z: number
+  ) {
+    this.character = new Character(
+      game,
+      index === 0 ? 'characters/character-a' : 'characters/character-b',
+      x,
+      z
+    );
+    this.wanted = new Wanted(game, this);
+  }
+
+  get driving(): boolean {
+    return this.vehicle !== null;
+  }
+
+  update(dt: number): void {
+    this.wanted.update(dt);
+    const input = this.input;
+    this.prompt = null;
+    if (!input) return;
+
+    if (this.vehicle) {
+      this.vehicle.command = {
+        steer: input.steer,
+        throttle: input.throttle,
+        brake: input.brake,
+        handbrake: input.handbrake,
+      };
+      if (input.interact) this.exitVehicle();
+      return;
+    }
+
+    const mag = Math.min(1, Math.hypot(input.moveX, input.moveY));
+    if (mag > 0.05) {
+      const yaw = this.cameraYaw;
+      const fwd = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+      const right = new THREE.Vector3(-Math.cos(yaw), 0, Math.sin(yaw));
+      const dir = fwd
+        .multiplyScalar(input.moveY)
+        .addScaledVector(right, input.moveX)
+        .normalize();
+      this.character.setMove(dir, input.sprint);
+    } else {
+      this.character.setMove(new THREE.Vector3(), false);
+    }
+    this.character.update(dt);
+
+    const nearest = this.nearestVehicle();
+    if (nearest) {
+      this.prompt = 'E / Y — steal car';
+      if (input.interact) this.enterVehicle(nearest);
+    }
+  }
+
+  private nearestVehicle(): Vehicle | null {
+    const pos = this.character.position();
+    let best: Vehicle | null = null;
+    let bestDist = ENTER_RADIUS;
+    for (const v of this.game.vehicles) {
+      if (v.driver) continue;
+      const t = v.body.translation();
+      const d = Math.hypot(t.x - pos.x, t.z - pos.z);
+      if (d < bestDist) {
+        bestDist = d;
+        best = v;
+      }
+    }
+    return best;
+  }
+
+  enterVehicle(v: Vehicle): void {
+    v.driver = this;
+    this.vehicle = v;
+    this.character.setEnabled(false);
+  }
+
+  exitVehicle(): void {
+    const v = this.vehicle;
+    if (!v) return;
+    const t = v.body.translation();
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(v.quaternion());
+    v.command = { steer: 0, throttle: 0, brake: 0.6, handbrake: true };
+    v.driver = null;
+    this.vehicle = null;
+    this.character.teleport(t.x + right.x * 2.4, Math.max(t.y, 0.1), t.z + right.z * 2.4);
+    this.character.setEnabled(true);
+  }
+
+  // CameraTarget
+  getFocus(out: THREE.Vector3): void {
+    if (this.vehicle) {
+      this.vehicle.getFocus(out);
+    } else {
+      out.copy(this.character.position());
+      out.y += 0.9;
+    }
+  }
+  getHeading(): number {
+    return this.vehicle ? this.vehicle.getHeading() : this.character.getFacing();
+  }
+  getSpeed(): number {
+    return this.vehicle ? this.vehicle.getSpeed() : 0;
+  }
+  getFollowDistance(): number {
+    return this.vehicle ? 7 : 4.2;
+  }
+}
