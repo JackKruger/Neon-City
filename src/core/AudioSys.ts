@@ -65,6 +65,15 @@ export class AudioSys {
     this.sirenOsc.start();
   }
 
+  /** Fade everything out (used while paused). */
+  duck(): void {
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    const t = this.ctx.currentTime;
+    this.engineGain!.gain.setTargetAtTime(0, t, 0.1);
+    this.skidGain!.gain.setTargetAtTime(0, t, 0.08);
+    this.sirenGain!.gain.setTargetAtTime(0, t, 0.15);
+  }
+
   /**
    * @param speed fastest player speed (m/s)
    * @param throttle max player throttle 0..1

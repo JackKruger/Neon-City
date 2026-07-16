@@ -15,6 +15,7 @@ export class TrafficCar implements Entity {
   private to: CellRef;
   private waypoint = { x: 0, z: 0 };
   private prevVel = new THREE.Vector3();
+  private hasPrevVel = false;
   private stuckTime = 0;
   private reverseTime = 0;
 
@@ -49,11 +50,12 @@ export class TrafficCar implements Entity {
       vel.y - this.prevVel.y,
       vel.z - this.prevVel.z
     );
-    if (dv > 5 && this.prevVel.lengthSq() >= 0) {
+    if (dv > 5 && this.hasPrevVel) {
       this.crash();
       this.game.onTrafficRammed(this);
     }
     this.prevVel.set(vel.x, vel.y, vel.z);
+    this.hasPrevVel = true;
 
     const t = v.body.translation();
     const dist = Math.hypot(this.waypoint.x - t.x, this.waypoint.z - t.z);
@@ -142,6 +144,6 @@ export class TrafficCar implements Entity {
   }
 
   dispose(): void {
-    this.vehicle.dispose();
+    this.game.removeVehicle(this.vehicle);
   }
 }

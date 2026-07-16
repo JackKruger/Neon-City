@@ -102,16 +102,10 @@ export class Npcs {
         continue;
       }
       if (this.distToPlayers(pos.x, pos.z) > DESPAWN) {
-        this.removeVehicleFromGame(t);
+        t.dispose();
         this.traffic.splice(i, 1);
       }
     }
-  }
-
-  private removeVehicleFromGame(t: TrafficCar): void {
-    const idx = this.game.vehicles.indexOf(t.vehicle);
-    if (idx >= 0) this.game.vehicles.splice(idx, 1);
-    t.dispose();
   }
 
   private checkRunOvers(): void {

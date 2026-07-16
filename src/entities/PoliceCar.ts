@@ -90,7 +90,7 @@ export class PoliceCar implements Entity {
     if (behind && dist > 6) {
       // Target behind: keep turning hard, moderate speed.
       throttle = speed > 6 ? 0 : 0.6;
-      steer = Math.sign(-angle) < 0 ? 1 : -1;
+      steer = angle > 0 ? -1 : 1;
     } else if (dist < 5 && this.target.driving === false) {
       // Don't grind over on-foot players endlessly; stalk them.
       throttle = speed > 4 ? 0 : 0.4;
