@@ -36,7 +36,9 @@ export function nextRoadCell(from: CellRef, current: CellRef, rng: number): Cell
     (n) => n.cx - current.cx === current.cx - from.cx && n.cz - current.cz === current.cz - from.cz
   );
   if (straight && rng < 0.65) return straight;
-  return options[Math.floor(rng * options.length) % options.length];
+  // Rescale the roll so failing the go-straight check still covers [0,1).
+  const r = straight ? (rng - 0.65) / 0.35 : rng;
+  return options[Math.floor(r * options.length) % options.length];
 }
 
 /**

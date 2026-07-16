@@ -71,7 +71,7 @@ export class Vehicle implements Entity, CameraTarget {
     }
 
     const wheelRadius =
-      (new THREE.Box3().setFromObject(wheelNodes[0]).getSize(new THREE.Vector3()).y ?? 0.6) / 2;
+      new THREE.Box3().setFromObject(wheelNodes[0]).getSize(new THREE.Vector3()).y / 2 || 0.3;
 
     // Chassis collider from the model bbox minus wheels.
     for (const w of wheelNodes) this.root.attach(w);
@@ -172,8 +172,9 @@ export class Vehicle implements Entity, CameraTarget {
     const rate = 3.5 * dt;
     this.steerAngle += THREE.MathUtils.clamp(target - this.steerAngle, -rate, rate);
 
-    // Rear side friction eases off while the handbrake is held (slides).
-    const targetFriction = handbrake ? 0.35 : 1.0;
+    // Rear side friction eases off while the handbrake is held at speed
+    // (slides); a stopped handbraked car keeps full grip so it stays parked.
+    const targetFriction = handbrake && Math.abs(speed) > 2 ? 0.35 : 1.0;
     this.sideFriction = THREE.MathUtils.lerp(this.sideFriction, targetFriction, 0.2);
 
     const forwardTaper = THREE.MathUtils.clamp(1 - speed / MAX_FORWARD_SPEED, 0, 1);

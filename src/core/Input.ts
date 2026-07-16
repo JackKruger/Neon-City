@@ -94,6 +94,11 @@ export class Input {
     this.keyEdges.clear();
   }
 
+  /** Drop queued interact presses (e.g. accumulated on the pause screen). */
+  clearInteract(): void {
+    this.pendingInteract[0] = this.pendingInteract[1] = false;
+  }
+
   /** True once if any player pressed pause since the last call. */
   consumePause(): boolean {
     const hit = this.pendingPause[0] || this.pendingPause[1];

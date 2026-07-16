@@ -103,29 +103,34 @@ export class Game {
 
   /** Parked cars on the right side of straight road tiles, spread over the map. */
   private spawnParkedCars(): void {
-    let count = 0;
-    for (let cz = 0; cz < MAP_H && count < 14; cz++) {
-      for (let cx = 0; cx < MAP_W && count < 14; cx++) {
+    const spots: { cx: number; cz: number; mask: number }[] = [];
+    for (let cz = 0; cz < MAP_H; cz++) {
+      for (let cx = 0; cx < MAP_W; cx++) {
         if (!isRoad(cx, cz)) continue;
         const mask = roadMask(cx, cz);
         if (mask !== 5 && mask !== 10) continue; // straight segments only
         if (cellHash(cx, cz, 40) > 0.28) continue;
-        const { x, z } = cellToWorld(cx, cz);
-        const along = mask === 5 ? 0 : Math.PI / 2; // heading along the road
-        const side = cellHash(cx, cz, 41) < 0.5 ? 1 : -1;
-        const off = TILE * 0.3 * side;
-        const model = CIVILIAN_CARS[Math.floor(cellHash(cx, cz, 42) * CIVILIAN_CARS.length)];
-        this.addVehicle(
-          new Vehicle(
-            this,
-            model,
-            x + (mask === 5 ? off : 0),
-            z + (mask === 10 ? off : 0),
-            along + (side < 0 ? Math.PI : 0)
-          )
-        );
-        count++;
+        spots.push({ cx, cz, mask });
       }
+    }
+    // Evenly sample the candidates so the cars cover the whole map.
+    const count = Math.min(14, spots.length);
+    for (let i = 0; i < count; i++) {
+      const { cx, cz, mask } = spots[Math.floor((i * spots.length) / count)];
+      const { x, z } = cellToWorld(cx, cz);
+      const along = mask === 5 ? 0 : Math.PI / 2; // heading along the road
+      const side = cellHash(cx, cz, 41) < 0.5 ? 1 : -1;
+      const off = TILE * 0.3 * side;
+      const model = CIVILIAN_CARS[Math.floor(cellHash(cx, cz, 42) * CIVILIAN_CARS.length)];
+      this.addVehicle(
+        new Vehicle(
+          this,
+          model,
+          x + (mask === 5 ? off : 0),
+          z + (mask === 10 ? off : 0),
+          along + (side < 0 ? Math.PI : 0)
+        )
+      );
     }
   }
 
@@ -216,6 +221,7 @@ export class Game {
     if (this.input.consumePause()) {
       this.paused = !this.paused;
       this.hud.setPaused(this.paused);
+      if (!this.paused) this.input.clearInteract();
     }
     if (!this.paused) {
       this.accumulator += dt;
@@ -224,7 +230,8 @@ export class Game {
         this.accumulator -= STEP;
       }
     }
-    this.updateAudio(dt);
+    if (this.paused) this.audio.duck();
+    else this.updateAudio(dt);
     for (let i = 0; i < this.players.length; i++) {
       const p = this.players[i];
       if (!this.debugCam) this.viewports.cameras[i]?.update(p, dt);

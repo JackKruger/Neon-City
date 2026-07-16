@@ -103,7 +103,9 @@ export class Player implements Entity, CameraTarget {
     if (!v) return;
     const t = v.body.translation();
     const right = new THREE.Vector3(1, 0, 0).applyQuaternion(v.quaternion());
-    v.command = { steer: 0, throttle: 0, brake: 0.6, handbrake: true };
+    // Handbrake only: `brake` acts as reverse throttle once nearly stopped,
+    // which would make the abandoned car creep backwards.
+    v.command = { steer: 0, throttle: 0, brake: 0, handbrake: true };
     v.driver = null;
     this.vehicle = null;
     this.character.teleport(t.x + right.x * 2.4, Math.max(t.y, 0.1), t.z + right.z * 2.4);
