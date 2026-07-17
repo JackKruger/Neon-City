@@ -11,6 +11,8 @@ export interface CameraTarget {
   getFollowDistance(): number;
 }
 
+const BASE_FOV = 65;
+
 export class ChaseCamera {
   readonly camera: THREE.PerspectiveCamera;
   private position = new THREE.Vector3();
@@ -18,9 +20,10 @@ export class ChaseCamera {
   private initialized = false;
   private tmpFocus = new THREE.Vector3();
   private tmpIdeal = new THREE.Vector3();
+  private fov = BASE_FOV;
 
   constructor(aspect: number) {
-    this.camera = new THREE.PerspectiveCamera(65, aspect, 0.3, 340);
+    this.camera = new THREE.PerspectiveCamera(BASE_FOV, aspect, 0.3, 340);
   }
 
   update(target: CameraTarget, dt: number): void {
@@ -46,6 +49,14 @@ export class ChaseCamera {
       const focusK = 1 - Math.exp(-12 * dt);
       this.position.lerp(this.tmpIdeal, posK);
       this.focusSmooth.lerp(this.tmpFocus, focusK);
+    }
+
+    // Widen the FOV with speed for a sense of rush.
+    const targetFov = BASE_FOV + Math.min(target.getSpeed() * 0.35, 11);
+    this.fov += (targetFov - this.fov) * (1 - Math.exp(-3 * dt));
+    if (Math.abs(this.fov - this.camera.fov) > 0.01) {
+      this.camera.fov = this.fov;
+      this.camera.updateProjectionMatrix();
     }
 
     this.camera.position.copy(this.position);
