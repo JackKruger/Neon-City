@@ -1,5 +1,5 @@
 import { TILE } from '../core/const';
-import { cellToWorld, isRoad } from './CityMap';
+import { cellToWorld, isRoad, nearestRoadCell, worldToCell } from './CityMap';
 
 export interface CellRef {
   cx: number;
@@ -59,14 +59,21 @@ export function lanePoint(
   return { x: x + -dz * laneFrac * TILE, z: z + dx * laneFrac * TILE };
 }
 
-/** All road cells, for spawn sampling. */
-export function allRoadCells(): CellRef[] {
-  const out: CellRef[] = [];
-  // MAP bounds are small; scan is cheap and done once.
-  for (let cz = 0; cz < 64; cz++) {
-    for (let cx = 0; cx < 64; cx++) {
-      if (isRoad(cx, cz)) out.push({ cx, cz });
-    }
-  }
-  return out;
+/**
+ * Random road cell in a distance ring around a world position, or null if
+ * the sample lands outside the ring after snapping to the road grid.
+ */
+export function randomRoadCellNear(
+  x: number,
+  z: number,
+  minDist: number,
+  maxDist: number
+): CellRef | null {
+  const ang = Math.random() * Math.PI * 2;
+  const r = minDist + Math.random() * (maxDist - minDist);
+  const raw = worldToCell(x + Math.sin(ang) * r, z + Math.cos(ang) * r);
+  const cell = nearestRoadCell(raw.cx, raw.cz);
+  const w = cellToWorld(cell.cx, cell.cz);
+  const d = Math.hypot(w.x - x, w.z - z);
+  return d >= minDist && d <= maxDist ? cell : null;
 }

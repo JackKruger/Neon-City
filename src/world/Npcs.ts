@@ -1,9 +1,8 @@
-import * as THREE from 'three';
 import type { Game } from '../core/Game';
-import { CIVILIAN_CARS } from '../core/Game';
+import { CIVILIAN_CARS } from '../core/const';
 import { Pedestrian } from '../entities/Pedestrian';
 import { TrafficCar } from '../entities/TrafficCar';
-import { CellRef, allRoadCells, roadNeighbors } from './RoadGraph';
+import { CellRef, randomRoadCellNear, roadNeighbors } from './RoadGraph';
 import { cellToWorld } from './CityMap';
 
 const MAX_PEDS = 26;
@@ -20,7 +19,6 @@ export const PED_MODELS = 'cdefghijklmnopqr'
 export class Npcs {
   readonly peds: Pedestrian[] = [];
   readonly traffic: TrafficCar[] = [];
-  private roadCells: CellRef[] = allRoadCells();
   private spawnTimer = 0;
 
   constructor(private game: Game) {}
@@ -40,28 +38,23 @@ export class Npcs {
     }
   }
 
-  private playerPositions(): THREE.Vector3[] {
-    return this.game.players.map((p) =>
-      p.driving
-        ? new THREE.Vector3().copy(p.vehicle!.root.position)
-        : p.character.position()
-    );
-  }
-
   private distToPlayers(x: number, z: number): number {
     let best = Infinity;
-    for (const p of this.playerPositions()) {
+    for (const p of this.game.playerPositions()) {
       best = Math.min(best, Math.hypot(p.x - x, p.z - z));
     }
     return best;
   }
 
   private randomSpawnEdge(): { from: CellRef; to: CellRef } | null {
+    const players = this.game.playerPositions();
     for (let tries = 0; tries < 12; tries++) {
-      const cell = this.roadCells[Math.floor(Math.random() * this.roadCells.length)];
+      const p = players[Math.floor(Math.random() * players.length)];
+      const cell = randomRoadCellNear(p.x, p.z, SPAWN_MIN, SPAWN_MAX);
+      if (!cell) continue;
+      // The ring is relative to one player; keep clear of the other too.
       const { x, z } = cellToWorld(cell.cx, cell.cz);
-      const d = this.distToPlayers(x, z);
-      if (d < SPAWN_MIN || d > SPAWN_MAX) continue;
+      if (this.distToPlayers(x, z) < SPAWN_MIN) continue;
       const neighbors = roadNeighbors(cell);
       if (neighbors.length === 0) continue;
       const to = neighbors[Math.floor(Math.random() * neighbors.length)];

@@ -20,7 +20,7 @@ export class ChaseCamera {
   private tmpIdeal = new THREE.Vector3();
 
   constructor(aspect: number) {
-    this.camera = new THREE.PerspectiveCamera(65, aspect, 0.3, 700);
+    this.camera = new THREE.PerspectiveCamera(65, aspect, 0.3, 340);
   }
 
   update(target: CameraTarget, dt: number): void {

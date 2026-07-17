@@ -1,7 +1,7 @@
 import type { Game } from '../core/Game';
 import type { Player } from '../entities/Player';
 import { PoliceCar } from '../entities/PoliceCar';
-import { allRoadCells } from '../world/RoadGraph';
+import { randomRoadCellNear } from '../world/RoadGraph';
 import { cellToWorld } from '../world/CityMap';
 
 const STAR_THRESHOLDS = [25, 55, 100];
@@ -15,7 +15,6 @@ export class Wanted {
   private evadeTimer = 0;
   private spawnCooldown = 0;
   readonly police: PoliceCar[] = [];
-  private roadCells = allRoadCells();
 
   constructor(
     private game: Game,
@@ -78,10 +77,9 @@ export class Wanted {
       ? this.player.vehicle!.root.position
       : this.player.character.position();
     for (let tries = 0; tries < 14; tries++) {
-      const cell = this.roadCells[Math.floor(Math.random() * this.roadCells.length)];
+      const cell = randomRoadCellNear(pos.x, pos.z, 40, 90);
+      if (!cell) continue;
       const { x, z } = cellToWorld(cell.cx, cell.cz);
-      const d = Math.hypot(x - pos.x, z - pos.z);
-      if (d < 40 || d > 90) continue;
       const heading = Math.atan2(pos.x - x, pos.z - z);
       this.police.push(new PoliceCar(this.game, this.player, x, z, heading));
       return;
