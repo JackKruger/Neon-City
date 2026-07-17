@@ -1,17 +1,46 @@
 import { TILE } from '../core/const';
 
 /**
- * Procedural, unbounded city layout. Every query is a pure function of the
- * cell coordinates, so any region can be built, thrown away, and rebuilt
- * identically — there is no stored map.
+ * City layout, queried one cell at a time so any region can be built, thrown
+ * away, and rebuilt identically — there is no per-chunk stored state.
+ *
+ * Two modes share the same query API:
+ *  - procedural (default): every answer is a pure function of the cell coords,
+ *    giving an unbounded grid city;
+ *  - authored: cells come from a fixed map grid (see scripts/build-map.mjs,
+ *    loaded by MapLoad.ts); everything outside the grid is open water.
  *
  * Cell legend:
  *   '#' road   'C' commercial lot   'S' suburban lot
- *   'P' park   '.' plaza pavement
+ *   'P' park   '.' plaza pavement   '~' water
  */
-export type Cell = '#' | 'C' | 'S' | 'P' | '.';
+export type Cell = '#' | 'C' | 'S' | 'P' | '.' | '~';
 
-/** Roads form a grid every BLOCK cells; the interiors are 4x4 lots. */
+/** Byte codes used by authored .bin map files; index = code. */
+export const CODE_TO_CELL: readonly Cell[] = ['.', '#', 'C', 'S', 'P', '~'];
+
+export interface AuthoredMap {
+  name: string;
+  /** Grid dimensions in cells; cell (0,0) sits at the grid center. */
+  width: number;
+  height: number;
+  grid: Uint8Array;
+  /** Suggested player spawn (world meters, on a road cell). */
+  spawn: { x: number; z: number };
+  attribution: string;
+}
+
+let authored: AuthoredMap | null = null;
+
+export function setAuthoredMap(map: AuthoredMap): void {
+  authored = map;
+}
+
+export function getAuthoredMap(): AuthoredMap | null {
+  return authored;
+}
+
+/** Roads form a grid every BLOCK cells (procedural mode only). */
 export const BLOCK = 5;
 
 function mod(n: number, m: number): number {
@@ -19,10 +48,17 @@ function mod(n: number, m: number): number {
 }
 
 export function isRoad(cx: number, cz: number): boolean {
+  if (authored) return cellAt(cx, cz) === '#';
   return mod(cx, BLOCK) === 0 || mod(cz, BLOCK) === 0;
 }
 
 export function cellAt(cx: number, cz: number): Cell {
+  if (authored) {
+    const gx = cx + authored.width / 2;
+    const gz = cz + authored.height / 2;
+    if (gx < 0 || gz < 0 || gx >= authored.width || gz >= authored.height) return '~';
+    return CODE_TO_CELL[authored.grid[gx + gz * authored.width]] ?? '~';
+  }
   if (isRoad(cx, cz)) return '#';
   const bx = Math.floor(cx / BLOCK);
   const bz = Math.floor(cz / BLOCK);
@@ -44,11 +80,28 @@ export function worldToCell(x: number, z: number): { cx: number; cz: number } {
   return { cx: Math.round(x / TILE), cz: Math.round(z / TILE) };
 }
 
-/** Snap a cell to the nearest road cell (roads run every BLOCK cells). */
-export function nearestRoadCell(cx: number, cz: number): { cx: number; cz: number } {
-  const sx = Math.round(cx / BLOCK) * BLOCK;
-  const sz = Math.round(cz / BLOCK) * BLOCK;
-  return Math.abs(sx - cx) <= Math.abs(sz - cz) ? { cx: sx, cz } : { cx, cz: sz };
+/**
+ * Snap a cell to the nearest road cell, or null when none is close (e.g. the
+ * sample landed in the bay on an authored map).
+ */
+export function nearestRoadCell(cx: number, cz: number): { cx: number; cz: number } | null {
+  if (!authored) {
+    const sx = Math.round(cx / BLOCK) * BLOCK;
+    const sz = Math.round(cz / BLOCK) * BLOCK;
+    return Math.abs(sx - cx) <= Math.abs(sz - cz) ? { cx: sx, cz } : { cx, cz: sz };
+  }
+  // Ring search outward; authored road cells can be anywhere.
+  const MAX_R = 24;
+  if (isRoad(cx, cz)) return { cx, cz };
+  for (let r = 1; r <= MAX_R; r++) {
+    for (let d = -r; d <= r; d++) {
+      if (isRoad(cx + d, cz - r)) return { cx: cx + d, cz: cz - r };
+      if (isRoad(cx + d, cz + r)) return { cx: cx + d, cz: cz + r };
+      if (isRoad(cx - r, cz + d)) return { cx: cx - r, cz: cz + d };
+      if (isRoad(cx + r, cz + d)) return { cx: cx + r, cz: cz + d };
+    }
+  }
+  return null;
 }
 
 /** Deterministic pseudo-random in [0,1) from cell coords and a salt. */

@@ -1,0 +1,454 @@
+#!/usr/bin/env node
+/**
+ * Build an authored city map from OpenStreetMap data.
+ *
+ * Queries Overpass for roads, water, coastline, parks and land use inside
+ * MAP.bbox, rasterizes everything onto the game's cell grid (one cell =
+ * TILE meters), and writes:
+ *
+ *   public/maps/<name>.bin   raw cell grid (one byte per cell, see CODES)
+ *   public/maps/<name>.json  metadata: size, spawn point, attribution
+ *   public/maps/<name>.png   preview image (also usable as a minimap)
+ *
+ * Map data © OpenStreetMap contributors, licensed under ODbL:
+ * https://www.openstreetmap.org/copyright
+ *
+ * Usage: node scripts/build-map.mjs [--fresh]
+ *   --fresh  ignore the cached Overpass response and re-download
+ */
+import { execFileSync } from 'node:child_process';
+import { deflateSync } from 'node:zlib';
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const TILE = 12; // keep in sync with src/core/const.ts
+
+/** Cell byte codes; keep in sync with src/world/CityMap.ts CODE_TO_CELL. */
+const CODES = { '.': 0, '#': 1, C: 2, S: 3, P: 4, '~': 5 };
+
+const MAP = {
+  name: 'melbourne',
+  /** Grid size in cells (world spans size*TILE meters, centered on `center`). */
+  size: 720,
+  center: { lat: -37.835, lon: 144.96 },
+  /** Downtown ellipse forced to commercial (Hoddle Grid + Southbank). */
+  cbd: { lat: -37.8155, lon: 144.9615, radiusM: 1400 },
+  /** Spawn near Flinders Street Station. */
+  spawn: { lat: -37.8183, lon: 144.967 },
+  /**
+   * Flood-fill seeds for open sea (Port Phillip Bay): the south-west region
+   * of the bbox. Given as lat/lon; must be open water.
+   */
+  seaSeeds: [
+    { lat: -37.868, lon: 144.915 },
+    { lat: -37.86, lon: 144.925 },
+    { lat: -37.872, lon: 144.94 },
+  ],
+};
+
+// --- geometry helpers -------------------------------------------------------
+
+const M_PER_DEG_LAT = 111320;
+const mPerDegLon = M_PER_DEG_LAT * Math.cos((MAP.center.lat * Math.PI) / 180);
+const HALF = (MAP.size * TILE) / 2;
+
+/** lat/lon -> world meters (x east, z south, origin at map center). */
+function toWorld(lat, lon) {
+  return {
+    x: (lon - MAP.center.lon) * mPerDegLon,
+    z: (MAP.center.lat - lat) * M_PER_DEG_LAT,
+  };
+}
+
+/** World meters -> grid index, or null when outside. Cell centers at TILE multiples. */
+function toGrid(x, z) {
+  const gx = Math.round(x / TILE) + MAP.size / 2;
+  const gz = Math.round(z / TILE) + MAP.size / 2;
+  if (gx < 0 || gz < 0 || gx >= MAP.size || gz >= MAP.size) return null;
+  return { gx, gz };
+}
+
+function bbox() {
+  const dLat = HALF / M_PER_DEG_LAT;
+  const dLon = HALF / mPerDegLon;
+  // Overpass order: south, west, north, east.
+  return [MAP.center.lat - dLat, MAP.center.lon - dLon, MAP.center.lat + dLat, MAP.center.lon + dLon];
+}
+
+// --- Overpass ---------------------------------------------------------------
+
+const ENDPOINTS = [
+  'https://lz4.overpass-api.de/api/interpreter',
+  'https://overpass-api.de/api/interpreter',
+];
+const UA = 'neon-bay-map-import/1.0 (hobby game; github.com/JackKruger/Neon-City)';
+
+function overpassQuery() {
+  const bb = bbox().join(',');
+  const roads =
+    '^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street)(_link)?$';
+  const green = '^(park|garden|golf_course|nature_reserve)$';
+  const greenLanduse = '^(grass|recreation_ground|forest|meadow|cemetery|village_green)$';
+  const commercial = '^(commercial|retail|industrial)$';
+  return `[out:json][timeout:180];
+(
+  way["highway"~"${roads}"](${bb});
+  way["natural"="coastline"](${bb});
+  way["natural"="water"](${bb});
+  relation["natural"="water"](${bb});
+  way["waterway"~"^(riverbank|dock)$"](${bb});
+  way["waterway"~"^(river|canal)$"](${bb});
+  way["leisure"~"${green}"](${bb});
+  relation["leisure"~"${green}"](${bb});
+  way["landuse"~"${greenLanduse}"](${bb});
+  way["landuse"~"${commercial}"](${bb});
+  relation["landuse"~"${commercial}"](${bb});
+);
+out geom;`;
+}
+
+/** Fetch via curl (honors the environment's HTTPS proxy), with retries. */
+function fetchOverpass() {
+  const cacheDir = join(ROOT, '.map-cache');
+  const cacheFile = join(cacheDir, `${MAP.name}.json`);
+  if (!process.argv.includes('--fresh') && existsSync(cacheFile)) {
+    console.log(`using cached Overpass response: ${cacheFile}`);
+    return JSON.parse(readFileSync(cacheFile, 'utf8'));
+  }
+  const query = overpassQuery();
+  let lastErr;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const endpoint = ENDPOINTS[attempt % ENDPOINTS.length];
+    try {
+      console.log(`querying ${endpoint} (attempt ${attempt + 1})...`);
+      const out = execFileSync(
+        'curl',
+        ['-sS', '--fail', '--max-time', '240', '-A', UA, '-H', 'Accept: application/json',
+          '--data-binary', query, endpoint],
+        { maxBuffer: 1 << 30 }
+      );
+      const data = JSON.parse(out.toString('utf8'));
+      if (!Array.isArray(data.elements)) throw new Error('malformed response');
+      mkdirSync(cacheDir, { recursive: true });
+      writeFileSync(cacheFile, JSON.stringify(data));
+      console.log(`fetched ${data.elements.length} elements (cached to ${cacheFile})`);
+      return data;
+    } catch (e) {
+      lastErr = e;
+      const wait = 2 ** attempt;
+      console.log(`  failed (${e.message?.split('\n')[0]}); retrying in ${wait}s`);
+      execFileSync('sleep', [String(wait)]);
+    }
+  }
+  throw lastErr;
+}
+
+// --- rasterization ----------------------------------------------------------
+
+/** Mark cells under a polyline; inserts corner cells so the result is 4-connected. */
+function markLine(mask, coords) {
+  let prev = null;
+  for (let i = 0; i < coords.length - 1; i++) {
+    const a = toWorld(coords[i].lat, coords[i].lon);
+    const b = toWorld(coords[i + 1].lat, coords[i + 1].lon);
+    const len = Math.hypot(b.x - a.x, b.z - a.z);
+    const steps = Math.max(1, Math.ceil(len / (TILE / 3)));
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      const g = toGrid(a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t);
+      if (!g) {
+        prev = null;
+        continue;
+      }
+      if (prev && g.gx !== prev.gx && g.gz !== prev.gz) {
+        mask[prev.gx + g.gz * MAP.size] = 1; // keep 4-connectivity on diagonals
+      }
+      mask[g.gx + g.gz * MAP.size] = 1;
+      prev = g;
+    }
+  }
+}
+
+/** Even-odd scanline fill of a closed ring (array of {lat,lon}). */
+function fillPolygon(mask, ring) {
+  const pts = ring.map((c) => toWorld(c.lat, c.lon));
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (const p of pts) {
+    minZ = Math.min(minZ, p.z);
+    maxZ = Math.max(maxZ, p.z);
+  }
+  const gz0 = Math.max(0, Math.round(minZ / TILE) + MAP.size / 2);
+  const gz1 = Math.min(MAP.size - 1, Math.round(maxZ / TILE) + MAP.size / 2);
+  for (let gz = gz0; gz <= gz1; gz++) {
+    const z = (gz - MAP.size / 2) * TILE; // scan through cell centers
+    const xs = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i];
+      const b = pts[i + 1];
+      if (a.z === b.z) continue;
+      if (z < Math.min(a.z, b.z) || z >= Math.max(a.z, b.z)) continue;
+      xs.push(a.x + ((z - a.z) / (b.z - a.z)) * (b.x - a.x));
+    }
+    xs.sort((p, q) => p - q);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      const gx0 = Math.max(0, Math.round(xs[k] / TILE) + MAP.size / 2);
+      const gx1 = Math.min(MAP.size - 1, Math.round(xs[k + 1] / TILE) + MAP.size / 2);
+      for (let gx = gx0; gx <= gx1; gx++) mask[gx + gz * MAP.size] = 1;
+    }
+  }
+}
+
+/** Closed rings from an element: a closed way, or stitched outer members of a relation. */
+function ringsOf(el) {
+  if (el.type === 'way') {
+    const g = el.geometry ?? [];
+    if (g.length >= 4 && g[0].lat === g[g.length - 1].lat && g[0].lon === g[g.length - 1].lon) {
+      return [g];
+    }
+    return [];
+  }
+  // Relation: stitch outer ways into rings by matching endpoints.
+  const pieces = (el.members ?? [])
+    .filter((m) => m.type === 'way' && (m.role === 'outer' || m.role === '') && m.geometry)
+    .map((m) => [...m.geometry]);
+  const rings = [];
+  while (pieces.length > 0) {
+    const ring = pieces.shift();
+    let extended = true;
+    while (extended) {
+      const last = ring[ring.length - 1];
+      if (ring[0].lat === last.lat && ring[0].lon === last.lon) break;
+      extended = false;
+      for (let i = 0; i < pieces.length; i++) {
+        const p = pieces[i];
+        const same = (a, b) => a.lat === b.lat && a.lon === b.lon;
+        if (same(p[0], last)) ring.push(...p.slice(1));
+        else if (same(p[p.length - 1], last)) ring.push(...p.reverse().slice(1));
+        else continue;
+        pieces.splice(i, 1);
+        extended = true;
+        break;
+      }
+    }
+    const closed =
+      ring.length >= 4 &&
+      ring[0].lat === ring[ring.length - 1].lat &&
+      ring[0].lon === ring[ring.length - 1].lon;
+    if (closed) rings.push(ring);
+  }
+  return rings;
+}
+
+function floodSea(waterMask, coastMask, roadMask) {
+  const flooded = new Uint8Array(MAP.size * MAP.size);
+  const queue = [];
+  for (const seed of MAP.seaSeeds) {
+    const w = toWorld(seed.lat, seed.lon);
+    const g = toGrid(w.x, w.z);
+    if (g && !coastMask[g.gx + g.gz * MAP.size]) queue.push(g.gx + g.gz * MAP.size);
+  }
+  while (queue.length > 0) {
+    const i = queue.pop();
+    if (flooded[i] || coastMask[i]) continue;
+    flooded[i] = 1;
+    const gx = i % MAP.size;
+    const gz = (i / MAP.size) | 0;
+    if (gx > 0) queue.push(i - 1);
+    if (gx < MAP.size - 1) queue.push(i + 1);
+    if (gz > 0) queue.push(i - MAP.size);
+    if (gz < MAP.size - 1) queue.push(i + MAP.size);
+  }
+  let count = 0;
+  for (let i = 0; i < flooded.length; i++) {
+    if (flooded[i]) {
+      waterMask[i] = 1;
+      count++;
+    }
+  }
+  const frac = count / flooded.length;
+  console.log(`sea flood: ${(frac * 100).toFixed(1)}% of map`);
+  if (frac > 0.45) {
+    throw new Error('sea flood covered nearly half the map — coastline leak, check seeds/barrier');
+  }
+  void roadMask;
+}
+
+// --- PNG preview ------------------------------------------------------------
+
+const CRC_TABLE = new Uint32Array(256).map((_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+
+function crc32(buf) {
+  let c = 0xffffffff;
+  for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const out = Buffer.alloc(8 + data.length + 4);
+  out.writeUInt32BE(data.length, 0);
+  out.write(type, 4, 'ascii');
+  data.copy(out, 8);
+  out.writeUInt32BE(crc32(out.subarray(4, 8 + data.length)), 8 + data.length);
+  return out;
+}
+
+function writePng(path, w, h, rgb) {
+  const raw = Buffer.alloc((w * 3 + 1) * h);
+  for (let y = 0; y < h; y++) {
+    raw[y * (w * 3 + 1)] = 0; // filter: none
+    rgb.copy(raw, y * (w * 3 + 1) + 1, y * w * 3, (y + 1) * w * 3);
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // color type: RGB
+  const png = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', deflateSync(raw, { level: 9 })),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+  writeFileSync(path, png);
+}
+
+const PREVIEW_COLORS = {
+  '.': [0x9a, 0x93, 0xa8],
+  '#': [0x3a, 0x3f, 0x4a],
+  C: [0xc0, 0x86, 0xd8],
+  S: [0xf4, 0xe3, 0xb2],
+  P: [0x7e, 0xc8, 0x50],
+  '~': [0x2e, 0xc4, 0xb6],
+};
+
+// --- main -------------------------------------------------------------------
+
+function main() {
+  const data = fetchOverpass();
+  const N = MAP.size * MAP.size;
+  const roads = new Uint8Array(N);
+  const water = new Uint8Array(N);
+  const coast = new Uint8Array(N);
+  const parks = new Uint8Array(N);
+  const comm = new Uint8Array(N);
+
+  let counts = { road: 0, water: 0, coast: 0, park: 0, comm: 0 };
+  for (const el of data.elements) {
+    const tags = el.tags ?? {};
+    if (el.type === 'way' && tags.highway) {
+      markLine(roads, el.geometry ?? []);
+      counts.road++;
+    } else if (el.type === 'way' && tags.natural === 'coastline') {
+      markLine(coast, el.geometry ?? []);
+      counts.coast++;
+    } else if (
+      tags.natural === 'water' ||
+      tags.waterway === 'riverbank' ||
+      tags.waterway === 'dock'
+    ) {
+      const rings = ringsOf(el);
+      for (const r of rings) fillPolygon(water, r);
+      if (rings.length === 0 && el.type === 'way') markLine(water, el.geometry ?? []);
+      counts.water++;
+    } else if (el.type === 'way' && (tags.waterway === 'river' || tags.waterway === 'canal')) {
+      markLine(water, el.geometry ?? []);
+      counts.water++;
+    } else if (tags.leisure || (tags.landuse && !/commercial|retail|industrial/.test(tags.landuse))) {
+      for (const r of ringsOf(el)) fillPolygon(parks, r);
+      counts.park++;
+    } else if (tags.landuse) {
+      for (const r of ringsOf(el)) fillPolygon(comm, r);
+      counts.comm++;
+    }
+  }
+  console.log('rasterized:', counts);
+
+  // Coastline cells are water too (they're the waterline), and act as the
+  // flood barrier so the sea fill can't leak inland.
+  floodSea(water, coast, roads);
+  for (let i = 0; i < N; i++) if (coast[i]) water[i] = 1;
+
+  // Downtown override: commercial inside the CBD ellipse.
+  const cbd = toWorld(MAP.cbd.lat, MAP.cbd.lon);
+  const grid = new Uint8Array(N).fill(CODES.S);
+  for (let gz = 0; gz < MAP.size; gz++) {
+    for (let gx = 0; gx < MAP.size; gx++) {
+      const i = gx + gz * MAP.size;
+      const x = (gx - MAP.size / 2) * TILE;
+      const z = (gz - MAP.size / 2) * TILE;
+      if (parks[i]) grid[i] = CODES.P;
+      if (comm[i]) grid[i] = CODES.C;
+      if (Math.hypot(x - cbd.x, z - cbd.z) < MAP.cbd.radiusM && grid[i] === CODES.S) {
+        grid[i] = CODES.C;
+      }
+      if (water[i]) grid[i] = CODES['~'];
+      if (roads[i]) grid[i] = CODES['#']; // last: bridges win over water
+    }
+  }
+
+  // Spawn: nearest road cell to the requested point.
+  const sw = toWorld(MAP.spawn.lat, MAP.spawn.lon);
+  const sg = toGrid(sw.x, sw.z);
+  let spawnCell = null;
+  outer: for (let r = 0; r < 50; r++) {
+    for (let dz = -r; dz <= r; dz++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+        const gx = sg.gx + dx;
+        const gz = sg.gz + dz;
+        if (gx < 0 || gz < 0 || gx >= MAP.size || gz >= MAP.size) continue;
+        if (grid[gx + gz * MAP.size] === CODES['#']) {
+          spawnCell = { gx, gz };
+          break outer;
+        }
+      }
+    }
+  }
+  if (!spawnCell) throw new Error('no road cell near spawn point');
+  const spawn = {
+    x: (spawnCell.gx - MAP.size / 2) * TILE,
+    z: (spawnCell.gz - MAP.size / 2) * TILE,
+  };
+
+  const outDir = join(ROOT, 'public', 'maps');
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(join(outDir, `${MAP.name}.bin`), grid);
+
+  const meta = {
+    name: MAP.name,
+    width: MAP.size,
+    height: MAP.size,
+    tile: TILE,
+    spawn,
+    center: MAP.center,
+    attribution: 'Map data © OpenStreetMap contributors (ODbL) — openstreetmap.org/copyright',
+  };
+  writeFileSync(join(outDir, `${MAP.name}.json`), JSON.stringify(meta, null, 2) + '\n');
+
+  const rgb = Buffer.alloc(N * 3);
+  const byCode = Object.fromEntries(Object.entries(CODES).map(([ch, code]) => [code, PREVIEW_COLORS[ch]]));
+  for (let i = 0; i < N; i++) {
+    const c = byCode[grid[i]];
+    rgb[i * 3] = c[0];
+    rgb[i * 3 + 1] = c[1];
+    rgb[i * 3 + 2] = c[2];
+  }
+  writePng(join(outDir, `${MAP.name}.png`), MAP.size, MAP.size, rgb);
+
+  const tally = {};
+  for (const [ch, code] of Object.entries(CODES)) {
+    tally[ch] = ((100 * grid.filter((v) => v === code).length) / N).toFixed(1) + '%';
+  }
+  console.log('cell mix:', tally);
+  console.log(`spawn: world (${spawn.x}, ${spawn.z})`);
+  console.log(`wrote public/maps/${MAP.name}.{bin,json,png}`);
+}
+
+main();

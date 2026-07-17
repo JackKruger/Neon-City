@@ -1,0 +1,15 @@
+{
+  "name": "melbourne",
+  "width": 720,
+  "height": 720,
+  "tile": 12,
+  "spawn": {
+    "x": 564,
+    "z": -1908
+  },
+  "center": {
+    "lat": -37.835,
+    "lon": 144.96
+  },
+  "attribution": "Map data © OpenStreetMap contributors (ODbL) — openstreetmap.org/copyright"
+}
