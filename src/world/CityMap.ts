@@ -1,61 +1,54 @@
 import { TILE } from '../core/const';
 
 /**
+ * Procedural, unbounded city layout. Every query is a pure function of the
+ * cell coordinates, so any region can be built, thrown away, and rebuilt
+ * identically — there is no stored map.
+ *
  * Cell legend:
  *   '#' road   'C' commercial lot   'S' suburban lot
- *   'P' park   '.' plaza pavement   'A' beach sand
+ *   'P' park   '.' plaza pavement
  */
-export type Cell = '#' | 'C' | 'S' | 'P' | '.' | 'A';
+export type Cell = '#' | 'C' | 'S' | 'P' | '.';
 
-// prettier-ignore
-export const MAP: string[] = [
-  'AAAAAAAAAAAAAAAAAAAA',
-  'AAAAAAAAAAAAAAAAAAAA',
-  'AA################AA',
-  'AA#SSSS#SSSS#CCCC#AA',
-  'AA#SSSS#SSSS#CCCC#AA',
-  'AA#SSSS#SSSS#CCCC#AA',
-  'AA#SSSS#SSSS#CCCC#AA',
-  'AA################AA',
-  'AA#CCCC#PPPP#CCCC#AA',
-  'AA#CCCC#PPPP#CCCC#AA',
-  'AA#CCCC#PPPP#CCCC#AA',
-  'AA#CCCC#PPPP#CCCC#AA',
-  'AA################AA',
-  'AA#SSSS#CCCC#CC.C#AA',
-  'AA#SSSS#CCCC#C..C#AA',
-  'AA#SSSS#CCCC#.CC.#AA',
-  'AA#SSSS#CCCC#CCCC#AA',
-  'AA################AA',
-  'AAAAAAAAAAAAAAAAAAAA',
-  'AAAAAAAAAAAAAAAAAAAA',
-];
+/** Roads form a grid every BLOCK cells; the interiors are 4x4 lots. */
+export const BLOCK = 5;
 
-export const MAP_W = MAP[0].length;
-export const MAP_H = MAP.length;
-
-export function cellAt(cx: number, cz: number): Cell | null {
-  if (cx < 0 || cz < 0 || cx >= MAP_W || cz >= MAP_H) return null;
-  return MAP[cz][cx] as Cell;
+function mod(n: number, m: number): number {
+  return ((n % m) + m) % m;
 }
 
 export function isRoad(cx: number, cz: number): boolean {
-  return cellAt(cx, cz) === '#';
+  return mod(cx, BLOCK) === 0 || mod(cz, BLOCK) === 0;
 }
 
-/** Center of a cell in world coordinates. */
+export function cellAt(cx: number, cz: number): Cell {
+  if (isRoad(cx, cz)) return '#';
+  const bx = Math.floor(cx / BLOCK);
+  const bz = Math.floor(cz / BLOCK);
+  // Low-frequency "downtown-ness" gives coherent multi-block districts;
+  // a per-block hash then picks the lot type within the district's flavor.
+  const zone = cellHash(Math.floor(bx / 3), Math.floor(bz / 3), 101);
+  const r = cellHash(bx, bz, 102);
+  if (zone < 0.4) return r < 0.75 ? 'C' : r < 0.9 ? '.' : 'P'; // downtown
+  if (zone < 0.75) return r < 0.7 ? 'S' : r < 0.85 ? 'P' : 'C'; // suburbs
+  return r < 0.5 ? 'P' : r < 0.9 ? 'S' : '.'; // green belt
+}
+
+/** Center of a cell in world coordinates (cell centers sit on TILE multiples). */
 export function cellToWorld(cx: number, cz: number): { x: number; z: number } {
-  return {
-    x: (cx - MAP_W / 2 + 0.5) * TILE,
-    z: (cz - MAP_H / 2 + 0.5) * TILE,
-  };
+  return { x: cx * TILE, z: cz * TILE };
 }
 
 export function worldToCell(x: number, z: number): { cx: number; cz: number } {
-  return {
-    cx: Math.floor(x / TILE + MAP_W / 2),
-    cz: Math.floor(z / TILE + MAP_H / 2),
-  };
+  return { cx: Math.round(x / TILE), cz: Math.round(z / TILE) };
+}
+
+/** Snap a cell to the nearest road cell (roads run every BLOCK cells). */
+export function nearestRoadCell(cx: number, cz: number): { cx: number; cz: number } {
+  const sx = Math.round(cx / BLOCK) * BLOCK;
+  const sz = Math.round(cz / BLOCK) * BLOCK;
+  return Math.abs(sx - cx) <= Math.abs(sz - cz) ? { cx: sx, cz } : { cx, cz: sz };
 }
 
 /** Deterministic pseudo-random in [0,1) from cell coords and a salt. */

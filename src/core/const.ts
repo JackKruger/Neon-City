@@ -7,6 +7,18 @@ export const TILE = 12;
 /** Gravity (m/s^2). */
 export const GRAVITY = -20;
 
+/** Stealable civilian car models (also used for parked and traffic cars). */
+export const CIVILIAN_CARS = [
+  'cars/sedan',
+  'cars/sedan-sports',
+  'cars/hatchback-sports',
+  'cars/suv',
+  'cars/suv-luxury',
+  'cars/taxi',
+  'cars/van',
+  'cars/truck',
+];
+
 export const PALETTE = {
   sky: 0xffb4a2,
   fogColor: 0xf7a8b8,

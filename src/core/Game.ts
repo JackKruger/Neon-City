@@ -5,9 +5,8 @@ import { Input } from './Input';
 import { Viewports } from '../render/Viewports';
 import { Hud } from '../ui/Hud';
 import { AudioSys } from './AudioSys';
-import { GRAVITY, PALETTE, STEP, TILE } from './const';
+import { CIVILIAN_CARS, GRAVITY, PALETTE, STEP } from './const';
 import { CITY_ASSETS, City } from '../world/City';
-import { MAP_H, MAP_W, cellHash, cellToWorld, isRoad, roadMask } from '../world/CityMap';
 import { Vehicle } from '../entities/Vehicle';
 import { Player } from '../entities/Player';
 import { Npcs, PED_MODELS } from '../world/Npcs';
@@ -17,16 +16,6 @@ export interface Entity {
   update(dt: number): void;
 }
 
-export const CIVILIAN_CARS = [
-  'cars/sedan',
-  'cars/sedan-sports',
-  'cars/hatchback-sports',
-  'cars/suv',
-  'cars/suv-luxury',
-  'cars/taxi',
-  'cars/van',
-  'cars/truck',
-];
 const PRELOAD = [
   ...CIVILIAN_CARS,
   'cars/police',
@@ -54,6 +43,7 @@ export class Game {
   readonly vehicles: Vehicle[] = [];
   readonly players: Player[] = [];
   readonly audio = new AudioSys();
+  readonly city: City;
   npcs!: Npcs;
   paused = false;
 
@@ -89,10 +79,10 @@ export class Game {
     for (const name of CITY_ASSETS) {
       if (name.startsWith('roads/road-')) this.assets.tint(name, 0x9fa3b0);
     }
-    new City(this.scene, this.world, this.assets).build();
-    this.spawnParkedCars();
+    this.city = new City(this);
+    this.city.prewarm(3, 24);
 
-    const p1 = new Player(this, 0, -6, 33.5);
+    const p1 = new Player(this, 0, 3, 24);
     this.players.push(p1);
     this.entities.push(p1);
 
@@ -101,37 +91,16 @@ export class Game {
     this.applyDebugParams();
   }
 
-  /** Parked cars on the right side of straight road tiles, spread over the map. */
-  private spawnParkedCars(): void {
-    const spots: { cx: number; cz: number; mask: number }[] = [];
-    for (let cz = 0; cz < MAP_H; cz++) {
-      for (let cx = 0; cx < MAP_W; cx++) {
-        if (!isRoad(cx, cz)) continue;
-        const mask = roadMask(cx, cz);
-        if (mask !== 5 && mask !== 10) continue; // straight segments only
-        if (cellHash(cx, cz, 40) > 0.28) continue;
-        spots.push({ cx, cz, mask });
+  /** Player XZ positions, for chunk streaming and spawn-ring sampling. */
+  playerPositions(): { x: number; z: number }[] {
+    return this.players.map((p) => {
+      if (p.driving) {
+        const t = p.vehicle!.body.translation();
+        return { x: t.x, z: t.z };
       }
-    }
-    // Evenly sample the candidates so the cars cover the whole map.
-    const count = Math.min(14, spots.length);
-    for (let i = 0; i < count; i++) {
-      const { cx, cz, mask } = spots[Math.floor((i * spots.length) / count)];
-      const { x, z } = cellToWorld(cx, cz);
-      const along = mask === 5 ? 0 : Math.PI / 2; // heading along the road
-      const side = cellHash(cx, cz, 41) < 0.5 ? 1 : -1;
-      const off = TILE * 0.3 * side;
-      const model = CIVILIAN_CARS[Math.floor(cellHash(cx, cz, 42) * CIVILIAN_CARS.length)];
-      this.addVehicle(
-        new Vehicle(
-          this,
-          model,
-          x + (mask === 5 ? off : 0),
-          z + (mask === 10 ? off : 0),
-          along + (side < 0 ? Math.PI : 0)
-        )
-      );
-    }
+      const c = p.character.position();
+      return { x: c.x, z: c.z };
+    });
   }
 
   addVehicle(v: Vehicle): void {
@@ -183,7 +152,7 @@ export class Game {
     const params = new URLSearchParams(location.search);
     if (params.has('nofog')) this.scene.fog = null;
     if (params.has('testcar')) {
-      this.addVehicle(new Vehicle(this, 'cars/taxi', -6, 37, Math.PI / 2));
+      this.addVehicle(new Vehicle(this, 'cars/taxi', 3, 36, 0));
     }
     if (params.has('p2')) this.joinPlayer2();
     if (params.has('pos')) {
@@ -198,7 +167,9 @@ export class Game {
 
   private setupEnvironment(): void {
     this.scene.background = new THREE.Color(PALETTE.sky);
-    this.scene.fog = new THREE.Fog(PALETTE.fogColor, 90, 460);
+    // Fog far sits just inside the guaranteed chunk-loaded distance so new
+    // chunks always materialize fully fogged (no visible pop-in).
+    this.scene.fog = new THREE.Fog(PALETTE.fogColor, 60, 230);
 
     const hemi = new THREE.HemisphereLight(0xffe4c8, 0x6b5b8a, 1.15);
     this.scene.add(hemi);
@@ -230,6 +201,7 @@ export class Game {
         this.accumulator -= STEP;
       }
     }
+    this.city.update(this.playerPositions());
     if (this.paused) this.audio.duck();
     else this.updateAudio(dt);
     for (let i = 0; i < this.players.length; i++) {
