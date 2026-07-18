@@ -29,6 +29,14 @@ const SUSPENSION_STIFFNESS = 60;
 const STATIC_SAG = 20 / (4 * SUSPENSION_STIFFNESS);
 const MAX_FORWARD_SPEED = 36; // m/s (~130 km/h)
 const MAX_REVERSE_SPEED = 10;
+/** Tire grip (Rapier frictionSlip). Higher up front fights understeer. */
+const GRIP_FRONT = 4.8;
+const GRIP_REAR = 4.2;
+/** Front lateral stiffness > 1 keeps turn-in strong under full throttle,
+ * when weight transfer unloads the front axle. */
+const SIDE_STIFFNESS_FRONT = 1.3;
+/** Extra downward acceleration at top speed (m/s^2); keeps fast cars planted. */
+const DOWNFORCE_ACCEL = 6;
 
 export class Vehicle implements Entity, CameraTarget {
   readonly root = new THREE.Group();
@@ -37,6 +45,7 @@ export class Vehicle implements Entity, CameraTarget {
   private wheels: WheelVisual[] = [];
   private steerAngle = 0;
   private sideFriction = 1.0;
+  private flippedTime = 0;
 
   command: DriveCommand = { steer: 0, throttle: 0, brake: 0, handbrake: false };
   /** Current driver (Player or an AI), if any. */
@@ -126,13 +135,14 @@ export class Vehicle implements Entity, CameraTarget {
       this.controller.setWheelSuspensionRelaxation(i, 7.0);
       this.controller.setWheelMaxSuspensionForce(i, mass * 60);
       this.controller.setWheelMaxSuspensionTravel(i, 0.3);
-      this.controller.setWheelFrictionSlip(i, 3.2);
-      this.controller.setWheelSideFrictionStiffness(i, 1.0);
+      const front = node.name.includes('front');
+      this.controller.setWheelFrictionSlip(i, front ? GRIP_FRONT : GRIP_REAR);
+      this.controller.setWheelSideFrictionStiffness(i, front ? SIDE_STIFFNESS_FRONT : 1.0);
       this.wheels.push({
         node,
         connection,
         rest: SUSPENSION_REST,
-        front: node.name.includes('front'),
+        front,
       });
     }
 
@@ -165,28 +175,42 @@ export class Vehicle implements Entity, CameraTarget {
     const { steer, throttle, brake, handbrake } = this.command;
     const mass = this.body.mass();
     const speed = this.forwardSpeed();
+    const sliding = handbrake && Math.abs(speed) > 2;
 
-    // Steering: tighter at low speed, smoothed toward target.
-    const maxSteer = 0.55 / (1 + Math.abs(speed) * 0.045);
+    // Steering: tighter at low speed, wider under a handbrake slide so the
+    // drift angle stays steerable. Returning to center is faster than
+    // steering in — keyboard taps stop wandering the moment they're released.
+    // Quadratic falloff keeps full-lock yaw rate roughly constant (~1 rad/s)
+    // across the speed range instead of getting dartier the faster you go.
+    const a = Math.abs(speed);
+    const maxSteer = (sliding ? 0.8 : 0.6) / (1 + 0.05 * a + 0.006 * a * a);
     const target = -steer * maxSteer;
-    const rate = 3.5 * dt;
+    const returning = Math.abs(target) < Math.abs(this.steerAngle);
+    const rate = (returning ? 7.0 : 4.0) * dt;
     this.steerAngle += THREE.MathUtils.clamp(target - this.steerAngle, -rate, rate);
 
     // Rear side friction eases off while the handbrake is held at speed
     // (slides); a stopped handbraked car keeps full grip so it stays parked.
-    const targetFriction = handbrake && Math.abs(speed) > 2 ? 0.35 : 1.0;
+    const targetFriction = sliding ? 0.32 : 1.0;
     this.sideFriction = THREE.MathUtils.lerp(this.sideFriction, targetFriction, 0.2);
 
-    const forwardTaper = THREE.MathUtils.clamp(1 - speed / MAX_FORWARD_SPEED, 0, 1);
-    let engine = throttle * mass * 7 * forwardTaper;
+    // Quadratic taper keeps midrange pull strong and still reaches top speed.
+    const speedRatio = THREE.MathUtils.clamp(speed / MAX_FORWARD_SPEED, 0, 1);
+    const forwardTaper = 1 - speedRatio * speedRatio;
+    let engine = throttle * mass * 8 * forwardTaper;
     let brakeForce = 0;
     if (brake > 0) {
       if (speed < 1.0) {
         const reverseTaper = THREE.MathUtils.clamp(1 + speed / MAX_REVERSE_SPEED, 0, 1);
         engine = -brake * mass * 5 * reverseTaper;
       } else {
-        brakeForce = brake * mass * 2;
+        // The controller's wheel brake is savagely non-linear (it locks the
+        // wheel at small values); this lands around 15 m/s^2 of decel.
+        brakeForce = brake * mass * 0.08;
       }
+    } else if (throttle === 0 && !handbrake && speed > 1) {
+      // Engine braking: lifting off bleeds speed instead of coasting forever.
+      engine = -mass * 1.5 * speedRatio;
     }
 
     for (let i = 0; i < this.wheels.length; i++) {
@@ -204,8 +228,43 @@ export class Vehicle implements Entity, CameraTarget {
       }
     }
 
+    // Speed-scaled downforce while grounded: plants the car over crests and
+    // intersection bumps, and scales grip up with speed.
+    let grounded = 0;
+    for (let i = 0; i < this.wheels.length; i++) {
+      if (this.controller.wheelIsInContact(i)) grounded++;
+    }
+    if (grounded >= 2) {
+      const df = mass * DOWNFORCE_ACCEL * speedRatio * dt;
+      this.body.applyImpulse(new RAPIER.Vector3(0, -df, 0), true);
+    }
+
+    this.updateFlipRecovery(dt);
     this.controller.updateVehicle(dt);
     this.syncVisuals();
+  }
+
+  /** Rights the car after it has been stuck on its side/roof for a moment. */
+  private updateFlipRecovery(dt: number): void {
+    const q = this.quaternion();
+    const upY = new THREE.Vector3(0, 1, 0).applyQuaternion(q).y;
+    if (upY < 0.25 && this.getSpeed() < 2) {
+      this.flippedTime += dt;
+    } else {
+      this.flippedTime = 0;
+      return;
+    }
+    if (this.flippedTime < 1.5) return;
+    this.flippedTime = 0;
+    const t = this.body.translation();
+    const yaw = this.getHeading();
+    this.body.setTranslation(new RAPIER.Vector3(t.x, t.y + 1.2, t.z), true);
+    this.body.setRotation(
+      new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw),
+      true
+    );
+    this.body.setLinvel(new RAPIER.Vector3(0, 0, 0), true);
+    this.body.setAngvel(new RAPIER.Vector3(0, 0, 0), true);
   }
 
   private syncVisuals(): void {
