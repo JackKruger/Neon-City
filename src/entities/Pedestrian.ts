@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import type { Entity, Game } from '../core/Game';
 import { Character } from './Character';
+import type { Outfit } from './HumanRig';
+import { Ragdoll } from './Ragdoll';
 import { CellRef, lanePoint, nextRoadCell } from '../world/RoadGraph';
 
 const WALK_DIR = new THREE.Vector3();
@@ -10,6 +12,7 @@ export class Pedestrian implements Entity {
   dead = false;
   /** Time since death, for despawn. */
   deadFor = 0;
+  private ragdoll: Ragdoll | null = null;
   private from: CellRef;
   private to: CellRef;
   private waypoint = { x: 0, z: 0 };
@@ -19,7 +22,8 @@ export class Pedestrian implements Entity {
 
   constructor(
     private game: Game,
-    model: string,
+    outfit: Outfit,
+    heightScale: number,
     from: CellRef,
     to: CellRef
   ) {
@@ -29,15 +33,17 @@ export class Pedestrian implements Entity {
     this.waypoint = lanePoint(from, to, 0.4 + this.jitter);
     this.character = new Character(
       game,
-      model,
+      outfit,
       this.waypoint.x + (Math.random() - 0.5) * 2,
-      this.waypoint.z + (Math.random() - 0.5) * 2
+      this.waypoint.z + (Math.random() - 0.5) * 2,
+      heightScale
     );
   }
 
   update(dt: number): void {
     if (this.dead) {
       this.deadFor += dt;
+      this.ragdoll?.update();
       return;
     }
     const pos = this.character.position();
@@ -75,23 +81,21 @@ export class Pedestrian implements Entity {
     this.character.update(dt);
   }
 
-  /** Run over: flop the model and stop simulating. */
-  die(): void {
+  /** Run over: hand the body to physics with the impact velocity. */
+  die(impact: THREE.Vector3): void {
     if (this.dead) return;
     this.dead = true;
+    // The ragdoll steals the rig's meshes before the character is disabled.
+    this.ragdoll = new Ragdoll(this.game, this.character.rig, impact);
     this.character.setEnabled(false);
-    // Leave the body visible, lying on the ground.
-    this.character.root.visible = true;
-    const pos = this.character.position();
-    this.character.root.position.set(pos.x, 0.35, pos.z);
-    this.character.root.rotation.x = -Math.PI / 2;
   }
 
   position(): THREE.Vector3 {
-    return this.character.position();
+    return this.ragdoll ? this.ragdoll.position() : this.character.position();
   }
 
   dispose(): void {
+    this.ragdoll?.dispose();
     this.character.dispose();
   }
 }

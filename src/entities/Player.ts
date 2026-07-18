@@ -3,10 +3,26 @@ import type { Entity, Game } from '../core/Game';
 import type { PlayerInput } from '../core/Input';
 import type { CameraTarget } from '../render/Viewports';
 import { Character } from './Character';
+import type { Outfit } from './HumanRig';
 import { Vehicle } from './Vehicle';
 import { Wanted } from '../gameplay/Wanted';
 
 const ENTER_RADIUS = 3.5;
+
+const P1_OUTFIT: Outfit = {
+  skin: 0xe0ac69,
+  hair: 0x241b17,
+  shirt: 0x29c5f6, // cyan jacket
+  pants: 0x2b2d42,
+  shoes: 0xf5f5f5,
+};
+const P2_OUTFIT: Outfit = {
+  skin: 0xc68642,
+  hair: 0x1a1a2e,
+  shirt: 0xff5f9e, // magenta jacket
+  pants: 0x14213d,
+  shoes: 0x22223b,
+};
 
 export class Player implements Entity, CameraTarget {
   readonly character: Character;
@@ -24,12 +40,7 @@ export class Player implements Entity, CameraTarget {
     x: number,
     z: number
   ) {
-    this.character = new Character(
-      game,
-      index === 0 ? 'characters/character-a' : 'characters/character-b',
-      x,
-      z
-    );
+    this.character = new Character(game, index === 0 ? P1_OUTFIT : P2_OUTFIT, x, z);
     this.wanted = new Wanted(game, this);
   }
 
