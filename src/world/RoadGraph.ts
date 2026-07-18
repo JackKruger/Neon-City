@@ -73,6 +73,7 @@ export function randomRoadCellNear(
   const r = minDist + Math.random() * (maxDist - minDist);
   const raw = worldToCell(x + Math.sin(ang) * r, z + Math.cos(ang) * r);
   const cell = nearestRoadCell(raw.cx, raw.cz);
+  if (!cell) return null; // sample landed in open water / off-map
   const w = cellToWorld(cell.cx, cell.cz);
   const d = Math.hypot(w.x - x, w.z - z);
   return d >= minDist && d <= maxDist ? cell : null;

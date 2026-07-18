@@ -7,6 +7,8 @@ import { Hud } from '../ui/Hud';
 import { AudioSys } from './AudioSys';
 import { CIVILIAN_CARS, GRAVITY, PALETTE, STEP } from './const';
 import { CITY_ASSETS, City } from '../world/City';
+import { getAuthoredMap } from '../world/CityMap';
+import { loadAuthoredMap } from '../world/MapLoad';
 import { Vehicle } from '../entities/Vehicle';
 import { Player } from '../entities/Player';
 import { Npcs, PED_MODELS } from '../world/Npcs';
@@ -48,9 +50,15 @@ export class Game {
   paused = false;
 
   static async create(container: HTMLElement): Promise<Game> {
-    await RAPIER.init();
-    const assets = new Assets();
-    await assets.preload(PRELOAD);
+    const [assets] = await Promise.all([
+      (async () => {
+        const a = new Assets();
+        await a.preload(PRELOAD);
+        return a;
+      })(),
+      RAPIER.init(),
+      loadAuthoredMap('melbourne'),
+    ]);
     return new Game(container, assets);
   }
 
@@ -80,9 +88,10 @@ export class Game {
       if (name.startsWith('roads/road-')) this.assets.tint(name, 0x9fa3b0);
     }
     this.city = new City(this);
-    this.city.prewarm(3, 24);
+    const spawn = getAuthoredMap()?.spawn ?? { x: 3, z: 24 };
+    this.city.prewarm(spawn.x, spawn.z);
 
-    const p1 = new Player(this, 0, 3, 24);
+    const p1 = new Player(this, 0, spawn.x, spawn.z);
     this.players.push(p1);
     this.entities.push(p1);
 
@@ -152,7 +161,8 @@ export class Game {
     const params = new URLSearchParams(location.search);
     if (params.has('nofog')) this.scene.fog = null;
     if (params.has('testcar')) {
-      this.addVehicle(new Vehicle(this, 'cars/taxi', 3, 36, 0));
+      const s = getAuthoredMap()?.spawn ?? { x: 3, z: 24 };
+      this.addVehicle(new Vehicle(this, 'cars/taxi', s.x, s.z + 12, 0));
     }
     if (params.has('p2')) this.joinPlayer2();
     if (params.has('pos')) {

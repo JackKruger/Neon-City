@@ -95,6 +95,11 @@ export class City {
     pavement: new THREE.MeshStandardMaterial({ color: PALETTE.pavement }),
     grass: new THREE.MeshStandardMaterial({ color: PALETTE.grass }),
     sand: new THREE.MeshStandardMaterial({ color: PALETTE.sand }),
+    water: new THREE.MeshStandardMaterial({
+      color: PALETTE.water,
+      roughness: 0.15,
+      metalness: 0.1,
+    }),
   };
 
   constructor(private game: Game) {
@@ -207,6 +212,9 @@ export class City {
             break;
           case '.':
             this.groundPlane(x, z, 'pavement', buckets);
+            break;
+          case '~':
+            this.water(body, cx, cz, x, z, buckets);
             break;
         }
       }
@@ -351,6 +359,37 @@ export class City {
       RAPIER.ColliderDesc.cuboid(0.25, height / 2, 0.25).setTranslation(x, height / 2, z),
       body
     );
+  }
+
+  /**
+   * Water cell: a glossy plane, plus an invisible wall on any edge shared
+   * with land so cars stay out of the bay. Each boundary edge is owned by
+   * exactly one water cell, so walls are never duplicated across chunks.
+   */
+  private water(body: RAPIER.RigidBody, cx: number, cz: number, x: number, z: number, buckets: Buckets): void {
+    const geo = new THREE.PlaneGeometry(TILE, TILE);
+    geo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2).setPosition(x, 0.015, z));
+    this.bucket(this.groundMats.water, geo, buckets);
+
+    const edges: [number, number][] = [
+      [0, -1],
+      [1, 0],
+      [0, 1],
+      [-1, 0],
+    ];
+    for (const [dx, dz] of edges) {
+      if (cellAt(cx + dx, cz + dz) === '~') continue;
+      const hx = dx === 0 ? TILE / 2 : 0.25;
+      const hz = dz === 0 ? TILE / 2 : 0.25;
+      this.game.world.createCollider(
+        RAPIER.ColliderDesc.cuboid(hx, 2.5, hz).setTranslation(
+          x + (dx * TILE) / 2,
+          2.5,
+          z + (dz * TILE) / 2
+        ),
+        body
+      );
+    }
   }
 
   private groundPlane(x: number, z: number, kind: 'pavement' | 'grass', buckets: Buckets): void {

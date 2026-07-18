@@ -84,7 +84,8 @@ export class Hud {
         <p><b>Gamepad:</b> left stick steer/walk · RT gas · LT brake · A handbrake/sprint · Y enter/exit</p>
         <p><b>P2:</b> press Start on a second gamepad to join split-screen</p>
         <p>Run over pedestrians or ram cars and the police will come for you…</p>
-        <p style="margin-top:1em; opacity:.6">Esc / Start to resume</p>`;
+        <p style="margin-top:1em; opacity:.6">Esc / Start to resume</p>
+        <p style="margin-top:1.5em; opacity:.45; font-size:12px">Map data © OpenStreetMap contributors (ODbL)</p>`;
       this.container.appendChild(el);
       this.pauseEl = el;
     } else if (!paused && this.pauseEl) {

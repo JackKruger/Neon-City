@@ -1,12 +1,19 @@
 # Neon Bay
 
 A browser-based, 3D, Vice-City-flavored open-world sandbox with local
-split-screen co-op. Steal cars, cruise an endless procedural city, dodge
+split-screen co-op. Steal cars, cruise the streets of **Melbourne**, dodge
 the police — all in the browser, no install.
+
+The city is a fixed ~8.6 × 8.6 km map of inner Melbourne — the Hoddle
+Grid, the Yarra, Albert Park, Docklands, St Kilda and Port Phillip Bay —
+imported from OpenStreetMap onto the game's tile grid. You spawn outside
+Flinders Street Station.
 
 Built with **Three.js** (rendering), **Rapier** (physics, WASM) and
 **Vite + TypeScript**. All models are CC0 assets by [Kenney](https://kenney.nl)
-(City Kits, Car Kit, Blocky Characters).
+(City Kits, Car Kit, Blocky Characters). Map data ©
+[OpenStreetMap contributors](https://www.openstreetmap.org/copyright),
+licensed under ODbL.
 
 ## Run it
 
@@ -41,13 +48,30 @@ Production build: `npm run build`, then `npm run preview`.
 ```
 src/
   core/       game loop, input (keyboard + gamepads), asset cache, audio
-  world/      procedural map, chunk streamer (merged static geometry), road graph, NPC manager
+  world/      city map (authored OSM grid or procedural), chunk streamer
+              (merged static geometry), road graph, NPC manager
   entities/   Vehicle (raycast car physics), Character, Player, Pedestrian,
               TrafficCar, PoliceCar
   gameplay/   wanted system
   render/     split-screen viewports + chase cameras
   ui/         DOM HUD (speed, stars, prompts, pause)
+scripts/
+  build-map.mjs  OpenStreetMap → cell-grid importer (writes public/maps/)
 ```
+
+## Rebuilding the map
+
+`public/maps/melbourne.{bin,json,png}` are committed, so this is only
+needed to change the map area or cell rules:
+
+```bash
+node scripts/build-map.mjs          # uses cached Overpass data if present
+node scripts/build-map.mjs --fresh  # re-download from Overpass
+```
+
+The `.png` is a preview of the generated grid (roads, water, parks,
+commercial/suburban lots); tweak the `MAP` constants at the top of the
+script to move the bounding box or spawn point.
 
 Split-screen renders the one shared scene twice per frame with scissored
 viewports; physics steps at a fixed 60 Hz. Audio is fully procedural
