@@ -1,6 +1,8 @@
+import * as THREE from 'three';
 import type { Game } from '../core/Game';
 import { CIVILIAN_CARS } from '../core/const';
 import { Pedestrian } from '../entities/Pedestrian';
+import type { Outfit } from '../entities/HumanRig';
 import { TrafficCar } from '../entities/TrafficCar';
 import { CellRef, randomRoadCellNear, roadNeighbors } from './RoadGraph';
 import { cellToWorld } from './CityMap';
@@ -11,9 +13,28 @@ const SPAWN_MIN = 45;
 const SPAWN_MAX = 100;
 const DESPAWN = 140;
 
-export const PED_MODELS = 'cdefghijklmnopqr'
-  .split('')
-  .map((c) => `characters/character-${c}`);
+const SKINS = [0xffdbc4, 0xf1c27d, 0xe0ac69, 0xc68642, 0x8d5524, 0x5c3a21];
+const HAIRS = [0x241b17, 0x4a2f23, 0x8c5a3c, 0xb5651d, 0xd8c6a0, 0x707580, 0x1a1a2e];
+const SHIRTS = [
+  0x29c5f6, 0xff5f9e, 0xffd166, 0x9b5de5, 0x00f5d4, 0xf15bb5, 0xf5f5f5, 0x2b2d42, 0xef476f,
+  0x06d6a0, 0xff9f1c,
+];
+const PANTS = [0x2b2d42, 0x3a5068, 0x555b6e, 0x1d3557, 0x6d597a, 0x8a5a44, 0x14213d, 0x444444];
+const SHOES = [0xf5f5f5, 0x22223b, 0x9a8c98, 0xe07a5f, 0x333333];
+
+function pick(colors: number[]): number {
+  return colors[Math.floor(Math.random() * colors.length)];
+}
+
+function randomOutfit(): Outfit {
+  return {
+    skin: pick(SKINS),
+    hair: pick(HAIRS),
+    shirt: pick(SHIRTS),
+    pants: pick(PANTS),
+    shoes: pick(SHOES),
+  };
+}
 
 /** Keeps a budget of pedestrians and traffic alive in a ring around players. */
 export class Npcs {
@@ -66,8 +87,8 @@ export class Npcs {
   private spawnPed(): void {
     const edge = this.randomSpawnEdge();
     if (!edge) return;
-    const model = PED_MODELS[Math.floor(Math.random() * PED_MODELS.length)];
-    this.peds.push(new Pedestrian(this.game, model, edge.from, edge.to));
+    const heightScale = 0.92 + Math.random() * 0.13;
+    this.peds.push(new Pedestrian(this.game, randomOutfit(), heightScale, edge.from, edge.to));
   }
 
   private spawnTraffic(): void {
@@ -112,7 +133,8 @@ export class Npcs {
         const dx = pos.x - t.x;
         const dz = pos.z - t.z;
         if (dx * dx + dz * dz < 2.6) {
-          p.die();
+          const vel = v.body.linvel();
+          p.die(new THREE.Vector3(vel.x, vel.y, vel.z));
           this.game.onPedestrianKilled(v);
         }
       }

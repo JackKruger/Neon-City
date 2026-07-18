@@ -1,36 +1,40 @@
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { Entity, Game } from '../core/Game';
+import { HumanRig, Outfit } from './HumanRig';
 
 const HEIGHT = 1.8;
 const RADIUS = 0.35;
 const WALK_SPEED = 3.2;
 const RUN_SPEED = 6.5;
 
-/** Kinematic capsule character with a Kenney blocky model. */
+/** Kinematic capsule character driving a procedural articulated human. */
 export class Character implements Entity {
   readonly body: RAPIER.RigidBody;
   readonly collider: RAPIER.Collider;
   readonly root = new THREE.Group();
+  readonly rig: HumanRig;
   private controller: RAPIER.KinematicCharacterController;
   private vy = 0;
   private facing = 0;
   private moveDir = new THREE.Vector3();
   private moveSpeed = 0;
   private walkPhase = 0;
-  private model: THREE.Group;
+  private stride = 0; // smoothed 0..1 idle->stride blend
+  private runBlend = 0; // smoothed 0..1 walk->run gait
+  private time = Math.random() * 10; // desync idle breathing between people
   enabled = true;
 
   constructor(
     private game: Game,
-    modelName: string,
+    outfit: Outfit,
     x: number,
-    z: number
+    z: number,
+    heightScale = 1
   ) {
-    const { object: model } = game.assets.getFitted(modelName, { height: HEIGHT });
-    this.model = model;
-    this.root.add(model);
-    model.position.y = -HEIGHT / 2; // root sits at capsule center
+    this.rig = new HumanRig(outfit, heightScale);
+    this.root.add(this.rig.root);
+    this.rig.root.position.y = -HEIGHT / 2; // root sits at capsule center
     game.scene.add(this.root);
 
     this.body = game.world.createRigidBody(
@@ -78,6 +82,7 @@ export class Character implements Entity {
 
   update(dt: number): void {
     if (!this.enabled) return;
+    this.time += dt;
 
     this.vy = Math.max(this.vy - 20 * dt, -30);
     const desired = new RAPIER.Vector3(
@@ -99,8 +104,17 @@ export class Character implements Entity {
       while (delta > Math.PI) delta -= Math.PI * 2;
       while (delta < -Math.PI) delta += Math.PI * 2;
       this.facing += delta * Math.min(1, 12 * dt);
-      this.walkPhase += dt * this.moveSpeed * 2.2;
+      // Cadence rises with speed; a full cycle is two steps.
+      this.walkPhase += dt * (3.2 + this.moveSpeed * 1.5);
     }
+    // Ease gait blends so stops/starts and sprint changes don't pop.
+    const strideTarget = this.moveSpeed > 0 ? 1 : 0;
+    this.stride += (strideTarget - this.stride) * Math.min(1, 10 * dt);
+    const runTarget = Math.min(
+      1,
+      Math.max(0, (this.moveSpeed - WALK_SPEED) / (RUN_SPEED - WALK_SPEED))
+    );
+    this.runBlend += (runTarget - this.runBlend) * Math.min(1, 6 * dt);
     this.syncVisuals();
   }
 
@@ -108,10 +122,7 @@ export class Character implements Entity {
     const t = this.body.translation();
     this.root.position.set(t.x, t.y, t.z);
     this.root.rotation.y = this.facing;
-    // Cheap walk bob in lieu of skeletal animation.
-    const bob = this.moveSpeed > 0 ? Math.abs(Math.sin(this.walkPhase)) * 0.06 : 0;
-    this.model.position.y = -HEIGHT / 2 + bob;
-    this.model.rotation.x = this.moveSpeed > 0 ? Math.sin(this.walkPhase) * 0.045 : 0;
+    this.rig.setLocomotion(this.walkPhase, this.stride, this.runBlend, this.time);
   }
 
   dispose(): void {

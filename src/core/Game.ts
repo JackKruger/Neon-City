@@ -11,21 +11,14 @@ import { getAuthoredMap } from '../world/CityMap';
 import { loadAuthoredMap } from '../world/MapLoad';
 import { Vehicle } from '../entities/Vehicle';
 import { Player } from '../entities/Player';
-import { Npcs, PED_MODELS } from '../world/Npcs';
+import { Npcs } from '../world/Npcs';
 import type { TrafficCar } from '../entities/TrafficCar';
 
 export interface Entity {
   update(dt: number): void;
 }
 
-const PRELOAD = [
-  ...CIVILIAN_CARS,
-  'cars/police',
-  'characters/character-a',
-  'characters/character-b',
-  ...PED_MODELS,
-  ...CITY_ASSETS,
-];
+const PRELOAD = [...CIVILIAN_CARS, 'cars/police', ...CITY_ASSETS];
 
 export class Game {
   readonly scene = new THREE.Scene();
