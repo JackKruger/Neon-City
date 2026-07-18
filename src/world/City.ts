@@ -9,13 +9,44 @@ import { cellAt, cellHash, cellToWorld, roadMask, worldToCell } from './CityMap'
 const COMMERCIAL = 'abcdefghijklmn'.split('').map((c) => `commercial/building-${c}`);
 const SKYSCRAPERS = 'abcde'.split('').map((c) => `commercial/building-skyscraper-${c}`);
 const SUBURBAN = 'abcdefghijklmnopqrstu'.split('').map((c) => `suburban/building-type-${c}`);
+const INDUSTRIAL = 'abcdefghijklmnopqrst'.split('').map((c) => `industrial/building-${c}`);
+const SMOKESTACK = 'industrial/chimney-medium';
+const TANK = 'industrial/detail-tank';
 const ROADS = ['road-straight', 'road-bend', 'road-intersection', 'road-crossroad', 'road-end', 'road-square'].map(
   (n) => `roads/${n}`
 );
 const TREES = ['suburban/tree-large', 'suburban/tree-small'];
 const STREETLIGHT = 'roads/light-curved';
+const FENCE = 'suburban/fence-3x3';
+const DRIVEWAY = 'suburban/driveway-long';
+const PATHS = ['suburban/path-long', 'suburban/path-stones-long', 'suburban/path-stones-messy'];
+const PLANTER = 'suburban/planter';
 
-export const CITY_ASSETS = [...COMMERCIAL, ...SKYSCRAPERS, ...SUBURBAN, ...ROADS, ...TREES, STREETLIGHT];
+export const CITY_ASSETS = [
+  ...COMMERCIAL,
+  ...SKYSCRAPERS,
+  ...SUBURBAN,
+  ...INDUSTRIAL,
+  SMOKESTACK,
+  TANK,
+  ...ROADS,
+  ...TREES,
+  STREETLIGHT,
+  FENCE,
+  DRIVEWAY,
+  ...PATHS,
+  PLANTER,
+];
+
+/**
+ * Commercial cells inside these coarse districts build warehouses and
+ * factories instead of shops and towers. Purely a function of cell coords,
+ * so it works identically for authored and procedural maps.
+ */
+const DISTRICT_CELLS = 12; // 144m
+function isIndustrialDistrict(cx: number, cz: number): boolean {
+  return cellHash(Math.floor(cx / DISTRICT_CELLS), Math.floor(cz / DISTRICT_CELLS), 60) < 0.24;
+}
 
 /**
  * Road tile orientation. Base connection masks (at rotY=0) were verified
@@ -288,9 +319,17 @@ export class City {
 
   private building(body: RAPIER.RigidBody, cx: number, cz: number, x: number, z: number, buckets: Buckets): void {
     const cell = cellAt(cx, cz);
+    const industrial = cell === 'C' && isIndustrialDistrict(cx, cz);
+    // Suburban yard variant: front path, driveway, fenced garden, or bare lot.
+    const yard = cell === 'S' ? cellHash(cx, cz, 50) : 1;
+    const fenced = yard >= 0.55 && yard < 0.75;
+
     let model: string;
     let lotFrac: number;
-    if (cell === 'C') {
+    if (industrial) {
+      model = INDUSTRIAL[Math.floor(cellHash(cx, cz, 61) * INDUSTRIAL.length)];
+      lotFrac = 0.92;
+    } else if (cell === 'C') {
       const skyscraper = cellHash(cx, cz, 1) < 0.3;
       model = skyscraper
         ? SKYSCRAPERS[Math.floor(cellHash(cx, cz, 2) * SKYSCRAPERS.length)]
@@ -298,7 +337,8 @@ export class City {
       lotFrac = 0.95;
     } else {
       model = SUBURBAN[Math.floor(cellHash(cx, cz, 4) * SUBURBAN.length)];
-      lotFrac = 0.72;
+      // Fenced lots get a smaller house so the garden reads as a garden.
+      lotFrac = fenced ? 0.58 : 0.72;
     }
 
     const size = this.game.assets.size(model);
@@ -314,7 +354,17 @@ export class City {
     else if (mask & 2) rot = Math.PI / 2;
     else if (mask & 1) rot = Math.PI;
     else if (mask & 8) rot = -Math.PI / 2;
-    object.position.set(x, 0, z);
+    const fdx = Math.sin(rot); // unit vector from the lot center toward the road
+    const fdz = Math.cos(rot);
+
+    // Houses sit back from the street so the yard props have a front strip;
+    // commercial and industrial fill their lot to the sidewalk.
+    const frontHalf = (size.z * scale) / 2;
+    const sideHalf = (size.x * scale) / 2;
+    const setback = cell === 'S' ? Math.max(0, Math.min(TILE * 0.08, TILE * 0.46 - frontHalf)) : 0;
+    const bx = x - fdx * setback;
+    const bz = z - fdz * setback;
+    object.position.set(bx, 0, bz);
     object.rotation.y = rot;
     this.bake(object, model, buckets);
 
@@ -323,9 +373,108 @@ export class City {
     const hz = ((quarterTurns ? size.x : size.z) * scale) / 2;
     const hy = (size.y * scale) / 2;
     this.game.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(hx, hy, hz).setTranslation(x, hy, z),
+      RAPIER.ColliderDesc.cuboid(hx, hy, hz).setTranslation(bx, hy, bz),
       body
     );
+
+    if (cell === 'S') this.yardProps(cx, cz, x, z, rot, mask, yard, scale, frontHalf, sideHalf, setback, buckets);
+    if (industrial) this.industrialProps(body, cx, cz, x, z, rot, frontHalf, sideHalf, buckets);
+  }
+
+  /**
+   * Dress a suburban lot according to its yard variant: a stone path with a
+   * planter by the door, a driveway, or a fenced-in garden. Props are visual
+   * only (no colliders) — cars can cut across a lawn without snagging.
+   */
+  private yardProps(
+    cx: number,
+    cz: number,
+    x: number,
+    z: number,
+    rot: number,
+    mask: number,
+    yard: number,
+    houseScale: number,
+    frontHalf: number,
+    sideHalf: number,
+    setback: number,
+    buckets: Buckets
+  ): void {
+    const fdx = Math.sin(rot);
+    const fdz = Math.cos(rot);
+    const sdx = fdz; // lateral unit vector across the lot front
+    const sdz = -fdx;
+    // Free strip between the house front and the lot's street edge.
+    const gap = TILE / 2 - frontHalf + setback;
+
+    if (yard < 0.55 && mask !== 0 && gap > 1.5) {
+      const walk = yard < 0.3;
+      const model = walk ? PATHS[Math.floor(cellHash(cx, cz, 51) * PATHS.length)] : DRIVEWAY;
+      const len = gap * (walk ? 0.9 : 0.98);
+      const side = cellHash(cx, cz, 53) < 0.5 ? 1 : -1;
+      // Paths run up the middle to the door; driveways offset toward a garage.
+      const off = walk ? 0 : side * sideHalf * 0.45;
+      const d = TILE / 2 - len / 2; // anchored at the sidewalk edge
+      const { object } = this.game.assets.getFitted(model, { length: len });
+      object.position.set(x + fdx * d + sdx * off, 0.012, z + fdz * d + sdz * off);
+      object.rotation.y = rot;
+      this.bake(object, model, buckets);
+      if (walk) {
+        const planter = this.game.assets.get(PLANTER);
+        planter.scale.setScalar(houseScale);
+        planter.position.set(
+          x + fdx * (TILE / 2 - gap + 0.4) + sdx * side * sideHalf * 0.6,
+          0,
+          z + fdz * (TILE / 2 - gap + 0.4) + sdz * side * sideHalf * 0.6
+        );
+        planter.rotation.y = rot;
+        this.bake(planter, PLANTER, buckets);
+      }
+    } else if (yard >= 0.55 && yard < 0.75) {
+      const { object } = this.game.assets.getFitted(FENCE, { width: TILE * 0.88 });
+      object.position.set(x, 0, z);
+      object.rotation.y = rot;
+      this.bake(object, FENCE, buckets);
+    }
+  }
+
+  /** A smokestack or storage tank behind shallow factories, when it fits. */
+  private industrialProps(
+    body: RAPIER.RigidBody,
+    cx: number,
+    cz: number,
+    x: number,
+    z: number,
+    rot: number,
+    frontHalf: number,
+    sideHalf: number,
+    buckets: Buckets
+  ): void {
+    const r = cellHash(cx, cz, 62);
+    if (r >= 0.4) return;
+    const d = frontHalf + 1.6; // rear clearance for the prop's own footprint
+    if (d > TILE * 0.42) return;
+    const fdx = Math.sin(rot);
+    const fdz = Math.cos(rot);
+    const side = cellHash(cx, cz, 63) < 0.5 ? 1 : -1;
+    const off = side * Math.min(sideHalf * 0.55, TILE * 0.3);
+    const px = x - fdx * d + fdz * off;
+    const pz = z - fdz * d - fdx * off;
+    if (r < 0.2) {
+      const height = 8 + cellHash(cx, cz, 64) * 4;
+      const { object } = this.game.assets.getFitted(SMOKESTACK, { height });
+      object.position.set(px, 0, pz);
+      this.bake(object, SMOKESTACK, buckets);
+      this.game.world.createCollider(
+        RAPIER.ColliderDesc.cuboid(1.1, height / 2, 1.1).setTranslation(px, height / 2, pz),
+        body
+      );
+    } else {
+      const { object } = this.game.assets.getFitted(TANK, { height: 2.6 });
+      object.position.set(px, 0, pz);
+      object.rotation.y = rot;
+      this.bake(object, TANK, buckets);
+    }
   }
 
   /** A curved streetlight on alternating sides of straight road segments. */
