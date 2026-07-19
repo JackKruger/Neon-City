@@ -24,6 +24,10 @@ npm run dev        # http://localhost:5173
 
 Production build: `npm run build`, then `npm run preview`.
 
+## Roadmap
+
+Current features and fixes are tracked in [TODO.md](TODO.md).
+
 ## How to play
 
 |                | Player 1 (keyboard)        | Gamepad (either player)     |
