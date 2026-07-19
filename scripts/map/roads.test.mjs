@@ -41,6 +41,10 @@ test('tram centrelines generate standard-gauge rails and a tram graph', () => {
   }] });
   assert.equal(features.filter((item) => item.role?.startsWith('tram-rail')).length, 2);
   assert.ok(features.some((item) => item.kind === 'nav-path' && item.mode === 'tram'));
+  const bed = features.find((item) => item.role === 'tram-bed');
+  const rails = features.filter((item) => item.role?.startsWith('tram-rail'));
+  assert.ok(bed.elevation >= 0.09);
+  assert.ok(rails.every((item) => item.elevation >= bed.elevation + 0.03));
 });
 
 test('road information preserves names and speed limits in spatial chunks', () => {

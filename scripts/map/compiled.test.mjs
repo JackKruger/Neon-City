@@ -92,6 +92,49 @@ test('authoritative building source coverage suppresses generated fallback build
   assert.ok(!withLegacyFootprint.recipe.generatedSources.some((source) => source.startsWith('generated:building:')));
 });
 
+test('compiled road polygons are subdivided and stay clear of curved terrain', () => {
+  const grid = new Uint8Array(MAP_SIZE ** 2);
+  const heights = new Int16Array((MAP_SIZE + 1) ** 2);
+  for (let z = 0; z <= MAP_SIZE; z++) {
+    for (let x = 0; x <= MAP_SIZE; x++) heights[x + z * (MAP_SIZE + 1)] = (x + z) % 3;
+  }
+  const context = createCompilerContext({
+    meta: {}, grid, heights,
+    coverage: new Uint8Array(MAP_SIZE ** 2),
+    transport: new Uint8Array(MAP_SIZE ** 2),
+    speed: new Uint8Array(MAP_SIZE ** 2),
+    objectIndex: { chunks: { '0,0': [{
+      kind: 'road-surface', sourceId: 'road:test', role: 'carriageway', surface: 'asphalt',
+      elevation: 0.06, x: 45, z: 45, outline: [[-45, -5], [45, -5], [45, 5], [-45, 5]],
+    }] } },
+  });
+  const compiled = compileChunkRecipe(context, 0, 0);
+  const asphalt = compiled.primitives.find((primitive) => primitive.material === 'asphalt');
+  assert.ok(asphalt.positions.length / 3 > 6, 'long road triangles were not subdivided');
+  for (let i = 0; i < asphalt.positions.length; i += 3) {
+    const x = asphalt.positions[i];
+    const y = asphalt.positions[i + 1];
+    const z = asphalt.positions[i + 2];
+    assert.ok(y >= context.heightAt(x, z) + 0.059, `road vertex has insufficient clearance at ${x},${z}`);
+  }
+  for (let i = 0; i < asphalt.positions.length; i += 9) {
+    const vertices = [0, 3, 6].map((offset) => ({
+      x: asphalt.positions[i + offset], y: asphalt.positions[i + offset + 1], z: asphalt.positions[i + offset + 2],
+    }));
+    const samples = [
+      vertices.reduce((sum, vertex) => ({ x: sum.x + vertex.x / 3, y: sum.y + vertex.y / 3, z: sum.z + vertex.z / 3 }), { x: 0, y: 0, z: 0 }),
+      ...[[0, 1], [1, 2], [2, 0]].map(([a, b]) => ({
+        x: (vertices[a].x + vertices[b].x) / 2,
+        y: (vertices[a].y + vertices[b].y) / 2,
+        z: (vertices[a].z + vertices[b].z) / 2,
+      })),
+    ];
+    for (const sample of samples) {
+      assert.ok(sample.y > context.heightAt(sample.x, sample.z), `terrain rises through road triangle at ${sample.x},${sample.z}`);
+    }
+  }
+});
+
 test('committed spawn compilation has valid hashes, GLBs, containers, and navigation', () => {
   const root = join(import.meta.dirname, '..', '..', 'public', 'maps');
   const result = validateCompiledMap(root);

@@ -2,6 +2,10 @@ import { CHUNK_TILES, TILE, chunkKeyForWorld, inMap, toWorld } from './geo.mjs';
 
 const MAX_PATH_LENGTH = 90;
 const MAX_SEGMENT_LENGTH = 30;
+const ROAD_CLEARANCE = 0.06;
+const MARKING_CLEARANCE = 0.075;
+const TRAM_BED_CLEARANCE = 0.1;
+const TRAM_RAIL_CLEARANCE = 0.14;
 const DEFAULT_WIDTHS = {
   motorway: 18,
   trunk: 16,
@@ -265,7 +269,7 @@ export function roadSurfacesFromOverpass(data) {
         kind: 'road-surface', sourceId: `${platform ? 'platform' : 'street-area'}:${element.id ?? 'anonymous'}`,
         role: platform ? 'tram-platform' : 'street-area',
         surface: platform || highway === 'pedestrian' ? 'pavement' : 'asphalt',
-        elevation: platform ? 0.18 : 0.027, x: rounded(center.x), z: rounded(center.z),
+        elevation: platform ? 0.18 : ROAD_CLEARANCE, x: rounded(center.x), z: rounded(center.z),
         outline: ring.map((point) => [rounded(point.x - center.x), rounded(point.z - center.z)]),
       });
       continue;
@@ -275,7 +279,7 @@ export function roadSurfacesFromOverpass(data) {
     let part = 0;
     pathParts(points, width + 12, (path) => {
       const partId = part++;
-      const addSurface = (role, surface, stripPoints, stripWidth, elevation = 0.025) => {
+      const addSurface = (role, surface, stripPoints, stripWidth, elevation = ROAD_CLEARANCE) => {
         const polygon = roadPath(stripPoints, stripWidth);
         if (polygon) features.push({
           kind: 'road-surface', sourceId: `${source}:${partId}:${role}`, role, surface, elevation, ...polygon,
@@ -289,9 +293,9 @@ export function roadSurfacesFromOverpass(data) {
 
       if (railway === 'tram') {
         const halfGauge = STREET_DEFAULTS.tramGauge / 2;
-        addSurface('tram-bed', tags.embedded === 'yes' ? 'asphalt' : 'concrete', path, 2.8, 0.028);
-        addSurface('tram-rail-left', 'rail', offsetPath(path, halfGauge), 0.075, 0.055);
-        addSurface('tram-rail-right', 'rail', offsetPath(path, -halfGauge), 0.075, 0.055);
+        addSurface('tram-bed', tags.embedded === 'yes' ? 'asphalt' : 'concrete', path, 2.8, TRAM_BED_CLEARANCE);
+        addSurface('tram-rail-left', 'rail', offsetPath(path, halfGauge), 0.075, TRAM_RAIL_CLEARANCE);
+        addSurface('tram-rail-right', 'rail', offsetPath(path, -halfGauge), 0.075, TRAM_RAIL_CLEARANCE);
         addNav('tram', path, speedKmh(tags, 'tram'));
         return;
       }
@@ -329,17 +333,17 @@ export function roadSurfacesFromOverpass(data) {
         addNav('vehicle', offsetPath([...path].reverse(), offset), speed);
       }
 
-      if (counts.forward > 0 && counts.backward > 0) addSurface('centre-line', 'marking', path, 0.11, 0.04);
+      if (counts.forward > 0 && counts.backward > 0) addSurface('centre-line', 'marking', path, 0.11, MARKING_CLEARANCE);
       for (let lane = 1; lane < counts.forward; lane++) {
-        addSurface(`lane-line-forward-${lane}`, 'marking', offsetPath(path, -lane * laneWidth), 0.09, 0.04);
+        addSurface(`lane-line-forward-${lane}`, 'marking', offsetPath(path, -lane * laneWidth), 0.09, MARKING_CLEARANCE);
       }
       for (let lane = 1; lane < counts.backward; lane++) {
-        addSurface(`lane-line-backward-${lane}`, 'marking', offsetPath(path, lane * laneWidth), 0.09, 0.04);
+        addSurface(`lane-line-backward-${lane}`, 'marking', offsetPath(path, lane * laneWidth), 0.09, MARKING_CLEARANCE);
       }
       if (counts.backward === 0 && counts.forward > 1) {
         for (let lane = 1; lane < counts.forward; lane++) {
           const offset = (counts.forward / 2 - lane) * laneWidth;
-          addSurface(`lane-line-oneway-${lane}`, 'marking', offsetPath(path, offset), 0.09, 0.04);
+          addSurface(`lane-line-oneway-${lane}`, 'marking', offsetPath(path, offset), 0.09, MARKING_CLEARANCE);
         }
       }
       const medianWidth = metres(tags['median:width']) ?? (/yes|median|island/.test(`${tags.median ?? ''} ${tags.divider ?? ''}`) ? 1.5 : null);
@@ -347,12 +351,12 @@ export function roadSurfacesFromOverpass(data) {
       for (const [side, sign] of [['left', 1], ['right', -1]]) {
         const parking = `${tags[`parking:${side}`] ?? ''} ${tags[`parking:lane:${side}`] ?? ''}`;
         if (/lane|parallel|diagonal|perpendicular/.test(parking)) {
-          addSurface(`parking-lane-${side}`, 'asphalt', offsetPath(path, sign * (width / 2 - STREET_DEFAULTS.parkingLane / 2)), STREET_DEFAULTS.parkingLane, 0.032);
-          addSurface(`parking-line-${side}`, 'marking', offsetPath(path, sign * (width / 2 - STREET_DEFAULTS.parkingLane)), 0.09, 0.04);
+          addSurface(`parking-lane-${side}`, 'asphalt', offsetPath(path, sign * (width / 2 - STREET_DEFAULTS.parkingLane / 2)), STREET_DEFAULTS.parkingLane, ROAD_CLEARANCE + 0.005);
+          addSurface(`parking-line-${side}`, 'marking', offsetPath(path, sign * (width / 2 - STREET_DEFAULTS.parkingLane)), 0.09, MARKING_CLEARANCE);
         }
         const cycle = `${tags[`cycleway:${side}`] ?? ''} ${tags.cycleway ?? ''}`;
         if (/lane|track|shared_lane/.test(cycle)) {
-          addSurface(`cycle-lane-${side}`, 'cycleway', offsetPath(path, sign * (width / 2 - STREET_DEFAULTS.cycleLane / 2)), STREET_DEFAULTS.cycleLane, 0.035);
+          addSurface(`cycle-lane-${side}`, 'cycleway', offsetPath(path, sign * (width / 2 - STREET_DEFAULTS.cycleLane / 2)), STREET_DEFAULTS.cycleLane, ROAD_CLEARANCE + 0.01);
         }
       }
       for (const side of sidewalkSides(tags)) {

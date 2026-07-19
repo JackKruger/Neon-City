@@ -311,9 +311,13 @@ export function heightAt(x: number, z: number): number {
   const iz = Math.floor(fz);
   const tx = fx - ix;
   const tz = fz - iz;
-  const north = lerp(cornerHeight(ix, iz), cornerHeight(ix + 1, iz), tx);
-  const south = lerp(cornerHeight(ix, iz + 1), cornerHeight(ix + 1, iz + 1), tx);
-  return lerp(north, south, tz);
+  const a = cornerHeight(ix, iz);
+  const b = cornerHeight(ix + 1, iz);
+  const c = cornerHeight(ix, iz + 1);
+  const d = cornerHeight(ix + 1, iz + 1);
+  return tz >= tx
+    ? a + tx * (d - c) + tz * (c - a)
+    : a + tx * (b - a) + tz * (d - b);
 }
 
 export function cellCornerHeights(cx: number, cz: number): [number, number, number, number] {
