@@ -4,10 +4,12 @@ import { Assets } from './Assets';
 import { Input } from './Input';
 import { Viewports } from '../render/Viewports';
 import { Hud } from '../ui/Hud';
+import { buildMapCanvas } from '../ui/Minimap';
+import { MapOverlay } from '../ui/MapOverlay';
 import { AudioSys } from './AudioSys';
 import { CIVILIAN_CARS, GRAVITY, PALETTE, STEP } from './const';
 import { CITY_ASSETS, City } from '../world/City';
-import { getAuthoredMap } from '../world/CityMap';
+import { cellAt, getAuthoredMap, suburbNameAt, worldToCell } from '../world/CityMap';
 import { loadAuthoredMap } from '../world/MapLoad';
 import { Vehicle } from '../entities/Vehicle';
 import { Player } from '../entities/Player';
@@ -29,11 +31,13 @@ export class Game {
   readonly input = new Input();
   readonly viewports: Viewports;
   readonly hud: Hud;
+  readonly mapOverlay: MapOverlay;
   readonly entities: Entity[] = [];
 
   private clock = new THREE.Clock();
   private accumulator = 0;
   private debugCam = false;
+  private suburbCache: { cx: number; cz: number; name: string | null }[] = [];
 
   readonly vehicles: Vehicle[] = [];
   readonly players: Player[] = [];
@@ -73,7 +77,12 @@ export class Game {
     this.viewports = new Viewports(this.renderer);
     this.viewports.setPlayerCount(1);
     this.hud = new Hud(container);
+    const map = getAuthoredMap();
+    if (!map) throw new Error('authored map was not loaded before game construction');
+    const mapCanvas = buildMapCanvas(map);
+    this.hud.setMapCanvas(mapCanvas, map);
     this.hud.setPlayerCount(1);
+    this.mapOverlay = new MapOverlay(container, map, mapCanvas);
 
     this.setupEnvironment();
     // The Kenney asphalt is nearly sand-colored; darken it well below the
@@ -189,14 +198,27 @@ export class Game {
   private frame(): void {
     const dt = Math.min(this.clock.getDelta(), 0.1);
     this.input.poll();
+    this.mapOverlay.setPlayers(
+      this.playerPositions().map((pos, i) => ({ ...pos, heading: this.players[i].getHeading() }))
+    );
     if (this.input.p2JoinRequested) {
       this.input.p2JoinRequested = false;
       this.joinPlayer2();
     }
-    if (this.input.consumePause()) {
-      this.paused = !this.paused;
-      this.hud.setPaused(this.paused);
-      if (!this.paused) this.input.clearInteract();
+    const pausePressed = this.input.consumePause();
+    const mapPressed = this.input.consumeMapToggle();
+    if (pausePressed) {
+      if (this.mapOverlay.isOpen) {
+        this.mapOverlay.close();
+      } else {
+        this.paused = !this.paused;
+        this.hud.setPaused(this.paused);
+        if (!this.paused) this.input.clearInteract();
+      }
+    }
+    if (mapPressed && !pausePressed && !this.paused) {
+      if (this.mapOverlay.isOpen) this.mapOverlay.close();
+      else this.mapOverlay.open();
     }
     if (!this.paused) {
       this.accumulator += dt;
@@ -205,19 +227,49 @@ export class Game {
         this.accumulator -= STEP;
       }
     }
-    this.city.update(this.playerPositions());
+    const positions = this.playerPositions();
+    this.city.update(positions);
     if (this.paused) this.audio.duck();
     else this.updateAudio(dt);
+    this.mapOverlay.setPlayers(
+      positions.map((pos, i) => ({ ...pos, heading: this.players[i].getHeading() }))
+    );
+    const pan = this.input.mapPanAxes();
+    this.mapOverlay.update(dt, pan.x, pan.y);
     for (let i = 0; i < this.players.length; i++) {
       const p = this.players[i];
+      const pos = positions[i];
       if (!this.debugCam) this.viewports.cameras[i]?.update(p, dt);
       this.hud.update(i, {
         speedKmh: p.driving ? p.vehicle!.speedKmh() : undefined,
         prompt: p.prompt ?? undefined,
         stars: p.wanted.stars,
+        pos,
+        heading: p.getHeading(),
+        suburb: this.suburbAt(i, pos.x, pos.z),
+        cops: p.wanted.police.map((cop) => {
+          const t = cop.vehicle.body.translation();
+          return { x: t.x, z: t.z };
+        }),
       });
     }
     this.viewports.render(this.scene);
+  }
+
+  private suburbAt(playerIndex: number, x: number, z: number): string | null {
+    const { cx, cz } = worldToCell(x, z);
+    let cached = this.suburbCache[playerIndex];
+    if (!cached) {
+      cached = { cx: Number.NaN, cz: Number.NaN, name: null };
+      this.suburbCache[playerIndex] = cached;
+    }
+    if (cached.cx === cx && cached.cz === cz) return cached.name;
+    cached.cx = cx;
+    cached.cz = cz;
+    const suburb = suburbNameAt(x, z);
+    if (suburb) cached.name = suburb;
+    else if (cellAt(cx, cz) === '~') cached.name = 'Port Phillip Bay';
+    return cached.name;
   }
 
   private updateAudio(dt: number): void {

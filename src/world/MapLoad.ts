@@ -5,9 +5,10 @@ import { AuthoredMap, setAuthoredMap } from './CityMap';
  * and install it as the world's map source. Call before building any chunks.
  */
 export async function loadAuthoredMap(name: string): Promise<AuthoredMap> {
-  const [metaRes, binRes] = await Promise.all([
+  const [metaRes, binRes, suburbRes] = await Promise.all([
     fetch(`/maps/${name}.json`),
     fetch(`/maps/${name}.bin`),
+    fetch(`/maps/${name}.suburbs.bin`).catch(() => null),
   ]);
   if (!metaRes.ok || !binRes.ok) {
     throw new Error(`failed to load map "${name}": ${metaRes.status}/${binRes.status}`);
@@ -25,6 +26,17 @@ export async function loadAuthoredMap(name: string): Promise<AuthoredMap> {
     spawn: meta.spawn,
     attribution: meta.attribution ?? '',
   };
+  if (Array.isArray(meta.suburbs) && suburbRes?.ok) {
+    const suburbGrid = new Uint8Array(await suburbRes.arrayBuffer());
+    if (suburbGrid.length === meta.width * meta.height) {
+      map.suburbs = meta.suburbs;
+      map.suburbGrid = suburbGrid;
+    } else {
+      console.warn(`[map] ${name}: suburb grid size mismatch; locality labels disabled`);
+    }
+  } else {
+    console.warn(`[map] ${name}: suburb data unavailable; locality labels disabled`);
+  }
   setAuthoredMap(map);
   if (map.attribution) console.info(`[map] ${map.name}: ${map.attribution}`);
   return map;

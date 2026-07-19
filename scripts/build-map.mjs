@@ -17,6 +17,7 @@
  *   --fresh  ignore the cached Overpass response and re-download
  */
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -106,6 +107,8 @@ function overpassQuery() {
   way["landuse"~"${greenLanduse}"](${bb});
   way["landuse"~"${commercial}"](${bb});
   relation["landuse"~"${commercial}"](${bb});
+  relation["boundary"="administrative"]["admin_level"="10"](${bb});
+  relation["place"="suburb"](${bb});
 );
 out geom;`;
 }
@@ -113,12 +116,13 @@ out geom;`;
 /** Fetch via curl (honors the environment's HTTPS proxy), with retries. */
 function fetchOverpass() {
   const cacheDir = join(ROOT, '.map-cache');
-  const cacheFile = join(cacheDir, `${MAP.name}.json`);
+  const query = overpassQuery();
+  const queryHash = createHash('sha1').update(query).digest('hex').slice(0, 8);
+  const cacheFile = join(cacheDir, `${MAP.name}-${queryHash}.json`);
   if (!process.argv.includes('--fresh') && existsSync(cacheFile)) {
     console.log(`using cached Overpass response: ${cacheFile}`);
     return JSON.parse(readFileSync(cacheFile, 'utf8'));
   }
-  const query = overpassQuery();
   let lastErr;
   for (let attempt = 0; attempt < 6; attempt++) {
     const endpoint = ENDPOINTS[attempt % ENDPOINTS.length];
@@ -173,7 +177,7 @@ function markLine(mask, coords) {
 }
 
 /** Even-odd scanline fill of a closed ring (array of {lat,lon}). */
-function fillPolygon(mask, ring) {
+function fillPolygon(mask, ring, value = 1) {
   const pts = ring.map((c) => toWorld(c.lat, c.lon));
   let minZ = Infinity;
   let maxZ = -Infinity;
@@ -197,7 +201,7 @@ function fillPolygon(mask, ring) {
     for (let k = 0; k + 1 < xs.length; k += 2) {
       const gx0 = Math.max(0, Math.round(xs[k] / TILE) + MAP.size / 2);
       const gx1 = Math.min(MAP.size - 1, Math.round(xs[k + 1] / TILE) + MAP.size / 2);
-      for (let gx = gx0; gx <= gx1; gx++) mask[gx + gz * MAP.size] = 1;
+      for (let gx = gx0; gx <= gx1; gx++) mask[gx + gz * MAP.size] = value;
     }
   }
 }
@@ -340,6 +344,26 @@ function main() {
   const parks = new Uint8Array(N);
   const comm = new Uint8Array(N);
 
+  const suburbRelations = data.elements
+    .filter((el) => {
+      const tags = el.tags ?? {};
+      return (
+        el.type === 'relation' &&
+        ((tags.boundary === 'administrative' && tags.admin_level === '10') ||
+          tags.place === 'suburb') &&
+        typeof tags.name === 'string' &&
+        tags.name.trim().length > 0
+      );
+    })
+    .sort((a, b) => a.tags.name.localeCompare(b.tags.name) || a.id - b.id);
+  if (suburbRelations.length > 254) {
+    throw new Error(`map contains ${suburbRelations.length} suburbs; the byte grid supports at most 254`);
+  }
+  const rawSuburbGrid = new Uint8Array(N).fill(255);
+  for (let i = 0; i < suburbRelations.length; i++) {
+    for (const ring of ringsOf(suburbRelations[i])) fillPolygon(rawSuburbGrid, ring, i);
+  }
+
   let counts = { road: 0, water: 0, coast: 0, park: 0, comm: 0 };
   for (const el of data.elements) {
     const tags = el.tags ?? {};
@@ -418,17 +442,52 @@ function main() {
     z: (spawnCell.gz - MAP.size / 2) * TILE,
   };
 
+  // Remove polygons that do not intersect the map and calculate stable label
+  // anchors from the cells that remain after adjacent boundaries are painted.
+  const suburbCounts = new Uint32Array(suburbRelations.length);
+  for (const value of rawSuburbGrid) if (value !== 255) suburbCounts[value]++;
+  const oldToNew = new Uint8Array(suburbRelations.length).fill(255);
+  const keptRelations = [];
+  for (let oldIndex = 0; oldIndex < suburbRelations.length; oldIndex++) {
+    if (suburbCounts[oldIndex] === 0) continue;
+    oldToNew[oldIndex] = keptRelations.length;
+    keptRelations.push(suburbRelations[oldIndex]);
+  }
+  const suburbGrid = new Uint8Array(N).fill(255);
+  const sumsX = new Float64Array(keptRelations.length);
+  const sumsZ = new Float64Array(keptRelations.length);
+  const keptCounts = new Uint32Array(keptRelations.length);
+  for (let i = 0; i < N; i++) {
+    const oldIndex = rawSuburbGrid[i];
+    if (oldIndex === 255) continue;
+    const newIndex = oldToNew[oldIndex];
+    suburbGrid[i] = newIndex;
+    const gx = i % MAP.size;
+    const gz = (i / MAP.size) | 0;
+    sumsX[newIndex] += (gx - MAP.size / 2) * TILE;
+    sumsZ[newIndex] += (gz - MAP.size / 2) * TILE;
+    keptCounts[newIndex]++;
+  }
+  const suburbs = keptRelations.map((relation, i) => ({
+    name: relation.tags.name,
+    x: Math.round(sumsX[i] / keptCounts[i]),
+    z: Math.round(sumsZ[i] / keptCounts[i]),
+  }));
+
   const outDir = join(ROOT, 'public', 'maps');
   mkdirSync(outDir, { recursive: true });
   writeFileSync(join(outDir, `${MAP.name}.bin`), grid);
+  writeFileSync(join(outDir, `${MAP.name}.suburbs.bin`), suburbGrid);
 
   const meta = {
+    version: 2,
     name: MAP.name,
     width: MAP.size,
     height: MAP.size,
     tile: TILE,
     spawn,
     center: MAP.center,
+    suburbs,
     attribution: 'Map data © OpenStreetMap contributors (ODbL) — openstreetmap.org/copyright',
   };
   writeFileSync(join(outDir, `${MAP.name}.json`), JSON.stringify(meta, null, 2) + '\n');
@@ -448,8 +507,10 @@ function main() {
     tally[ch] = ((100 * grid.filter((v) => v === code).length) / N).toFixed(1) + '%';
   }
   console.log('cell mix:', tally);
+  const covered = keptCounts.reduce((sum, count) => sum + count, 0);
+  console.log(`suburbs: ${suburbs.length}, coverage: ${((covered / N) * 100).toFixed(1)}%`);
   console.log(`spawn: world (${spawn.x}, ${spawn.z})`);
-  console.log(`wrote public/maps/${MAP.name}.{bin,json,png}`);
+  console.log(`wrote public/maps/${MAP.name}.{bin,suburbs.bin,json,png}`);
 }
 
 main();

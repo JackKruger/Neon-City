@@ -46,6 +46,7 @@ export class Input {
   /** Edge flags accumulated between fixed steps, keyed by player (0/1). */
   private pendingInteract = [false, false];
   private pendingPause = [false, false];
+  private pendingMap = false;
 
   p1Pad: number | null = null;
   p2Pad: number | null = null;
@@ -85,12 +86,14 @@ export class Input {
         const player = pad.index === this.p1Pad ? 0 : 1;
         if (just(3)) this.pendingInteract[player] = true;
         if (just(9)) this.pendingPause[player] = true;
+        if (just(8)) this.pendingMap = true;
       }
       this.padPrev.set(pad.index, pressed);
     }
 
     if (this.keyEdges.has('KeyE')) this.pendingInteract[0] = true;
     if (this.keyEdges.has('Escape')) this.pendingPause[0] = true;
+    if (this.keyEdges.has('KeyM')) this.pendingMap = true;
     this.keyEdges.clear();
   }
 
@@ -104,6 +107,27 @@ export class Input {
     const hit = this.pendingPause[0] || this.pendingPause[1];
     this.pendingPause[0] = this.pendingPause[1] = false;
     return hit;
+  }
+
+  /** True once if M or Back/Select was pressed since the last call. */
+  consumeMapToggle(): boolean {
+    const hit = this.pendingMap;
+    this.pendingMap = false;
+    return hit;
+  }
+
+  /** Full-map pan axes. Arrow keys and d-pad stay separate from movement controls. */
+  mapPanAxes(): { x: number; y: number } {
+    let x = (this.keys.has('ArrowRight') ? 1 : 0) - (this.keys.has('ArrowLeft') ? 1 : 0);
+    let y = (this.keys.has('ArrowDown') ? 1 : 0) - (this.keys.has('ArrowUp') ? 1 : 0);
+    for (const padIndex of [this.p1Pad, this.p2Pad]) {
+      if (padIndex === null) continue;
+      const pad = navigator.getGamepads()[padIndex];
+      if (!pad) continue;
+      x += (pad.buttons[15]?.pressed ? 1 : 0) - (pad.buttons[14]?.pressed ? 1 : 0);
+      y += (pad.buttons[13]?.pressed ? 1 : 0) - (pad.buttons[12]?.pressed ? 1 : 0);
+    }
+    return { x: Math.max(-1, Math.min(1, x)), y: Math.max(-1, Math.min(1, y)) };
   }
 
   /** Build the input snapshot for a player and clear their edge flags. */

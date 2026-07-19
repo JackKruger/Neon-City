@@ -1,4 +1,5 @@
 {
+  "version": 2,
   "name": "melbourne",
   "width": 720,
   "height": 720,
@@ -11,5 +12,177 @@
     "lat": -37.835,
     "lon": 144.96
   },
+  "suburbs": [
+    {
+      "name": "Abbotsford",
+      "x": 3444,
+      "z": -3415
+    },
+    {
+      "name": "Albert Park",
+      "x": 66,
+      "z": 1124
+    },
+    {
+      "name": "Balaclava",
+      "x": 3069,
+      "z": 3875
+    },
+    {
+      "name": "Burnley",
+      "x": 4209,
+      "z": -559
+    },
+    {
+      "name": "Carlton",
+      "x": 671,
+      "z": -3681
+    },
+    {
+      "name": "Caulfield North",
+      "x": 4285,
+      "z": 4123
+    },
+    {
+      "name": "Collingwood",
+      "x": 2477,
+      "z": -3588
+    },
+    {
+      "name": "Cremorne",
+      "x": 2904,
+      "z": -667
+    },
+    {
+      "name": "Docklands",
+      "x": -1476,
+      "z": -1840
+    },
+    {
+      "name": "East Melbourne",
+      "x": 1985,
+      "z": -2292
+    },
+    {
+      "name": "Elwood",
+      "x": 2332,
+      "z": 4188
+    },
+    {
+      "name": "Fairfield",
+      "x": 4117,
+      "z": -4094
+    },
+    {
+      "name": "Fitzroy",
+      "x": 1670,
+      "z": -3642
+    },
+    {
+      "name": "Footscray",
+      "x": -4094,
+      "z": -4114
+    },
+    {
+      "name": "Kensington",
+      "x": -2846,
+      "z": -4105
+    },
+    {
+      "name": "Kew",
+      "x": 3943,
+      "z": -3652
+    },
+    {
+      "name": "Melbourne",
+      "x": 1011,
+      "z": -1112
+    },
+    {
+      "name": "Middle Park",
+      "x": 201,
+      "z": 1801
+    },
+    {
+      "name": "North Melbourne",
+      "x": -1204,
+      "z": -3804
+    },
+    {
+      "name": "Parkville",
+      "x": -105,
+      "z": -4130
+    },
+    {
+      "name": "Port Melbourne",
+      "x": -2843,
+      "z": -282
+    },
+    {
+      "name": "Prahran",
+      "x": 3432,
+      "z": 1842
+    },
+    {
+      "name": "Richmond",
+      "x": 3511,
+      "z": -1613
+    },
+    {
+      "name": "South Melbourne",
+      "x": -224,
+      "z": -113
+    },
+    {
+      "name": "South Wharf",
+      "x": -702,
+      "z": -1083
+    },
+    {
+      "name": "South Yarra",
+      "x": 2796,
+      "z": 468
+    },
+    {
+      "name": "Southbank",
+      "x": 197,
+      "z": -1017
+    },
+    {
+      "name": "St Kilda",
+      "x": 1926,
+      "z": 3171
+    },
+    {
+      "name": "St Kilda East",
+      "x": 3664,
+      "z": 3375
+    },
+    {
+      "name": "St Kilda West",
+      "x": 985,
+      "z": 2569
+    },
+    {
+      "name": "Toorak",
+      "x": 4114,
+      "z": 700
+    },
+    {
+      "name": "West Melbourne",
+      "x": -2820,
+      "z": -2885
+    },
+    {
+      "name": "Williamstown",
+      "x": -4142,
+      "z": 3361
+    },
+    {
+      "name": "Windsor",
+      "x": 2871,
+      "z": 2177
+    }
+  ],
   "attribution": "Map data © OpenStreetMap contributors (ODbL) — openstreetmap.org/copyright"
 }

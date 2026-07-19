@@ -25,6 +25,9 @@ export interface AuthoredMap {
   width: number;
   height: number;
   grid: Uint8Array;
+  /** Named locality anchors and a parallel byte grid (255 = no suburb). */
+  suburbs?: { name: string; x: number; z: number }[];
+  suburbGrid?: Uint8Array;
   /** Suggested player spawn (world meters, on a road cell). */
   spawn: { x: number; z: number };
   attribution: string;
@@ -78,6 +81,18 @@ export function cellToWorld(cx: number, cz: number): { x: number; z: number } {
 
 export function worldToCell(x: number, z: number): { cx: number; cz: number } {
   return { cx: Math.round(x / TILE), cz: Math.round(z / TILE) };
+}
+
+/** Named suburb at a world position, or null when locality data is unavailable. */
+export function suburbNameAt(x: number, z: number): string | null {
+  if (!authored?.suburbs || !authored.suburbGrid) return null;
+  const { cx, cz } = worldToCell(x, z);
+  const gx = cx + authored.width / 2;
+  const gz = cz + authored.height / 2;
+  if (gx < 0 || gz < 0 || gx >= authored.width || gz >= authored.height) return null;
+  const suburbIndex = authored.suburbGrid[gx + gz * authored.width];
+  if (suburbIndex === 255) return null;
+  return authored.suburbs[suburbIndex]?.name ?? null;
 }
 
 /**
