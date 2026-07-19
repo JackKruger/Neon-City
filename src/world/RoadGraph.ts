@@ -21,6 +21,10 @@ const DIRS: CellRef[] = [
 export interface RoadNetwork {
   neighbors(point: CellRef, mode?: NavigationMode): CellRef[];
   nearest(point: CellRef, mode?: NavigationMode): CellRef | null;
+  /** A legal continuation when a node has no outgoing edge (e.g. the opposing
+   *  lane of a two-way street truncated at the loaded edge). Optional; the grid
+   *  network has no lane concept and leaves the caller to retrace. */
+  uTurn?(point: CellRef, mode?: NavigationMode): CellRef | null;
 }
 
 class CellRoadNetwork implements RoadNetwork {
@@ -81,6 +85,31 @@ export class CompiledRoadNetwork implements RoadNetwork {
     return best;
   }
 
+  /** Nearest node (in a narrow band around the point) that still has somewhere
+   *  to go — used to turn a car around at a dead-end onto the opposing lane
+   *  rather than retracing its own one-way lane backwards. */
+  uTurn(point: CellRef, mode: NavigationMode = 'vehicle'): CellRef | null {
+    const candidates = this.nodes.get(mode);
+    if (!candidates) return null;
+    const world = pointWorld(point);
+    let best: CellRef | null = null;
+    let bestDistance = Infinity;
+    for (const candidate of candidates.values()) {
+      const dx = candidate.x! - world.x;
+      const dz = candidate.z! - world.z;
+      const distance = Math.hypot(dx, dz);
+      // Skip the dead-end node itself; stay within the width of a small junction
+      // so we snap to a neighbouring lane, not a parallel street.
+      if (distance < 1.5 || distance > 9) continue;
+      if (!(this.adjacency.get(adjacencyKey(mode, candidate.x!, candidate.z!))?.length)) continue;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = candidate;
+      }
+    }
+    return best;
+  }
+
   clear(): void {
     this.chunks.clear();
     this.nodes.clear();
@@ -103,6 +132,12 @@ export class CompiledRoadNetwork implements RoadNetwork {
         }
       }
     }
+    const link = (mode: NavigationMode, from: CellRef, to: CellRef): void => {
+      const key = adjacencyKey(mode, from.x!, from.z!);
+      const neighbors = this.adjacency.get(key) ?? [];
+      if (!neighbors.some((neighbor) => positionKey(neighbor.x!, neighbor.z!) === positionKey(to.x!, to.z!))) neighbors.push(to);
+      this.adjacency.set(key, neighbors);
+    };
     for (const chunk of this.chunks.values()) {
       for (const edge of chunk.edges) {
         for (const mode of ['vehicle', 'pedestrian', 'tram'] as const) {
@@ -110,10 +145,10 @@ export class CompiledRoadNetwork implements RoadNetwork {
           const from = this.nodes.get(mode)!.get(positionKey(edge.fromX, edge.fromZ));
           const to = this.nodes.get(mode)!.get(positionKey(edge.toX, edge.toZ));
           if (!from || !to) continue;
-          const key = adjacencyKey(mode, edge.fromX, edge.fromZ);
-          const neighbors = this.adjacency.get(key) ?? [];
-          if (!neighbors.some((neighbor) => positionKey(neighbor.x!, neighbor.z!) === positionKey(to.x!, to.z!))) neighbors.push(to);
-          this.adjacency.set(key, neighbors);
+          link(mode, from, to);
+          // Lanes and tram tracks are one-way as authored; footpaths carry
+          // people in both directions, so mirror pedestrian edges.
+          if (mode === 'pedestrian') link(mode, to, from);
         }
       }
     }
@@ -141,6 +176,11 @@ export function nearestRoadPoint(x: number, z: number, mode: NavigationMode = 'v
   return activeRoadNetwork.nearest({ ...worldToCell(x, z), x, z }, mode);
 }
 
+/** A legal continuation from a dead-end node, if the active network offers one. */
+export function uTurnRoadCell(current: CellRef, mode: NavigationMode = current.mode ?? 'vehicle'): CellRef | null {
+  return activeRoadNetwork.uTurn?.(current, mode) ?? null;
+}
+
 /** Prefer continuing along the current lane/path, otherwise select a legal outgoing edge. */
 export function nextRoadCell(from: CellRef, current: CellRef, rng: number, mode: NavigationMode = current.mode ?? 'vehicle'): CellRef {
   const options = roadNeighbors(current, mode).filter((candidate) => {
@@ -148,7 +188,9 @@ export function nextRoadCell(from: CellRef, current: CellRef, rng: number, mode:
     const b = pointWorld(from);
     return Math.hypot(a.x - b.x, a.z - b.z) > 0.05;
   });
-  if (options.length === 0) return from;
+  // Dead-end: turn around onto a nearby legal lane if one exists, otherwise
+  // retrace the way we came.
+  if (options.length === 0) return uTurnRoadCell(current, mode) ?? from;
   const a = pointWorld(from);
   const b = pointWorld(current);
   const incoming = { x: b.x - a.x, z: b.z - a.z };

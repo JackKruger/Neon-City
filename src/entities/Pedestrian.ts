@@ -1,13 +1,13 @@
 import * as THREE from 'three';
 import type { Entity, Game } from '../core/Game';
-import { PEDESTRIAN_COLLISION_GROUPS } from '../core/const';
+import { PEDESTRIAN_COLLISION_GROUPS, TILE } from '../core/const';
 import type { CombatTarget } from '../gameplay/Combat';
 import type { Player } from './Player';
 import { MeleeDef, PED_HEALTH, WEAPONS, WeaponDef } from '../gameplay/Weapons';
 import { Character } from './Character';
 import type { Outfit } from './HumanRig';
 import { Ragdoll } from './Ragdoll';
-import { CellRef, lanePoint, nextRoadCell } from '../world/RoadGraph';
+import { CellRef, lanePoint, nextRoadCell, pointWorld } from '../world/RoadGraph';
 
 const WALK_DIR = new THREE.Vector3();
 
@@ -46,7 +46,7 @@ export class Pedestrian implements Entity, CombatTarget {
     this.to = to;
     this.brave = Math.random() < game.pedBraveChance;
     this.jitter = Math.random() * 0.08 - 0.04;
-    this.waypoint = lanePoint(from, to, 0.4 + this.jitter);
+    this.waypoint = this.laneWaypoint();
     const x = spawn?.x ?? this.waypoint.x + (Math.random() - 0.5) * 2;
     const z = spawn?.z ?? this.waypoint.z + (Math.random() - 0.5) * 2;
     this.character = new Character(
@@ -130,11 +130,27 @@ export class Pedestrian implements Entity, CombatTarget {
       const next = nextRoadCell(this.from, this.to, Math.random(), 'pedestrian');
       this.from = this.to;
       this.to = next;
-      this.waypoint = lanePoint(this.from, this.to, 0.4 + this.jitter);
+      this.waypoint = this.laneWaypoint();
     }
     WALK_DIR.set(this.waypoint.x - pos.x, 0, this.waypoint.z - pos.z).normalize();
     this.character.setMove(WALK_DIR, false);
     this.character.update(dt);
+  }
+
+  /** Footpath target with a small perpendicular offset so pedestrians spread
+   *  across the path instead of tracking its centreline single-file. */
+  private laneWaypoint(): { x: number; z: number } {
+    const base = lanePoint(this.from, this.to, 0.4 + this.jitter);
+    // Grid maps bake the sidewalk + jitter offset into lanePoint; the compiled
+    // network returns the exact footpath node, so apply the spread here.
+    if (this.to.x === undefined) return base;
+    const a = pointWorld(this.from);
+    const b = pointWorld(this.to);
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const length = Math.hypot(dx, dz) || 1;
+    const offset = this.jitter * TILE;
+    return { x: base.x + (-dz / length) * offset, z: base.z + (dx / length) * offset };
   }
 
   /** Chase the attacker and throw punches until they get away (or worse). */
