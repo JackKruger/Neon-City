@@ -32,6 +32,13 @@ export class Character implements Entity {
   private groundCheckTimer = Math.random() * GROUND_CHECK_INTERVAL;
   private lastSafeGround = new THREE.Vector3();
   private time = Math.random() * 10; // desync idle breathing between people
+  private action: { kind: 'punch' | 'swing'; duration: number; t: number; twoHanded: boolean } | null =
+    null;
+  private aimPose: 'none' | 'pistol' | 'long' = 'none';
+  private aimLong = false; // last aim style, so the pose can blend out
+  private aimBlend = 0;
+  private flinchTime = 0;
+  private faceOverride: number | null = null;
   enabled = true;
 
   constructor(
@@ -118,6 +125,37 @@ export class Character implements Entity {
     return this.facing;
   }
 
+  /** Begin an attack swing overlay. @returns false if one is already playing. */
+  startAction(kind: 'punch' | 'swing', duration: number, twoHanded = false): boolean {
+    if (this.action) return false;
+    this.action = { kind, duration, t: 0, twoHanded };
+    return true;
+  }
+
+  /** Swing progress 0..1, or null when no attack is playing. */
+  actionProgress(): number | null {
+    return this.action ? this.action.t : null;
+  }
+
+  /** Aim stance for the current step; callers re-assert it every update. */
+  setAimPose(pose: 'none' | 'pistol' | 'long'): void {
+    this.aimPose = pose;
+    if (pose !== 'none') this.aimLong = pose === 'long';
+  }
+
+  /** Brief hit-reaction overlay. */
+  flinch(): void {
+    this.flinchTime = 0.28;
+  }
+
+  /**
+   * Face a yaw directly this step (aiming, brawling) instead of the move
+   * direction. Consumed by the next update.
+   */
+  overrideFacing(yaw: number): void {
+    this.faceOverride = yaw;
+  }
+
   update(dt: number): void {
     if (!this.enabled) return;
     this.time += dt;
@@ -151,12 +189,16 @@ export class Character implements Entity {
     const airTarget = this.grounded ? 0 : 1;
     this.airBlend += (airTarget - this.airBlend) * (1 - Math.exp(-14 * dt));
 
-    if (this.moveSpeed > 0) {
-      const target = Math.atan2(this.moveDir.x, this.moveDir.z);
-      let delta = target - this.facing;
+    const faceTarget =
+      this.faceOverride ?? (this.moveSpeed > 0 ? Math.atan2(this.moveDir.x, this.moveDir.z) : null);
+    this.faceOverride = null;
+    if (faceTarget !== null) {
+      let delta = faceTarget - this.facing;
       while (delta > Math.PI) delta -= Math.PI * 2;
       while (delta < -Math.PI) delta += Math.PI * 2;
       this.facing += delta * Math.min(1, 12 * dt);
+    }
+    if (this.moveSpeed > 0) {
       // Cadence rises with speed; a full cycle is two steps.
       this.walkPhase += dt * (3.2 + this.moveSpeed * 1.5);
     }
@@ -168,6 +210,15 @@ export class Character implements Entity {
       Math.max(0, (this.moveSpeed - WALK_SPEED) / (RUN_SPEED - WALK_SPEED))
     );
     this.runBlend += (runTarget - this.runBlend) * Math.min(1, 6 * dt);
+
+    if (this.action) {
+      this.action.t += dt / this.action.duration;
+      if (this.action.t >= 1) this.action = null;
+    }
+    this.flinchTime = Math.max(0, this.flinchTime - dt);
+    const aimTarget = this.aimPose === 'none' ? 0 : 1;
+    this.aimBlend += (aimTarget - this.aimBlend) * Math.min(1, 12 * dt);
+
     this.syncVisuals();
   }
 
@@ -183,6 +234,16 @@ export class Character implements Entity {
       this.airBlend,
       this.vy
     );
+    // Overlays apply after setLocomotion, which writes rotations absolutely.
+    if (this.aimBlend > 0.01) {
+      this.rig.poseAim(this.aimLong, this.aimBlend);
+    }
+    if (this.action) {
+      this.rig.poseAttack(this.action.kind, this.action.t, this.action.twoHanded);
+    }
+    if (this.flinchTime > 0) {
+      this.rig.poseFlinch(Math.sin(Math.PI * Math.min(1, this.flinchTime / 0.28)));
+    }
   }
 
   /** Find the highest walkable fixed surface close to the capsule's feet. */

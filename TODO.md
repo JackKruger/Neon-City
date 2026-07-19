@@ -28,11 +28,13 @@
 
 ## Combat and survival
 
-- [ ] Add a basic weapon system.
+- [x] Add a basic weapon system.
   - Start with a baseball bat and pistol.
   - Add equip/holster, aiming, attacks, damage, ammunition, hit reactions, and NPC ragdolls.
   - Connect weapon use to the wanted system and police response.
-- [ ] Add player health and armour.
+  - Shipped: fists, knife, bat, pistol, SMG, shotgun; pickups near spawn and dropped by cops;
+    ~25% of pedestrians brawl back; at 2+ stars stopped police cars deploy armed on-foot cops.
+- [x] Add player health and armour.
   - Track damage, armour absorption, death, and respawning.
   - Add clear health and armour bars to each player's HUD.
 

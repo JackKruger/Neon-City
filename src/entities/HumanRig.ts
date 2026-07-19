@@ -124,6 +124,9 @@ export class HumanRig {
   private armL!: Arm;
   private armR!: Arm;
   private specs: RagdollPartSpec[] = [];
+  /** Right-hand attach point for held weapons (+Z out of the grip). */
+  private handSocketR = new THREE.Group();
+  private heldItem: THREE.Object3D | null = null;
 
   constructor(outfit: Outfit, scale = 1) {
     this.scale = scale;
@@ -244,7 +247,21 @@ export class HumanRig {
       joint: { kind: 'hinge', axis: new THREE.Vector3(1, 0, 0), min: -2.4, max: 0.02 },
       meshes: [foreMesh, handMesh],
     });
+    if (side === -1) {
+      // Weapon socket at the palm. Not part of any RagdollPartSpec, so the
+      // ragdoll never steals a held item; it is dropped via setHeldItem(null).
+      this.handSocketR.position.set(0, -FOREARM_LEN - HAND_LEN / 2 + 0.05, 0.02);
+      this.handSocketR.rotation.x = Math.PI / 2; // grip +Z continues the forearm
+      elbow.add(this.handSocketR);
+    }
     return { shoulder, elbow };
+  }
+
+  /** Put a weapon model in the right hand (null to holster). */
+  setHeldItem(mesh: THREE.Object3D | null): void {
+    if (this.heldItem) this.heldItem.removeFromParent();
+    this.heldItem = mesh;
+    if (mesh) this.handSocketR.add(mesh);
   }
 
   private buildLeg(outfit: Outfit, side: 1 | -1): Leg {
@@ -377,6 +394,67 @@ export class HumanRig {
       PELVIS_Y + 0.03,
       0.8 * blend
     );
+  }
+
+  /**
+   * Overlay an attack swing on the locomotion pose (call after setLocomotion).
+   * The right arm at side -1 sits at negative X; positive spine yaw brings it
+   * forward. @param t swing progress 0..1; contact lands around t≈0.45.
+   */
+  poseAttack(kind: 'punch' | 'swing', t: number, twoHanded: boolean): void {
+    const p = THREE.MathUtils.clamp(t, 0, 1);
+    // Ramp the overlay in and out so it never pops against locomotion.
+    const w = Math.min(1, p * 5, (1 - p) * 5);
+    const arm = this.armR;
+    const mix = THREE.MathUtils.lerp;
+    if (kind === 'punch') {
+      const extend = Math.sin(Math.PI * Math.pow(p, 0.85)); // peak near t≈0.45
+      arm.shoulder.rotation.x = mix(arm.shoulder.rotation.x, -1.45 * extend, w);
+      arm.shoulder.rotation.z = mix(arm.shoulder.rotation.z, -0.1, w);
+      arm.elbow.rotation.x = mix(arm.elbow.rotation.x, -1.9 + 1.82 * extend, w);
+      this.spine.rotation.y = mix(this.spine.rotation.y, 0.38 * extend, w);
+    } else {
+      // Wind up twisting away, sweep through, then recover.
+      let yaw: number;
+      if (p < 0.3) yaw = -0.6 * Math.sin((p / 0.3) * Math.PI * 0.5);
+      else if (p < 0.65) yaw = mix(-0.6, 0.85, (p - 0.3) / 0.35);
+      else yaw = 0.85 * (1 - (p - 0.65) / 0.35);
+      this.spine.rotation.y = mix(this.spine.rotation.y, yaw, w);
+      const raise = Math.sin(Math.PI * Math.min(1, p * 1.4));
+      arm.shoulder.rotation.x = mix(arm.shoulder.rotation.x, -1.2 * raise, w);
+      arm.shoulder.rotation.z = mix(arm.shoulder.rotation.z, p < 0.3 ? -0.55 : -0.15, w * raise);
+      arm.elbow.rotation.x = mix(arm.elbow.rotation.x, p < 0.3 ? -0.7 : -0.12, w);
+      if (twoHanded) {
+        this.armL.shoulder.rotation.x = mix(this.armL.shoulder.rotation.x, -1.05 * raise, w);
+        this.armL.shoulder.rotation.z = mix(this.armL.shoulder.rotation.z, -0.2, w * raise);
+        this.armL.elbow.rotation.x = mix(this.armL.elbow.rotation.x, -0.6, w);
+      }
+      this.neck.rotation.y = mix(this.neck.rotation.y, -yaw * 0.7, w); // eyes on target
+    }
+  }
+
+  /** Hold the equipped gun up toward the facing direction. */
+  poseAim(long: boolean, w: number): void {
+    const mix = THREE.MathUtils.lerp;
+    const arm = this.armR;
+    arm.shoulder.rotation.x = mix(arm.shoulder.rotation.x, -1.5, w);
+    arm.shoulder.rotation.z = mix(arm.shoulder.rotation.z, -0.06, w);
+    arm.elbow.rotation.x = mix(arm.elbow.rotation.x, -0.05, w);
+    this.spine.rotation.y = mix(this.spine.rotation.y, 0.12, w);
+    this.neck.rotation.y = mix(this.neck.rotation.y, -0.12, w);
+    if (long) {
+      // Support hand reaches across to the fore-end.
+      this.armL.shoulder.rotation.x = mix(this.armL.shoulder.rotation.x, -1.3, w);
+      this.armL.shoulder.rotation.z = mix(this.armL.shoulder.rotation.z, -0.28, w);
+      this.armL.elbow.rotation.x = mix(this.armL.elbow.rotation.x, -0.55, w);
+    }
+  }
+
+  /** Brief hit reaction: head and torso recoil backward. */
+  poseFlinch(w: number): void {
+    this.spine.rotation.x += -0.28 * w;
+    this.neck.rotation.x += 0.2 * w;
+    this.spine.rotation.y += 0.15 * w;
   }
 
   private poseLeg(leg: Leg, p: number, blend: number, run: number, hipAmp: number): void {

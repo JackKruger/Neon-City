@@ -9,10 +9,18 @@ export interface PlayerInput {
   brake: number; // 0..1 (reverse when stopped)
   handbrake: boolean;
   sprint: boolean;
+  /** Held: fire/swing (auto weapons keep attacking while held). */
+  attack: boolean;
+  /** Held: aim the equipped gun toward the camera direction. */
+  aim: boolean;
   /** Edge-triggered (true for exactly one fixed step). */
   jump: boolean;
   interact: boolean;
   pause: boolean;
+  attackPressed: boolean;
+  weaponNext: boolean;
+  weaponPrev: boolean;
+  reload: boolean;
 }
 
 const DEADZONE = 0.15;
@@ -30,9 +38,15 @@ function emptyInput(): PlayerInput {
     brake: 0,
     handbrake: false,
     sprint: false,
+    attack: false,
+    aim: false,
     jump: false,
     interact: false,
     pause: false,
+    attackPressed: false,
+    weaponNext: false,
+    weaponPrev: false,
+    reload: false,
   };
 }
 
@@ -49,7 +63,12 @@ export class Input {
   private pendingJump = [false, false];
   private pendingInteract = [false, false];
   private pendingPause = [false, false];
+  private pendingAttack = [false, false];
+  private pendingWeaponNext = [false, false];
+  private pendingWeaponPrev = [false, false];
+  private pendingReload = [false, false];
   private pendingMap = false;
+  private mouseButtons = new Set<number>();
 
   p1Pad: number | null = null;
   p2Pad: number | null = null;
@@ -57,12 +76,23 @@ export class Input {
 
   constructor() {
     window.addEventListener('keydown', (e) => {
+      if (e.code === 'Tab') e.preventDefault(); // weapon cycle, keep browser focus
       if (e.repeat) return;
       this.keys.add(e.code);
       this.keyEdges.add(e.code);
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
-    window.addEventListener('blur', () => this.keys.clear());
+    // Mouse always drives player 1: left fires, right aims.
+    window.addEventListener('mousedown', (e) => {
+      this.mouseButtons.add(e.button);
+      if (e.button === 0) this.pendingAttack[0] = true;
+    });
+    window.addEventListener('mouseup', (e) => this.mouseButtons.delete(e.button));
+    window.addEventListener('contextmenu', (e) => e.preventDefault());
+    window.addEventListener('blur', () => {
+      this.keys.clear();
+      this.mouseButtons.clear();
+    });
     window.addEventListener('gamepaddisconnected', (e) => {
       if (this.p1Pad === e.gamepad.index) this.p1Pad = null;
       if (this.p2Pad === e.gamepad.index) this.p2Pad = null;
@@ -91,6 +121,11 @@ export class Input {
         if (just(3)) this.pendingInteract[player] = true;
         if (just(9)) this.pendingPause[player] = true;
         if (just(8)) this.pendingMap = true;
+        // RT doubles as throttle while driving; Player ignores attacks in cars.
+        if (just(7)) this.pendingAttack[player] = true;
+        if (just(5)) this.pendingWeaponNext[player] = true;
+        if (just(4)) this.pendingWeaponPrev[player] = true;
+        if (just(2)) this.pendingReload[player] = true;
       }
       this.padPrev.set(pad.index, pressed);
     }
@@ -99,6 +134,10 @@ export class Input {
     if (this.keyEdges.has('KeyE')) this.pendingInteract[0] = true;
     if (this.keyEdges.has('Escape')) this.pendingPause[0] = true;
     if (this.keyEdges.has('KeyM')) this.pendingMap = true;
+    if (this.keyEdges.has('KeyF')) this.pendingAttack[0] = true;
+    if (this.keyEdges.has('KeyC') || this.keyEdges.has('Tab')) this.pendingWeaponNext[0] = true;
+    if (this.keyEdges.has('KeyQ')) this.pendingWeaponPrev[0] = true;
+    if (this.keyEdges.has('KeyR')) this.pendingReload[0] = true;
     this.keyEdges.clear();
   }
 
@@ -106,6 +145,10 @@ export class Input {
   clearGameplayEdges(): void {
     this.pendingJump[0] = this.pendingJump[1] = false;
     this.pendingInteract[0] = this.pendingInteract[1] = false;
+    this.pendingAttack[0] = this.pendingAttack[1] = false;
+    this.pendingWeaponNext[0] = this.pendingWeaponNext[1] = false;
+    this.pendingWeaponPrev[0] = this.pendingWeaponPrev[1] = false;
+    this.pendingReload[0] = this.pendingReload[1] = false;
   }
 
   /** True once if any player pressed pause since the last call. */
@@ -148,9 +191,17 @@ export class Input {
     input.jump = this.pendingJump[player];
     input.interact = this.pendingInteract[player];
     input.pause = this.pendingPause[player];
+    input.attackPressed = this.pendingAttack[player];
+    input.weaponNext = this.pendingWeaponNext[player];
+    input.weaponPrev = this.pendingWeaponPrev[player];
+    input.reload = this.pendingReload[player];
     this.pendingJump[player] = false;
     this.pendingInteract[player] = false;
     this.pendingPause[player] = false;
+    this.pendingAttack[player] = false;
+    this.pendingWeaponNext[player] = false;
+    this.pendingWeaponPrev[player] = false;
+    this.pendingReload[player] = false;
     return input;
   }
 
@@ -165,6 +216,8 @@ export class Input {
     input.brake = k.has('KeyS') ? 1 : 0;
     input.handbrake = k.has('Space');
     input.sprint = k.has('ShiftLeft') || k.has('ShiftRight');
+    input.attack = k.has('KeyF') || this.mouseButtons.has(0);
+    input.aim = this.mouseButtons.has(2);
   }
 
   private readPad(pad: Gamepad, input: PlayerInput): void {
@@ -177,5 +230,7 @@ export class Input {
     input.brake = Math.max(input.brake, pad.buttons[6]?.value ?? 0);
     input.handbrake = input.handbrake || (pad.buttons[0]?.pressed ?? false);
     input.sprint = input.sprint || (pad.buttons[0]?.pressed ?? false);
+    input.attack = input.attack || (pad.buttons[7]?.pressed ?? false);
+    input.aim = input.aim || (pad.buttons[6]?.pressed ?? false);
   }
 }

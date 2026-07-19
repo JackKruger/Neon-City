@@ -11,6 +11,12 @@ export interface HudState {
   heading?: number;
   suburb?: string | null;
   cops?: { x: number; z: number }[];
+  /** 0..1 fractions; bars hide when undefined. */
+  health?: number;
+  armour?: number;
+  weapon?: string;
+  ammoMag?: number;
+  ammoReserve?: number;
 }
 
 /** DOM overlay HUD, one panel per viewport (left/right half in split screen). */
@@ -22,6 +28,10 @@ export class Hud {
     money: HTMLDivElement;
     prompt: HTMLDivElement;
     message: HTMLDivElement;
+    weapon: HTMLDivElement;
+    vitals: HTMLDivElement;
+    healthBar: HTMLElement;
+    armourBar: HTMLElement;
     minimap: Minimap | null;
   }[] = [];
   private hint: HTMLDivElement;
@@ -50,6 +60,17 @@ export class Hud {
       .hud-minimap-canvas { width:100%; height:100%; border-radius:50%; box-sizing:border-box;
         border:2px solid rgba(94,243,255,.85); background:#151326;
         box-shadow:0 0 0 3px rgba(12,8,28,.72), 0 0 18px rgba(94,243,255,.32); }
+      .hud-weapon { position:absolute; right:18px; bottom:52px; font-size:15px; font-weight:700;
+        text-align:right; color:#cfe6ff; font-variant-numeric:tabular-nums;
+        text-shadow:0 0 8px rgba(94,163,255,.8), 0 2px 2px rgba(0,0,0,.6); }
+      .hud-weapon .ammo { display:block; font-size:13px; opacity:.85; }
+      .hud-vitals { position:absolute; right:18px; top:50px; display:flex; flex-direction:column;
+        gap:5px; align-items:flex-end; }
+      .hud-bar { width:130px; height:9px; border-radius:5px; background:rgba(10,6,24,.66);
+        box-shadow:0 0 0 1px rgba(255,255,255,.2), 0 0 8px rgba(0,0,0,.35); overflow:hidden; }
+      .hud-bar i { display:block; height:100%; border-radius:5px; transition:width .15s; }
+      .hud-bar.health i { background:#5eff8a; box-shadow:0 0 9px rgba(94,255,138,.85); }
+      .hud-bar.armour i { background:#5ef3ff; box-shadow:0 0 9px rgba(94,243,255,.85); }
       .hud-suburb { position:absolute; left:-18px; right:-18px; bottom:calc(100% + 8px);
         color:#fff; font-size:14px; font-weight:700; text-align:center; text-transform:uppercase;
         text-shadow:0 0 8px rgba(255,60,180,.95), 0 2px 3px rgba(0,0,0,.9); }
@@ -75,6 +96,7 @@ export class Hud {
       @media (max-width:700px) {
         .hud-minimap { width:128px; }
         .hud-panel.is-split .hud-speed { bottom:146px; }
+        .hud-panel.is-split .hud-weapon { bottom:184px; }
         .hud-hint { display:none; }
         .hud-map-title { font-size:19px; }
         .hud-map-footer { white-space:normal; }
@@ -84,7 +106,7 @@ export class Hud {
     this.hint = document.createElement('div');
     this.hint.className = 'hud-hint';
     this.hint.textContent =
-      'P1: WASD drive/walk · Space jump/handbrake · E enter/exit · Shift sprint · M map — P2: press Start on a gamepad to join';
+      'P1: WASD walk · LMB attack · RMB aim · Q/C weapon · R reload · E enter car · M map — P2: press Start on a gamepad to join';
     container.appendChild(this.hint);
   }
 
@@ -111,10 +133,37 @@ export class Hud {
       prompt.style.display = 'none';
       const message = document.createElement('div');
       message.className = 'hud-message';
-      root.append(speed, stars, money, prompt, message);
+      const weapon = document.createElement('div');
+      weapon.className = 'hud-weapon';
+      const vitals = document.createElement('div');
+      vitals.className = 'hud-vitals';
+      vitals.style.display = 'none';
+      const mkBar = (cls: string) => {
+        const bar = document.createElement('div');
+        bar.className = `hud-bar ${cls}`;
+        const fill = document.createElement('i');
+        bar.appendChild(fill);
+        vitals.appendChild(bar);
+        return fill;
+      };
+      const healthBar = mkBar('health');
+      const armourBar = mkBar('armour');
+      root.append(speed, stars, money, prompt, message, weapon, vitals);
       this.container.appendChild(root);
       const minimap = this.mapCanvas && this.map ? new Minimap(root, this.mapCanvas, this.map) : null;
-      this.panels.push({ root, speed, stars, money, prompt, message, minimap });
+      this.panels.push({
+        root,
+        speed,
+        stars,
+        money,
+        prompt,
+        message,
+        weapon,
+        vitals,
+        healthBar,
+        armourBar,
+        minimap,
+      });
     }
     if (n === 2) this.hint.style.display = 'none';
   }
@@ -137,10 +186,11 @@ export class Hud {
       el.innerHTML = `
         <h1>PAUSED</h1>
         <p><b>P1 — keyboard:</b> WASD drive/walk · Space jump/handbrake · Shift sprint · E enter/exit car</p>
-        <p><b>Gamepad:</b> left stick steer/walk · RT gas · LT brake · A jump/handbrake/sprint · Y enter/exit</p>
+        <p><b>Combat:</b> LMB / F attack · RMB aim · Q / C (Tab) switch weapon · R reload</p>
+        <p><b>Gamepad:</b> left stick steer/walk · RT gas/fire · LT brake/aim · A jump · Y enter/exit · LB/RB weapon · X reload</p>
         <p><b>P2:</b> press Start on a second gamepad to join split-screen</p>
         <p><b>Map:</b> M / Back opens the city map</p>
-        <p>Run over pedestrians or ram cars and the police will come for you…</p>
+        <p>Grab the glowing weapons near spawn — but cause trouble and the police will come for you…</p>
         <p style="margin-top:1em; opacity:.6">Esc / Start to resume</p>
         <p style="margin-top:1.5em; opacity:.45; font-size:12px">Map data © OpenStreetMap contributors (ODbL)</p>`;
       this.container.appendChild(el);
@@ -168,6 +218,22 @@ export class Hud {
     p.prompt.style.display = state.prompt ? 'block' : 'none';
     p.prompt.textContent = state.prompt ?? '';
     p.message.textContent = state.message ?? '';
+    if (state.weapon) {
+      const ammo =
+        state.ammoMag !== undefined ? `<span class="ammo">${state.ammoMag} / ${state.ammoReserve ?? 0}</span>` : '';
+      p.weapon.innerHTML = `${state.weapon}${ammo}`;
+    } else {
+      p.weapon.innerHTML = '';
+    }
+    if (state.health !== undefined) {
+      p.vitals.style.display = 'flex';
+      p.healthBar.style.width = `${Math.round(Math.max(0, Math.min(1, state.health)) * 100)}%`;
+      const armour = Math.max(0, Math.min(1, state.armour ?? 0));
+      p.armourBar.style.width = `${Math.round(armour * 100)}%`;
+      (p.armourBar.parentElement as HTMLElement).style.display = armour > 0 ? 'block' : 'none';
+    } else {
+      p.vitals.style.display = 'none';
+    }
     if (p.minimap && state.pos && state.heading !== undefined) {
       p.minimap.update({
         x: state.pos.x,

@@ -22,6 +22,11 @@ import { Vehicle } from '../entities/Vehicle';
 import { Player } from '../entities/Player';
 import { Npcs } from '../world/Npcs';
 import type { TrafficCar } from '../entities/TrafficCar';
+import { Combat } from '../gameplay/Combat';
+import { Fx } from '../render/Fx';
+import { Pickup } from '../entities/Pickup';
+import type { WeaponId } from '../gameplay/Weapons';
+import { randomRoadCellNear } from '../world/RoadGraph';
 
 export interface Entity {
   update(dt: number): void;
@@ -49,6 +54,11 @@ export class Game {
   readonly vehicles: Vehicle[] = [];
   readonly players: Player[] = [];
   readonly audio = new AudioSys();
+  readonly combat = new Combat(this);
+  readonly fx = new Fx(this.scene);
+  readonly pickups: Pickup[] = [];
+  /** Chance a spawned pedestrian fights back when attacked (debug: ?brawlers). */
+  pedBraveChance = 0.25;
   readonly city: City;
   npcs!: Npcs;
   paused = false;
@@ -115,6 +125,7 @@ export class Game {
 
     this.npcs = new Npcs(this);
 
+    this.spawnStarterPickups(spawn.x, spawn.z);
     this.applyDebugParams();
   }
 
@@ -143,9 +154,14 @@ export class Game {
     v.dispose();
   }
 
+  /** Attribute a crime's wanted heat to a player (null: no witness/unknown). */
+  reportCrime(player: Player | null, heat: number): void {
+    player?.wanted.addHeat(heat);
+  }
+
   /** Crime hooks from the NPC simulation. */
   onPedestrianKilled(vehicle: Vehicle): void {
-    if (vehicle.driver instanceof Player) vehicle.driver.wanted.addHeat(45);
+    this.reportCrime(vehicle.driver instanceof Player ? vehicle.driver : null, 45);
   }
 
   onTrafficRammed(car: TrafficCar): void {
@@ -175,6 +191,21 @@ export class Game {
     this.hud.setPlayerCount(2);
   }
 
+  /** A few weapons scattered on streets near spawn until shops exist. */
+  private spawnStarterPickups(x: number, z: number): void {
+    const wanted: { weapon: WeaponId; ammo: number }[] = [
+      { weapon: 'bat', ammo: 0 },
+      { weapon: 'knife', ammo: 0 },
+      { weapon: 'pistol', ammo: 24 },
+    ];
+    for (const item of wanted) {
+      const cell = randomRoadCellNear(x, z, 8, 30);
+      if (!cell) continue;
+      const spot = cellToWorld(cell.cx, cell.cz);
+      this.pickups.push(new Pickup(this, item.weapon, item.ammo, spot.x, 0, spot.z));
+    }
+  }
+
   private applyDebugParams(): void {
     const params = new URLSearchParams(location.search);
     if (params.has('nofog')) this.scene.fog = null;
@@ -183,6 +214,10 @@ export class Game {
       this.addVehicle(new Vehicle(this, 'cars/taxi', s.x, s.z + 12, 0));
     }
     if (params.has('p2')) this.joinPlayer2();
+    if (params.has('arsenal')) {
+      for (const p of this.players) p.inventory.giveAll();
+    }
+    if (params.has('brawlers')) this.pedBraveChance = 1;
     if (params.has('pos')) {
       this.debugCam = true;
       const cam = this.viewports.cameras[0].camera;
@@ -235,6 +270,8 @@ export class Game {
       if (this.mapOverlay.isOpen) this.mapOverlay.close();
       else this.mapOverlay.open();
     }
+    // Clicks and presses made while browsing the map shouldn't fire weapons.
+    if (this.mapOverlay.isOpen) this.input.clearGameplayEdges();
     if (!this.paused) {
       this.accumulator += dt;
       while (this.accumulator >= STEP) {
@@ -244,6 +281,7 @@ export class Game {
     }
     const positions = this.playerPositions();
     this.city.update(positions);
+    if (!this.paused) this.fx.update(dt);
     if (this.paused) this.audio.duck();
     else this.updateAudio(dt);
     this.mapOverlay.setPlayers(
@@ -255,11 +293,18 @@ export class Game {
       const p = this.players[i];
       const pos = positions[i];
       if (!this.debugCam) this.viewports.cameras[i]?.update(p, dt);
+      const def = p.inventory.def();
       this.hud.update(i, {
         speedKmh: p.driving ? p.vehicle!.speedKmh() : undefined,
         prompt: p.prompt ?? undefined,
         stars: p.wanted.stars,
         money: p.money,
+        weapon: p.driving ? undefined : def.name,
+        ammoMag: !p.driving && def.kind === 'gun' ? p.inventory.magCount() : undefined,
+        ammoReserve: !p.driving && def.kind === 'gun' ? p.inventory.reserveCount() : undefined,
+        health: p.health / 100,
+        armour: p.armour / 100,
+        message: p.hudMessage ?? undefined,
         pos,
         heading: p.getHeading(),
         suburb: this.suburbAt(i, pos.x, pos.z),
@@ -313,6 +358,10 @@ export class Game {
     }
     this.npcs.update(STEP);
     for (const e of this.entities) e.update(STEP);
+    for (let i = this.pickups.length - 1; i >= 0; i--) {
+      this.pickups[i].update(STEP);
+      if (this.pickups[i].collected) this.pickups.splice(i, 1);
+    }
     this.world.step(this.eventQueue);
     this.npcs.afterPhysics();
   }

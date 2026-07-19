@@ -7,6 +7,7 @@ import type { Outfit } from '../entities/HumanRig';
 import { TrafficCar } from '../entities/TrafficCar';
 import { CellRef, randomRoadCellNear, roadNeighbors } from './RoadGraph';
 import { cellToWorld } from './CityMap';
+import { VEHICLE_IMPACT } from '../gameplay/Weapons';
 
 const MAX_PEDS = 26;
 const MAX_TRAFFIC = 12;
@@ -178,6 +179,23 @@ export class Npcs {
           true
         );
         this.game.onPedestrianKilled(v);
+      }
+
+      // On-foot players take scaled contact damage from the same overlap test.
+      for (const player of this.game.players) {
+        if (!player.canReceiveVehicleImpact() || v.driver === player) continue;
+        const pos = player.character.position();
+        if (!v.overlapsPedestrian(pos)) continue;
+        const away = new THREE.Vector3(pos.x - t.x, 0, pos.z - t.z);
+        if (away.lengthSq() < 0.01) away.set(velocity.x, 0, velocity.z);
+        away.normalize();
+        const approachSpeed = Math.max(0, velocity.x * away.x + velocity.z * away.z);
+        const impactSpeed = approachSpeed + (speed - approachSpeed) * 0.28;
+        if (impactSpeed < MIN_CONTACT_SPEED) continue;
+        player.notifyVehicleImpact();
+        const damage =
+          impactSpeed >= RAGDOLL_IMPACT_SPEED ? 999 : Math.ceil(impactSpeed * 6);
+        player.takeHit(damage, away, VEHICLE_IMPACT, null);
       }
     }
   }

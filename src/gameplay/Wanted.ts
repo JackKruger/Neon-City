@@ -1,5 +1,7 @@
+import * as THREE from 'three';
 import type { Game } from '../core/Game';
 import type { Player } from '../entities/Player';
+import { CopPed } from '../entities/CopPed';
 import { PoliceCar } from '../entities/PoliceCar';
 import { randomRoadCellNear } from '../world/RoadGraph';
 import { cellToWorld } from '../world/CityMap';
@@ -15,6 +17,7 @@ export class Wanted {
   private evadeTimer = 0;
   private spawnCooldown = 0;
   readonly police: PoliceCar[] = [];
+  readonly copPeds: CopPed[] = [];
 
   constructor(
     private game: Game,
@@ -24,6 +27,12 @@ export class Wanted {
   addHeat(amount: number): void {
     this.heat = Math.min(this.heat + amount, MAX_HEAT);
     this.evadeTimer = 0;
+    this.recomputeStars();
+  }
+
+  /** Drop all heat immediately (player death/arrest). Police disengage. */
+  clear(): void {
+    this.heat = 0;
     this.recomputeStars();
   }
 
@@ -63,6 +72,7 @@ export class Wanted {
     }
     if (want === 0) {
       for (const p of this.police) p.leaving = true;
+      for (const c of this.copPeds) c.leaving = true;
     }
     for (let i = this.police.length - 1; i >= 0; i--) {
       if (this.police[i].shouldDespawn()) {
@@ -70,6 +80,32 @@ export class Wanted {
         this.police.splice(i, 1);
       }
     }
+    for (const c of this.copPeds) c.update(dt);
+    for (let i = this.copPeds.length - 1; i >= 0; i--) {
+      if (this.copPeds[i].shouldDespawn()) {
+        const gone = this.copPeds[i];
+        // Free the car to deploy a replacement officer later.
+        for (const car of this.police) if (car.deployedCop === gone) car.deployedCop = null;
+        gone.dispose();
+        this.copPeds.splice(i, 1);
+      }
+    }
+  }
+
+  /**
+   * Called by a stopped pursuing police car: at 2+ stars an officer steps out
+   * to engage an on-foot target. One deployment per car; capped at star count.
+   */
+  maybeDeployCop(car: PoliceCar): void {
+    if (this.stars < 2 || this.player.driving || this.player.dead) return;
+    if (car.deployedCop && !car.deployedCop.dead) return;
+    const active = this.copPeds.filter((c) => !c.dead && !c.leaving).length;
+    if (active >= this.stars) return;
+    const t = car.vehicle.body.translation();
+    const right = new THREE.Vector3(1.6, 0, 0).applyQuaternion(car.vehicle.quaternion());
+    const cop = new CopPed(this.game, this.player, t.x + right.x, t.z + right.z);
+    car.deployedCop = cop;
+    this.copPeds.push(cop);
   }
 
   private spawnPolice(): void {

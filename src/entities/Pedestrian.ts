@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import type { Entity, Game } from '../core/Game';
 import { PEDESTRIAN_COLLISION_GROUPS } from '../core/const';
+import type { CombatTarget } from '../gameplay/Combat';
+import type { Player } from './Player';
+import { MeleeDef, PED_HEALTH, WEAPONS, WeaponDef } from '../gameplay/Weapons';
 import { Character } from './Character';
 import type { Outfit } from './HumanRig';
 import { Ragdoll } from './Ragdoll';
@@ -8,9 +11,10 @@ import { CellRef, lanePoint, nextRoadCell } from '../world/RoadGraph';
 
 const WALK_DIR = new THREE.Vector3();
 
-export class Pedestrian implements Entity {
+export class Pedestrian implements Entity, CombatTarget {
   readonly character: Character;
   dead = false;
+  health = PED_HEALTH;
   /** Time since death, for despawn. */
   deadFor = 0;
   private ragdoll: Ragdoll | null = null;
@@ -21,6 +25,12 @@ export class Pedestrian implements Entity {
   private fleeTime = 0;
   private impactCooldown = 0;
   private jitter: number;
+  /** Brave peds fight back instead of fleeing when attacked. */
+  private readonly brave: boolean;
+  private brawlTarget: Player | null = null;
+  private brawlTime = 0;
+  private punchCooldown = 0;
+  private pendingPunch = false;
 
   constructor(
     private game: Game,
@@ -31,6 +41,7 @@ export class Pedestrian implements Entity {
   ) {
     this.from = from;
     this.to = to;
+    this.brave = Math.random() < game.pedBraveChance;
     this.jitter = Math.random() * 0.08 - 0.04;
     this.waypoint = lanePoint(from, to, 0.4 + this.jitter);
     this.character = new Character(
@@ -41,6 +52,31 @@ export class Pedestrian implements Entity {
       heightScale,
       PEDESTRIAN_COLLISION_GROUPS
     );
+    game.combat.register(this.character.collider, this);
+  }
+
+  alive(): boolean {
+    return !this.dead;
+  }
+
+  /** Weapon damage from players (and later cops/brawlers). */
+  takeHit(damage: number, dir: THREE.Vector3, weapon: WeaponDef, attacker: Player | null): void {
+    if (this.dead) return;
+    this.health -= damage;
+    if (this.health <= 0) {
+      const strength = weapon.kind === 'melee' ? 3.5 + weapon.knockback : 6;
+      this.die(dir.clone().multiplyScalar(strength));
+      this.game.reportCrime(attacker, 40);
+      return;
+    }
+    this.character.flinch();
+    if (this.brave && attacker) {
+      this.brawlTarget = attacker;
+      this.brawlTime = 0;
+    } else {
+      this.shove(dir, weapon.kind === 'melee' ? weapon.knockback : 1.5);
+    }
+    if (weapon.kind === 'melee') this.game.reportCrime(attacker, weapon.heatPerHit);
   }
 
   update(dt: number): void {
@@ -51,6 +87,11 @@ export class Pedestrian implements Entity {
       return;
     }
     const pos = this.character.position();
+
+    if (this.brawlTarget) {
+      this.updateBrawl(dt, pos);
+      return;
+    }
 
     if (this.fleeDir) {
       this.fleeTime -= dt;
@@ -85,6 +126,55 @@ export class Pedestrian implements Entity {
     this.character.update(dt);
   }
 
+  /** Chase the attacker and throw punches until they get away (or worse). */
+  private updateBrawl(dt: number, pos: THREE.Vector3): void {
+    const target = this.brawlTarget!;
+    this.brawlTime += dt;
+    this.punchCooldown = Math.max(0, this.punchCooldown - dt);
+    const targetPos = target.position();
+    const dx = targetPos.x - pos.x;
+    const dz = targetPos.z - pos.z;
+    const dist = Math.hypot(dx, dz);
+
+    if (target.dead || target.driving || dist > 25 || this.brawlTime > 15) {
+      this.brawlTarget = null;
+      this.pendingPunch = false;
+      // Adrenaline spent; run from the scene like everyone else.
+      if (dist > 0.1) {
+        this.fleeDir = new THREE.Vector3(-dx, 0, -dz).normalize();
+        this.fleeTime = 3;
+      }
+      return;
+    }
+
+    if (this.pendingPunch) {
+      const t = this.character.actionProgress();
+      if (t === null || t >= 0.4) {
+        const hits = this.game.combat.meleeSweep(
+          WEAPONS.fists as MeleeDef,
+          pos,
+          this.character.getFacing(),
+          null,
+          this
+        );
+        if (hits > 0) this.game.audio.thwack(dist);
+        this.pendingPunch = false;
+      }
+    }
+
+    if (dist < 1.4) {
+      this.character.overrideFacing(Math.atan2(dx, dz));
+      this.character.setMove(new THREE.Vector3(), false);
+      if (this.punchCooldown <= 0 && this.character.startAction('punch', 0.5)) {
+        this.punchCooldown = 1.2;
+        this.pendingPunch = true;
+      }
+    } else {
+      this.character.setMove(new THREE.Vector3(dx / dist, 0, dz / dist), true);
+    }
+    this.character.update(dt);
+  }
+
   canReceiveVehicleImpact(): boolean {
     return !this.dead && this.impactCooldown <= 0;
   }
@@ -99,11 +189,13 @@ export class Pedestrian implements Entity {
     this.fleeTime = Math.max(this.fleeTime, 0.7 + Math.min(strength, 4) * 0.18);
   }
 
-  /** Run over: hand the body to physics with the impact velocity. */
+  /** Run over or beaten: hand the body to physics with the impact velocity. */
   die(impact: THREE.Vector3): void {
     if (this.dead) return;
     this.dead = true;
+    this.health = 0;
     this.impactCooldown = Infinity;
+    this.game.combat.unregister(this.character.collider);
     // The ragdoll steals the rig's meshes before the character is disabled.
     this.ragdoll = new Ragdoll(this.game, this.character.rig, impact);
     this.character.setEnabled(false);
@@ -114,6 +206,7 @@ export class Pedestrian implements Entity {
   }
 
   dispose(): void {
+    this.game.combat.unregister(this.character.collider);
     this.ragdoll?.dispose();
     this.character.dispose();
   }

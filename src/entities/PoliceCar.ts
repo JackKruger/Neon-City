@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Entity, Game } from '../core/Game';
+import type { CopPed } from './CopPed';
 import type { Player } from './Player';
 import { Vehicle } from './Vehicle';
 
@@ -7,6 +8,8 @@ import { Vehicle } from './Vehicle';
 export class PoliceCar implements Entity {
   readonly vehicle: Vehicle;
   leaving = false;
+  /** The officer this car has dropped off (one per car until they fall). */
+  deployedCop: CopPed | null = null;
   private leaveTimer = 0;
   private reverseTime = 0;
   private stuckTime = 0;
@@ -95,6 +98,7 @@ export class PoliceCar implements Entity {
       // Don't grind over on-foot players endlessly; stalk them.
       throttle = speed > 4 ? 0 : 0.4;
       brake = speed > 5 ? 0.5 : 0;
+      if (Math.abs(speed) < 1.5) this.target.wanted.maybeDeployCop(this);
     }
     v.command = { steer, throttle, brake, handbrake: false };
   }

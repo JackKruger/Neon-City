@@ -34,6 +34,9 @@ export class Ragdoll {
     impact: THREE.Vector3
   ) {
     game.scene.add(this.group);
+    // Held weapons are not part of the ragdoll parts; drop them first so the
+    // stolen forearm meshes don't leave an orphaned gun floating in the scene.
+    rig.setHeldItem(null);
     rig.root.updateWorldMatrix(true, true);
     const s = rig.scale;
     const specs = rig.parts();
