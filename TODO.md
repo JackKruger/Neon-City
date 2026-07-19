@@ -2,14 +2,14 @@
 
 ## Characters and physics
 
-- [ ] Fix players and NPCs occasionally spawning or settling halfway into the ground.
+- [x] Fix players and NPCs occasionally spawning or settling halfway into the ground.
   - Audit character collider dimensions, model offsets, spawn raycasts, and uneven terrain handling.
   - Add a safe ground-snap/respawn fallback without causing visible jitter.
-- [ ] Allow vehicles to hit NPCs naturally instead of behaving like they struck a wall.
+- [x] Allow vehicles to hit NPCs naturally instead of behaving like they struck a wall.
   - Transfer impact force to the NPC and vehicle based on speed and collision angle.
   - Trigger ragdoll above an appropriate impact threshold.
   - Keep low-speed contact from launching characters or stopping vehicles abruptly.
-- [ ] Add player jumping.
+- [x] Add player jumping.
   - Support keyboard and gamepad input.
   - Only jump while grounded, with stable landing and slope handling.
 - [ ] Allow the player to move the camera independently.
@@ -45,7 +45,7 @@
 
 ## Economy and UI
 
-- [ ] Add a money balance for each player.
+- [x] Add a money balance for each player.
   - Display it in the HUD and provide a clear API for earning and spending money.
   - Persist the balance if save data is introduced.
 - [ ] Polish the UI.

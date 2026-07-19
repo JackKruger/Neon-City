@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { Entity, Game } from '../core/Game';
+import { VEHICLE_COLLISION_GROUPS } from '../core/const';
 import type { CameraTarget } from '../render/Viewports';
 
 /** Uniform scale for all Kenney car models (sedan 2.55u -> ~4.4m). */
@@ -46,6 +47,8 @@ export class Vehicle implements Entity, CameraTarget {
   private steerAngle = 0;
   private sideFriction = 1.0;
   private flippedTime = 0;
+  private chassisCenter = new THREE.Vector3();
+  private chassisHalfSize = new THREE.Vector3();
 
   command: DriveCommand = { steer: 0, throttle: 0, brake: 0, handbrake: false };
   /** Current driver (Player or an AI), if any. */
@@ -87,6 +90,8 @@ export class Vehicle implements Entity, CameraTarget {
     const bbox = new THREE.Box3().setFromObject(model);
     const size = bbox.getSize(new THREE.Vector3());
     const center = bbox.getCenter(new THREE.Vector3());
+    this.chassisCenter.copy(center);
+    this.chassisHalfSize.copy(size).multiplyScalar(0.5);
 
     const world = game.world;
     this.body = world.createRigidBody(
@@ -102,14 +107,16 @@ export class Vehicle implements Entity, CameraTarget {
         .setTranslation(center.x, center.y, center.z)
         .setFriction(0.4)
         .setRestitution(0.3)
-        .setDensity(0.6),
+        .setDensity(0.6)
+        .setCollisionGroups(VEHICLE_COLLISION_GROUPS),
       this.body
     );
     // Dense low slab drops the center of mass for flatter cornering.
     world.createCollider(
       RAPIER.ColliderDesc.cuboid(size.x / 2, 0.08, size.z / 2)
         .setTranslation(center.x, center.y - size.y / 4, center.z)
-        .setDensity(5),
+        .setDensity(5)
+        .setCollisionGroups(VEHICLE_COLLISION_GROUPS),
       this.body
     );
 
@@ -169,6 +176,21 @@ export class Vehicle implements Entity, CameraTarget {
   speedKmh(): number {
     const v = this.body.linvel();
     return Math.hypot(v.x, v.y, v.z) * 3.6;
+  }
+
+  /** True when a standing pedestrian capsule overlaps the chassis bounds. */
+  overlapsPedestrian(position: THREE.Vector3, radius = 0.38, height = 1.8): boolean {
+    const t = this.body.translation();
+    const local = new THREE.Vector3(
+      position.x - t.x,
+      position.y + height / 2 - t.y,
+      position.z - t.z
+    ).applyQuaternion(this.quaternion().invert());
+    return (
+      Math.abs(local.x - this.chassisCenter.x) <= this.chassisHalfSize.x + radius &&
+      Math.abs(local.y - this.chassisCenter.y) <= this.chassisHalfSize.y + height / 2 &&
+      Math.abs(local.z - this.chassisCenter.z) <= this.chassisHalfSize.z + radius
+    );
   }
 
   update(dt: number): void {

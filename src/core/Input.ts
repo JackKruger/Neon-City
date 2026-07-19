@@ -10,6 +10,7 @@ export interface PlayerInput {
   handbrake: boolean;
   sprint: boolean;
   /** Edge-triggered (true for exactly one fixed step). */
+  jump: boolean;
   interact: boolean;
   pause: boolean;
 }
@@ -29,6 +30,7 @@ function emptyInput(): PlayerInput {
     brake: 0,
     handbrake: false,
     sprint: false,
+    jump: false,
     interact: false,
     pause: false,
   };
@@ -44,6 +46,7 @@ export class Input {
   private keyEdges = new Set<string>();
   private padPrev = new Map<number, boolean[]>();
   /** Edge flags accumulated between fixed steps, keyed by player (0/1). */
+  private pendingJump = [false, false];
   private pendingInteract = [false, false];
   private pendingPause = [false, false];
   private pendingMap = false;
@@ -84,6 +87,7 @@ export class Input {
         }
       } else {
         const player = pad.index === this.p1Pad ? 0 : 1;
+        if (just(0)) this.pendingJump[player] = true;
         if (just(3)) this.pendingInteract[player] = true;
         if (just(9)) this.pendingPause[player] = true;
         if (just(8)) this.pendingMap = true;
@@ -91,14 +95,16 @@ export class Input {
       this.padPrev.set(pad.index, pressed);
     }
 
+    if (this.keyEdges.has('Space')) this.pendingJump[0] = true;
     if (this.keyEdges.has('KeyE')) this.pendingInteract[0] = true;
     if (this.keyEdges.has('Escape')) this.pendingPause[0] = true;
     if (this.keyEdges.has('KeyM')) this.pendingMap = true;
     this.keyEdges.clear();
   }
 
-  /** Drop queued interact presses (e.g. accumulated on the pause screen). */
-  clearInteract(): void {
+  /** Drop queued gameplay presses (e.g. accumulated on the pause screen). */
+  clearGameplayEdges(): void {
+    this.pendingJump[0] = this.pendingJump[1] = false;
     this.pendingInteract[0] = this.pendingInteract[1] = false;
   }
 
@@ -139,8 +145,10 @@ export class Input {
       const pad = navigator.getGamepads()[padIndex];
       if (pad) this.readPad(pad, input);
     }
+    input.jump = this.pendingJump[player];
     input.interact = this.pendingInteract[player];
     input.pause = this.pendingPause[player];
+    this.pendingJump[player] = false;
     this.pendingInteract[player] = false;
     this.pendingPause[player] = false;
     return input;

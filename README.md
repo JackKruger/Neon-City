@@ -33,7 +33,7 @@ Current features and fixes are tracked in [TODO.md](TODO.md).
 |                | Player 1 (keyboard)        | Gamepad (either player)     |
 | -------------- | -------------------------- | --------------------------- |
 | Drive / walk   | WASD                       | Left stick + RT gas, LT brake |
-| Handbrake      | Space                      | A (hold)                    |
+| Jump / handbrake | Space                    | A                           |
 | Sprint         | Shift                      | A (hold)                    |
 | Enter/exit car | E                          | Y                           |
 | Pause          | Esc                        | Start                       |

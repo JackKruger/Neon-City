@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Entity, Game } from '../core/Game';
+import { PEDESTRIAN_COLLISION_GROUPS } from '../core/const';
 import { Character } from './Character';
 import type { Outfit } from './HumanRig';
 import { Ragdoll } from './Ragdoll';
@@ -18,6 +19,7 @@ export class Pedestrian implements Entity {
   private waypoint = { x: 0, z: 0 };
   private fleeDir: THREE.Vector3 | null = null;
   private fleeTime = 0;
+  private impactCooldown = 0;
   private jitter: number;
 
   constructor(
@@ -36,11 +38,13 @@ export class Pedestrian implements Entity {
       outfit,
       this.waypoint.x + (Math.random() - 0.5) * 2,
       this.waypoint.z + (Math.random() - 0.5) * 2,
-      heightScale
+      heightScale,
+      PEDESTRIAN_COLLISION_GROUPS
     );
   }
 
   update(dt: number): void {
+    this.impactCooldown = Math.max(0, this.impactCooldown - dt);
     if (this.dead) {
       this.deadFor += dt;
       this.ragdoll?.update();
@@ -81,10 +85,25 @@ export class Pedestrian implements Entity {
     this.character.update(dt);
   }
 
+  canReceiveVehicleImpact(): boolean {
+    return !this.dead && this.impactCooldown <= 0;
+  }
+
+  /** Low-speed contact makes the pedestrian move away without a physics launch. */
+  shove(direction: THREE.Vector3, strength: number): void {
+    if (!this.canReceiveVehicleImpact()) return;
+    this.impactCooldown = 0.35;
+    this.fleeDir = direction.clone().setY(0);
+    if (this.fleeDir.lengthSq() < 0.001) this.fleeDir.set(1, 0, 0);
+    this.fleeDir.normalize();
+    this.fleeTime = Math.max(this.fleeTime, 0.7 + Math.min(strength, 4) * 0.18);
+  }
+
   /** Run over: hand the body to physics with the impact velocity. */
   die(impact: THREE.Vector3): void {
     if (this.dead) return;
     this.dead = true;
+    this.impactCooldown = Infinity;
     // The ragdoll steals the rig's meshes before the character is disabled.
     this.ragdoll = new Ragdoll(this.game, this.character.rig, impact);
     this.character.setEnabled(false);

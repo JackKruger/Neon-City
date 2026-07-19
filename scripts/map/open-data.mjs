@@ -28,6 +28,7 @@ import {
   pointCoordinates,
   polygons,
   property,
+  simplifyWorldRing,
   toGrid,
   toWorld,
 } from './geo.mjs';
@@ -363,6 +364,10 @@ function importBuildings(features, chunks, coverage, heightLayer, landUseLayer, 
 function addBuilding(feature, ring, bounds, landUse, rawHeight, chunks, coverage, heightLayer) {
   const height = Math.max(3, Math.min(255, Number(rawHeight) || Math.max(5, Math.sqrt(bounds.width * bounds.depth) * 0.7)));
   const style = classifyBuildingStyle(landUse, height);
+  const outline = simplifyWorldRing(ring).map((point) => [
+    round(point.x - bounds.x),
+    round(point.z - bounds.z),
+  ]);
   addObject(chunks, {
     kind: 'building',
     x: round(bounds.x),
@@ -373,6 +378,7 @@ function addBuilding(feature, ring, bounds, landUse, rawHeight, chunks, coverage
     height: round(height),
     style,
     roof: textValue(feature.properties, 'roof_type', 'rooftype').toLowerCase() || undefined,
+    ...(outline.length >= 3 ? { outline } : {}),
   });
   for (const polygon of [ring]) {
     fillPolygon(coverage, polygon, coverageBuilding(coverage));
@@ -663,7 +669,7 @@ function thinChunkObjects(chunks) {
   return removed;
 }
 
-export async function enrichMelbourneMap({ root, grid, baseSuburbs, options = {} }) {
+export async function enrichMelbourneMap({ root, grid, roadSurfaces = [], baseSuburbs, options = {} }) {
   const cacheDir = join(root, '.map-cache', 'open-data');
   const outputDir = join(root, 'public', 'maps');
   mkdirSync(cacheDir, { recursive: true });
@@ -679,6 +685,7 @@ export async function enrichMelbourneMap({ root, grid, baseSuburbs, options = {}
     coverage: new Uint8Array(N),
   };
   const chunks = {};
+  for (const surface of roadSurfaces) addObject(chunks, surface);
 
   const planning = await loadSource(cacheDir, 'planning', options, report);
   const clue = await loadSource(cacheDir, 'clue', options, report);
@@ -716,7 +723,12 @@ export async function enrichMelbourneMap({ root, grid, baseSuburbs, options = {}
   report.results.thinnedObjects = thinChunkObjects(chunks);
   for (const [name, layer] of Object.entries(layers)) writeLayer(outputDir, name, layer);
   for (const values of Object.values(chunks)) values.sort((a, b) => a.kind.localeCompare(b.kind) || a.x - b.x || a.z - b.z);
-  writeFileSync(join(outputDir, 'melbourne.objects.json'), JSON.stringify({ version: 1, chunkTiles: CHUNK_TILES, chunks }));
+  writeFileSync(join(outputDir, 'melbourne.objects.json'), JSON.stringify({
+    version: 1,
+    chunkTiles: CHUNK_TILES,
+    roadSurfaces: roadSurfaces.length > 0,
+    chunks,
+  }));
   writeFileSync(join(outputDir, 'melbourne.addresses.json'), JSON.stringify({ version: 1, streets: addressResult.streets }));
   writeFileSync(join(outputDir, 'melbourne.areas.json'), JSON.stringify({ version: 1, areas: boundaries?.areas ?? [] }));
   writeFileSync(join(outputDir, 'melbourne.sources.json'), JSON.stringify(report, null, 2) + '\n');

@@ -307,11 +307,20 @@ export class HumanRig {
   /**
    * Pose the skeleton for locomotion.
    * @param phase gait cycle in radians (one full cycle = two steps)
-   * @param blend 0 = standing idle, 1 = full stride
-   * @param run 0 = walk gait, 1 = run gait
-   * @param time absolute seconds, for idle micro-motion
+  * @param blend 0 = standing idle, 1 = full stride
+  * @param run 0 = walk gait, 1 = run gait
+  * @param time absolute seconds, for idle micro-motion
+   * @param airborne 0 = grounded pose, 1 = full jump pose
+   * @param verticalSpeed positive while rising, negative while falling
    */
-  setLocomotion(phase: number, blend: number, run: number, time: number): void {
+  setLocomotion(
+    phase: number,
+    blend: number,
+    run: number,
+    time: number,
+    airborne = 0,
+    verticalSpeed = 0
+  ): void {
     const hipAmp = 0.5 + 0.35 * run;
     const armAmp = 0.4 + 0.5 * run;
 
@@ -335,6 +344,39 @@ export class HumanRig {
     // Center-of-mass bob: two per cycle, deepest at double support.
     const bob = blend * (0.02 + 0.025 * run) * Math.abs(Math.cos(phase));
     this.pelvis.position.y = PELVIS_Y - blend * 0.03 * (1 + run) - bob;
+
+    if (airborne > 0.001) this.blendJumpPose(airborne, verticalSpeed);
+  }
+
+  /** Tuck both legs in the air, then extend slightly while descending. */
+  private blendJumpPose(blend: number, verticalSpeed: number): void {
+    const falling = THREE.MathUtils.clamp(-verticalSpeed / 8, 0, 1);
+    const tuck = 1 - falling * 0.22;
+    const mix = (from: number, to: number) => THREE.MathUtils.lerp(from, to, blend);
+
+    // Offset the legs a little so the silhouette feels natural instead of
+    // snapping into a perfectly symmetrical seated pose.
+    this.legL.hip.rotation.x = mix(this.legL.hip.rotation.x, -0.58 * tuck);
+    this.legR.hip.rotation.x = mix(this.legR.hip.rotation.x, -0.42 * tuck);
+    this.legL.knee.rotation.x = mix(this.legL.knee.rotation.x, 1.28 * tuck);
+    this.legR.knee.rotation.x = mix(this.legR.knee.rotation.x, 1.08 * tuck);
+    this.legL.ankle.rotation.x = mix(this.legL.ankle.rotation.x, -0.34);
+    this.legR.ankle.rotation.x = mix(this.legR.ankle.rotation.x, -0.28);
+
+    // Bring the arms forward to sell the lift and keep the torso compact.
+    this.armL.shoulder.rotation.x = mix(this.armL.shoulder.rotation.x, -0.72);
+    this.armR.shoulder.rotation.x = mix(this.armR.shoulder.rotation.x, -0.58);
+    this.armL.elbow.rotation.x = mix(this.armL.elbow.rotation.x, -0.42);
+    this.armR.elbow.rotation.x = mix(this.armR.elbow.rotation.x, -0.36);
+    this.spine.rotation.x = mix(this.spine.rotation.x, -0.08);
+    this.neck.rotation.x = mix(this.neck.rotation.x, 0.05);
+    this.pelvis.rotation.y *= 1 - blend;
+    this.pelvis.rotation.z *= 1 - blend;
+    this.pelvis.position.y = THREE.MathUtils.lerp(
+      this.pelvis.position.y,
+      PELVIS_Y + 0.03,
+      0.8 * blend
+    );
   }
 
   private poseLeg(leg: Leg, p: number, blend: number, run: number, hipAmp: number): void {

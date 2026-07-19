@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { MAP_SIZE, fillPolygon, markLine, orientedBounds, toGrid, toWorld } from './geo.mjs';
+import {
+  MAP_SIZE,
+  fillPolygon,
+  markLine,
+  orientedBounds,
+  simplifyWorldRing,
+  toGrid,
+  toWorld,
+} from './geo.mjs';
 
 test('Melbourne projection round-trips the map centre', () => {
   const world = toWorld(-37.835, 144.96);
@@ -37,4 +45,18 @@ test('polygon bounds and raster fill cover the centre', () => {
   const mask = new Uint8Array(MAP_SIZE * MAP_SIZE);
   fillPolygon(mask, ring, 7);
   assert.equal(mask[MAP_SIZE / 2 + (MAP_SIZE / 2) * MAP_SIZE], 7);
+});
+
+test('building rings retain corners while shedding redundant points', () => {
+  const ring = [
+    [144.9598, -37.8348],
+    [144.96, -37.8348],
+    [144.9602, -37.8348],
+    [144.9602, -37.8352],
+    [144.9598, -37.8352],
+    [144.9598, -37.8348],
+  ];
+  const outline = simplifyWorldRing(ring);
+  assert.equal(outline.length, 4);
+  assert.ok(outline.every((point) => Number.isFinite(point.x) && Number.isFinite(point.z)));
 });

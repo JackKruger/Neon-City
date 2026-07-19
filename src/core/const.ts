@@ -7,6 +7,18 @@ export const TILE = 12;
 /** Gravity (m/s^2). */
 export const GRAVITY = -20;
 
+/**
+ * Living pedestrians are detected by gameplay code instead of acting as
+ * immovable solver contacts against vehicles. Other collision pairs retain
+ * Rapier's default all-groups behavior.
+ */
+const VEHICLE_GROUP = 0x0004;
+const PEDESTRIAN_GROUP = 0x0008;
+export const VEHICLE_COLLISION_GROUPS =
+  ((VEHICLE_GROUP << 16) | (0xffff & ~PEDESTRIAN_GROUP)) >>> 0;
+export const PEDESTRIAN_COLLISION_GROUPS =
+  ((PEDESTRIAN_GROUP << 16) | (0xffff & ~VEHICLE_GROUP)) >>> 0;
+
 /** Stealable civilian car models (also used for parked and traffic cars). */
 export const CIVILIAN_CARS = [
   'cars/sedan',

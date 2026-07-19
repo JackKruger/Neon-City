@@ -168,6 +168,64 @@ export function orientedBounds(ring) {
   };
 }
 
+function pointSegmentDistanceSq(point, a, b) {
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  const lengthSq = dx * dx + dz * dz;
+  if (lengthSq === 0) return (point.x - a.x) ** 2 + (point.z - a.z) ** 2;
+  const t = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.z - a.z) * dz) / lengthSq));
+  const x = a.x + dx * t;
+  const z = a.z + dz * t;
+  return (point.x - x) ** 2 + (point.z - z) ** 2;
+}
+
+function simplifyOpenPath(points, toleranceSq) {
+  if (points.length <= 2) return points;
+  let farthest = -1;
+  let maxDistanceSq = toleranceSq;
+  for (let i = 1; i < points.length - 1; i++) {
+    const distanceSq = pointSegmentDistanceSq(points[i], points[0], points.at(-1));
+    if (distanceSq > maxDistanceSq) {
+      farthest = i;
+      maxDistanceSq = distanceSq;
+    }
+  }
+  if (farthest < 0) return [points[0], points.at(-1)];
+  return [
+    ...simplifyOpenPath(points.slice(0, farthest + 1), toleranceSq).slice(0, -1),
+    ...simplifyOpenPath(points.slice(farthest), toleranceSq),
+  ];
+}
+
+/** Convert a closed lon/lat ring to a compact world-space polygon. */
+export function simplifyWorldRing(ring, tolerance = 0.75, maxPoints = 96) {
+  if (!Array.isArray(ring) || ring.length < 4) return [];
+  const points = ring.map(([lon, lat]) => toWorld(lat, lon));
+  if (Math.hypot(points[0].x - points.at(-1).x, points[0].z - points.at(-1).z) < 0.01) {
+    points.pop();
+  }
+  if (points.length < 3) return [];
+
+  let farthest = 1;
+  let farthestDistanceSq = 0;
+  for (let i = 1; i < points.length; i++) {
+    const distanceSq = (points[i].x - points[0].x) ** 2 + (points[i].z - points[0].z) ** 2;
+    if (distanceSq > farthestDistanceSq) {
+      farthest = i;
+      farthestDistanceSq = distanceSq;
+    }
+  }
+  let currentTolerance = tolerance;
+  let simplified = points;
+  do {
+    const first = simplifyOpenPath(points.slice(0, farthest + 1), currentTolerance ** 2);
+    const second = simplifyOpenPath([...points.slice(farthest), points[0]], currentTolerance ** 2);
+    simplified = [...first.slice(0, -1), ...second.slice(0, -1)];
+    currentTolerance *= 1.5;
+  } while (simplified.length > maxPoints);
+  return simplified;
+}
+
 export function chunkKeyForWorld(x, z) {
   const cx = Math.round(x / TILE);
   const cz = Math.round(z / TILE);

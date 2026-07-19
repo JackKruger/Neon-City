@@ -9,7 +9,14 @@ import { MapOverlay } from '../ui/MapOverlay';
 import { AudioSys } from './AudioSys';
 import { CIVILIAN_CARS, GRAVITY, PALETTE, STEP } from './const';
 import { CITY_ASSETS, City } from '../world/City';
-import { cellAt, getAuthoredMap, suburbNameAt, worldToCell } from '../world/CityMap';
+import {
+  cellAt,
+  cellToWorld,
+  getAuthoredMap,
+  nearestRoadCell,
+  suburbNameAt,
+  worldToCell,
+} from '../world/CityMap';
 import { loadAuthoredMap } from '../world/MapLoad';
 import { Vehicle } from '../entities/Vehicle';
 import { Player } from '../entities/Player';
@@ -91,8 +98,16 @@ export class Game {
       if (name.startsWith('roads/road-')) this.assets.tint(name, 0x666c7c);
     }
     this.city = new City(this);
-    const spawn = getAuthoredMap()?.spawn ?? { x: 3, z: 24 };
+    const requestedSpawn = map.spawn ?? { x: 3, z: 24 };
+    const requestedCell = worldToCell(requestedSpawn.x, requestedSpawn.z);
+    const safeSpawnCell = nearestRoadCell(requestedCell.cx, requestedCell.cz);
+    const spawn = safeSpawnCell
+      ? cellToWorld(safeSpawnCell.cx, safeSpawnCell.cz)
+      : requestedSpawn;
     this.city.prewarm(spawn.x, spawn.z);
+    // Register freshly-created fixed colliders with Rapier's scene queries so
+    // the first character can raycast its exact spawn surface immediately.
+    this.world.step(this.eventQueue);
 
     const p1 = new Player(this, 0, spawn.x, spawn.z);
     this.players.push(p1);
@@ -213,7 +228,7 @@ export class Game {
       } else {
         this.paused = !this.paused;
         this.hud.setPaused(this.paused);
-        if (!this.paused) this.input.clearInteract();
+        if (!this.paused) this.input.clearGameplayEdges();
       }
     }
     if (mapPressed && !pausePressed && !this.paused) {
@@ -244,6 +259,7 @@ export class Game {
         speedKmh: p.driving ? p.vehicle!.speedKmh() : undefined,
         prompt: p.prompt ?? undefined,
         stars: p.wanted.stars,
+        money: p.money,
         pos,
         heading: p.getHeading(),
         suburb: this.suburbAt(i, pos.x, pos.z),
@@ -298,5 +314,6 @@ export class Game {
     this.npcs.update(STEP);
     for (const e of this.entities) e.update(STEP);
     this.world.step(this.eventQueue);
+    this.npcs.afterPhysics();
   }
 }

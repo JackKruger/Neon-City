@@ -38,7 +38,8 @@ export const CoverageFlag = {
 } as const;
 
 export type AuthoredObject =
-  | { kind: 'building'; x: number; z: number; rotation: number; width: number; depth: number; height: number; style: 'commercial' | 'skyscraper' | 'suburban' | 'industrial'; roof?: string }
+  | { kind: 'road-surface'; x: number; z: number; surface: 'asphalt' | 'pavement'; outline: [number, number][] }
+  | { kind: 'building'; x: number; z: number; rotation: number; width: number; depth: number; height: number; style: 'commercial' | 'skyscraper' | 'suburban' | 'industrial'; roof?: string; outline?: [number, number][] }
   | { kind: 'tree'; x: number; z: number; height: number; variant: 'small' | 'large' }
   | { kind: 'parking'; x: number; z: number; rotation: number }
   | { kind: 'bollard' | 'bicycle-rail' | 'bin' | 'fountain' | 'seat' | 'planter' | 'barbecue' | 'art'; x: number; z: number; rotation: number };
@@ -56,6 +57,8 @@ export interface AuthoredMap {
   suburbGrid?: Uint8Array;
   layers?: Partial<Record<MapLayerName, Uint8Array>>;
   objectChunks?: Record<string, AuthoredObject[]>;
+  /** Exact buffered OSM road polygons are available for visual rendering. */
+  roadSurfaces?: boolean;
   /** Suggested player spawn (world meters, on a road cell). */
   spawn: { x: number; z: number };
   attribution: string;
@@ -79,7 +82,17 @@ function mod(n: number, m: number): number {
 }
 
 export function isRoad(cx: number, cz: number): boolean {
-  if (authored) return cellAt(cx, cz) === '#';
+  if (authored) {
+    const index = authoredIndex(cx, cz);
+    if (index === null || CODE_TO_CELL[authored.grid[index]] !== '#') return false;
+    const coverage = authored.layers?.coverage?.[index] ?? 0;
+    const transport = authored.layers?.transport?.[index] ?? 0;
+    // The base OSM raster includes pedestrian/service ways through building
+    // footprints. Those are not usable by this single-level vehicle graph.
+    // Keep explicitly-authored grade-separated roads when that layer exists.
+    const gradeSeparated = (transport & (TransportFlag.Bridge | TransportFlag.Tunnel)) !== 0;
+    return (coverage & CoverageFlag.Building) === 0 || gradeSeparated;
+  }
   return mod(cx, BLOCK) === 0 || mod(cz, BLOCK) === 0;
 }
 

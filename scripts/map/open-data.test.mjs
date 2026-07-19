@@ -36,7 +36,18 @@ test('open data enrichment emits all runtime contracts', async () => {
     writeGeo('geoscape-localities.geojson', [polygon('Melbourne', block, { locality_name: 'Melbourne' })]);
 
     const grid = new Uint8Array(MAP_SIZE * MAP_SIZE).fill(3);
-    const result = await enrichMelbourneMap({ root, grid, baseSuburbs: null });
+    const result = await enrichMelbourneMap({
+      root,
+      grid,
+      roadSurfaces: [{
+        kind: 'road-surface',
+        surface: 'asphalt',
+        x: 0,
+        z: 0,
+        outline: [[-8, -4], [8, -4], [8, 4], [-8, 4]],
+      }],
+      baseSuburbs: null,
+    });
     const output = join(root, 'public', 'maps');
     const transport = new Uint8Array(readFileSync(join(output, 'melbourne.transport.bin')));
     const speed = new Uint8Array(readFileSync(join(output, 'melbourne.speed.bin')));
@@ -54,7 +65,9 @@ test('open data enrichment emits all runtime contracts', async () => {
     assert.ok(address.some((value) => value > 0));
     assert.ok(coverage.some((value) => (value & COVERAGE.BUILDING) !== 0));
     const authored = Object.values(objects.chunks).flat();
-    for (const kind of ['building', 'tree', 'bollard', 'art', 'parking']) assert.ok(authored.some((item) => item.kind === kind), kind);
+    for (const kind of ['road-surface', 'building', 'tree', 'bollard', 'art', 'parking']) assert.ok(authored.some((item) => item.kind === kind), kind);
+    assert.equal(objects.roadSurfaces, true);
+    assert.ok(authored.find((item) => item.kind === 'building')?.outline?.length >= 3);
     assert.equal(result.suburbs?.[0]?.name, 'Melbourne');
   } finally {
     rmSync(root, { recursive: true, force: true });

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import RAPIER from '@dimforge/rapier3d-compat';
 import type { Game } from '../core/Game';
 import { CIVILIAN_CARS } from '../core/const';
 import { Pedestrian } from '../entities/Pedestrian';
@@ -12,6 +13,8 @@ const MAX_TRAFFIC = 12;
 const SPAWN_MIN = 45;
 const SPAWN_MAX = 100;
 const DESPAWN = 140;
+const MIN_CONTACT_SPEED = 0.65;
+const RAGDOLL_IMPACT_SPEED = 4.5;
 
 const SKINS = [0xffdbc4, 0xf1c27d, 0xe0ac69, 0xc68642, 0x8d5524, 0x5c3a21];
 const HAIRS = [0x241b17, 0x4a2f23, 0x8c5a3c, 0xb5651d, 0xd8c6a0, 0x707580, 0x1a1a2e];
@@ -48,8 +51,6 @@ export class Npcs {
     for (const p of this.peds) p.update(dt);
     for (const t of this.traffic) t.update(dt);
 
-    this.checkRunOvers();
-
     this.spawnTimer -= dt;
     if (this.spawnTimer <= 0) {
       this.spawnTimer = 0.4;
@@ -57,6 +58,11 @@ export class Npcs {
       if (this.peds.length < MAX_PEDS) this.spawnPed();
       if (this.traffic.length < MAX_TRAFFIC) this.spawnTraffic();
     }
+  }
+
+  /** Resolve pedestrian impacts from the positions produced by the physics step. */
+  afterPhysics(): void {
+    this.checkVehicleImpacts();
   }
 
   private distToPlayers(x: number, z: number): number {
@@ -122,21 +128,56 @@ export class Npcs {
     }
   }
 
-  private checkRunOvers(): void {
+  private checkVehicleImpacts(): void {
     for (const v of this.game.vehicles) {
-      const speed = v.getSpeed();
-      if (speed < 5) continue;
+      const velocity = v.body.linvel();
+      const speed = Math.hypot(velocity.x, velocity.z);
+      if (speed < MIN_CONTACT_SPEED) continue;
       const t = v.body.translation();
       for (const p of this.peds) {
-        if (p.dead) continue;
+        if (!p.canReceiveVehicleImpact()) continue;
         const pos = p.position();
-        const dx = pos.x - t.x;
-        const dz = pos.z - t.z;
-        if (dx * dx + dz * dz < 2.6) {
-          const vel = v.body.linvel();
-          p.die(new THREE.Vector3(vel.x, vel.y, vel.z));
-          this.game.onPedestrianKilled(v);
+        if (!v.overlapsPedestrian(pos)) continue;
+
+        const away = new THREE.Vector3(pos.x - t.x, 0, pos.z - t.z);
+        if (away.lengthSq() < 0.01) away.set(velocity.x, 0, velocity.z);
+        away.normalize();
+        const approachSpeed = Math.max(0, velocity.x * away.x + velocity.z * away.z);
+        const angle = THREE.MathUtils.clamp(approachSpeed / speed, 0, 1);
+        // A direct hit transfers most of the speed; a side-swipe still counts,
+        // but needs substantially more speed to cause a knockdown.
+        const impactSpeed = approachSpeed + (speed - approachSpeed) * 0.28;
+        if (impactSpeed < MIN_CONTACT_SPEED) continue;
+
+        if (impactSpeed < RAGDOLL_IMPACT_SPEED) {
+          p.shove(away, impactSpeed);
+          continue;
         }
+
+        const carry = 0.42 + angle * 0.26;
+        const impact = new THREE.Vector3(
+          velocity.x * carry + away.x * impactSpeed * 0.2,
+          Math.max(0, velocity.y) * 0.3 + Math.min(1.2, impactSpeed * 0.06),
+          velocity.z * carry + away.z * impactSpeed * 0.2
+        );
+        const horizontal = Math.hypot(impact.x, impact.z);
+        if (horizontal > 20) impact.multiplyScalar(20 / horizontal);
+        p.die(impact);
+
+        // A human impact scrubs a little speed and can impart a small yaw,
+        // without the abrupt stop caused by an immovable kinematic capsule.
+        const impulseMagnitude =
+          v.body.mass() * Math.min(0.75, impactSpeed * (0.025 + angle * 0.025));
+        v.body.applyImpulseAtPoint(
+          new RAPIER.Vector3(
+            -away.x * impulseMagnitude,
+            0,
+            -away.z * impulseMagnitude
+          ),
+          new RAPIER.Vector3(pos.x, t.y, pos.z),
+          true
+        );
+        this.game.onPedestrianKilled(v);
       }
     }
   }

@@ -13,8 +13,9 @@
  * Map data © OpenStreetMap contributors, licensed under ODbL:
  * https://www.openstreetmap.org/copyright
  *
- * Usage: node scripts/build-map.mjs [--fresh]
- *   --fresh  ignore the cached Overpass response and re-download
+ * Usage: node scripts/build-map.mjs [--fresh] [--roads-only]
+ *   --fresh       ignore the cached Overpass response and re-download
+ *   --roads-only  update polygon road objects without rebuilding other data
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -23,6 +24,8 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { enrichMelbourneMap, openDataHelp, openDataInputsPresent } from './map/open-data.mjs';
+import { chunkKeyForWorld } from './map/geo.mjs';
+import { roadSurfacesFromOverpass } from './map/roads.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const TILE = 12; // keep in sync with src/core/const.ts
@@ -334,6 +337,29 @@ const PREVIEW_COLORS = {
   '~': [0x2e, 0xc4, 0xb6],
 };
 
+function writeRoadSurfacesOnly(data) {
+  const path = join(ROOT, 'public', 'maps', `${MAP.name}.objects.json`);
+  if (!existsSync(path)) throw new Error(`authored object map not found: ${path}`);
+  const objects = JSON.parse(readFileSync(path, 'utf8'));
+  if (!objects || objects.version !== 1 || typeof objects.chunks !== 'object') {
+    throw new Error(`invalid authored object map: ${path}`);
+  }
+  for (const [key, values] of Object.entries(objects.chunks)) {
+    objects.chunks[key] = values.filter((object) => object.kind !== 'road-surface');
+  }
+  const surfaces = roadSurfacesFromOverpass(data);
+  for (const surface of surfaces) {
+    const key = chunkKeyForWorld(surface.x, surface.z);
+    (objects.chunks[key] ??= []).push(surface);
+  }
+  for (const values of Object.values(objects.chunks)) {
+    values.sort((a, b) => a.kind.localeCompare(b.kind) || a.x - b.x || a.z - b.z);
+  }
+  objects.roadSurfaces = surfaces.length > 0;
+  writeFileSync(path, JSON.stringify(objects));
+  console.log(`wrote ${surfaces.length} polygon road surfaces to public/maps/${MAP.name}.objects.json`);
+}
+
 // --- main -------------------------------------------------------------------
 
 async function main() {
@@ -344,6 +370,14 @@ async function main() {
     return;
   }
   const data = fetchOverpass();
+  if (process.argv.includes('--roads-only')) {
+    writeRoadSurfacesOnly(data);
+    return;
+  }
+  if (process.argv.includes('--fetch-osm-only')) {
+    console.log('OSM source cached; map assets were left unchanged.');
+    return;
+  }
   const N = MAP.size * MAP.size;
   const roads = new Uint8Array(N);
   const water = new Uint8Array(N);
@@ -492,6 +526,7 @@ async function main() {
     enrichment = await enrichMelbourneMap({
       root: ROOT,
       grid,
+      roadSurfaces: roadSurfacesFromOverpass(data),
       baseSuburbs: { grid: suburbGrid, suburbs },
       options: {
         download: process.argv.includes('--download-open-data'),

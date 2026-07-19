@@ -63,6 +63,7 @@ export async function loadAuthoredMap(name: string): Promise<AuthoredMap> {
       const objects = await response.json();
       if (!objects || objects.version !== 1 || typeof objects.chunks !== 'object') throw new Error('invalid object index');
       map.objectChunks = objects.chunks;
+      map.roadSurfaces = objects.roadSurfaces === true;
     } catch (error) {
       console.warn(`[map] ${name}: authored objects unavailable (${error})`);
     }

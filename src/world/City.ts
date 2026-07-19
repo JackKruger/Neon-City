@@ -12,7 +12,9 @@ import {
   cellAt,
   cellHash,
   cellToWorld,
+  getAuthoredMap,
   hasCoverage,
+  isRoad,
   roadMask,
   transportAt,
   worldToCell,
@@ -40,6 +42,9 @@ const FENCE = 'suburban/fence-3x3';
 const DRIVEWAY = 'suburban/driveway-long';
 const PATHS = ['suburban/path-long', 'suburban/path-stones-long', 'suburban/path-stones-messy'];
 const PLANTER = 'suburban/planter';
+/** Keep authored building boxes clear of car lanes and pedestrian waypoints. */
+const ROAD_SPAWN_CLEARANCE = TILE * 0.46;
+const PARKED_CAR_CLEARANCE = 4.5;
 
 export const CITY_ASSETS = [
   ...COMMERCIAL,
@@ -172,6 +177,12 @@ export class City {
     civic: new THREE.MeshStandardMaterial({ color: 0x489fb5, roughness: 0.55 }),
     art: new THREE.MeshStandardMaterial({ color: 0xe85d75, roughness: 0.35, metalness: 0.2 }),
   };
+  private authoredBuildingMats = {
+    commercial: new THREE.MeshStandardMaterial({ color: 0xb985cf, roughness: 0.78 }),
+    skyscraper: new THREE.MeshStandardMaterial({ color: 0x718caf, roughness: 0.5, metalness: 0.18 }),
+    suburban: new THREE.MeshStandardMaterial({ color: 0xd9b38c, roughness: 0.88 }),
+    industrial: new THREE.MeshStandardMaterial({ color: 0x899096, roughness: 0.82, metalness: 0.12 }),
+  };
 
   constructor(private game: Game) {
     // One flat ground slab covers the whole (unbounded) city; chunks only
@@ -245,6 +256,7 @@ export class City {
     const body = this.game.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
     const buckets: Buckets = new Map();
     const vehicles: Vehicle[] = [];
+    const polygonRoads = getAuthoredMap()?.roadSurfaces === true;
 
     const c0x = kx * CHUNK_TILES;
     const c0z = kz * CHUNK_TILES;
@@ -254,27 +266,30 @@ export class City {
         const { x, z } = cellToWorld(cx, cz);
         switch (cell) {
           case '#': {
+            // Building coverage wins over the coarse OSM road raster. The
+            // road may be a pedestrian/service way inside the footprint.
+            if (!isRoad(cx, cz)) {
+              this.groundPlane(x, z, 'pavement', buckets);
+              break;
+            }
             const mask = roadMask(cx, cz);
-            // Asphalt under every road cell: hides seams between tiles and is
-            // the whole surface of wide-road cells.
-            this.groundPlane(x, z, 'asphalt', buckets);
-            // OSM arterials rasterize 2+ cells wide; the tile set can only
-            // express 1-wide networks, so wide-road cells stay flat asphalt
-            // instead of becoming a patchwork of fake intersections.
-            if (!roadBlob(cx, cz)) {
-              let { model, rot } = ROAD_TABLE.get(mask) ?? { model: 'roads/road-square', rot: 0 };
-              if ((transportAt(cx, cz) & TransportFlag.Bridge) && (mask === 5 || mask === 10)) {
-                model = 'roads/road-bridge';
-                rot = mask === 10 ? Math.PI / 2 : 0;
+            if (!polygonRoads) {
+              // Legacy authored/procedural maps still use the tile road kit.
+              this.groundPlane(x, z, 'asphalt', buckets);
+              if (!roadBlob(cx, cz)) {
+                let { model, rot } = ROAD_TABLE.get(mask) ?? { model: 'roads/road-square', rot: 0 };
+                if ((transportAt(cx, cz) & TransportFlag.Bridge) && (mask === 5 || mask === 10)) {
+                  model = 'roads/road-bridge';
+                  rot = mask === 10 ? Math.PI / 2 : 0;
+                }
+                if (model === 'roads/road-straight' && this.nextToIntersection(cx, cz)) {
+                  model = 'roads/road-crossing';
+                }
+                const { object } = this.game.assets.getFitted(model, { width: TILE });
+                object.position.set(x, -TILE * 0.02 + 0.002, z);
+                object.rotation.y = rot;
+                this.bake(object, model, buckets);
               }
-              // Zebra crossing on straight segments entering an intersection.
-              if (model === 'roads/road-straight' && this.nextToIntersection(cx, cz)) {
-                model = 'roads/road-crossing';
-              }
-              const { object } = this.game.assets.getFitted(model, { width: TILE });
-              object.position.set(x, -TILE * 0.02 + 0.002, z);
-              object.rotation.y = rot;
-              this.bake(object, model, buckets);
             }
             this.streetlight(cx, cz, x, z, mask, buckets);
             if (!hasCoverage(cx, cz, CoverageFlag.Parking)) this.maybeParkCar(cx, cz, x, z, mask, vehicles);
@@ -421,7 +436,9 @@ export class City {
     buckets: Buckets,
     vehicles: Vehicle[]
   ): void {
-    if (feature.kind === 'building') {
+    if (feature.kind === 'road-surface') {
+      this.authoredRoadSurface(feature, buckets);
+    } else if (feature.kind === 'building') {
       this.authoredBuilding(feature, body, buckets);
     } else if (feature.kind === 'tree') {
       this.authoredTree(feature, body, buckets);
@@ -432,11 +449,38 @@ export class City {
     }
   }
 
+  private authoredRoadSurface(
+    feature: Extract<AuthoredObject, { kind: 'road-surface' }>,
+    buckets: Buckets
+  ): void {
+    if (feature.outline.length < 3) return;
+    const shape = new THREE.Shape();
+    for (let i = 0; i < feature.outline.length; i++) {
+      const [x, z] = feature.outline[i];
+      if (i === 0) shape.moveTo(x, -z);
+      else shape.lineTo(x, -z);
+    }
+    shape.closePath();
+    const geometry = new THREE.ShapeGeometry(shape);
+    geometry.rotateX(-Math.PI / 2);
+    geometry.translate(feature.x, 0.018, feature.z);
+    this.bucket(this.groundMats[feature.surface], geometry, buckets);
+  }
+
   private authoredBuilding(
     feature: Extract<AuthoredObject, { kind: 'building' }>,
     body: RAPIER.RigidBody,
     buckets: Buckets
   ): void {
+    if (feature.outline && feature.outline.length >= 3) {
+      this.authoredFootprintBuilding(feature, body, buckets);
+      return;
+    }
+    // Source footprints are represented by one oriented box. Very large or
+    // concave footprints can therefore cover roads that the original polygon
+    // did not. Never let that approximation seal a gameplay spawn corridor.
+    if (this.authoredBuildingBlocksRoad(feature)) return;
+
     const { cx, cz } = worldToCell(feature.x, feature.z);
     const models = feature.style === 'industrial'
       ? INDUSTRIAL
@@ -462,6 +506,44 @@ export class City {
         .setRotation({ x: 0, y: Math.sin(feature.rotation / 2), z: 0, w: Math.cos(feature.rotation / 2) }),
       body
     );
+  }
+
+  /** Extrude the real simplified footprint and reuse that mesh for collision. */
+  private authoredFootprintBuilding(
+    feature: Extract<AuthoredObject, { kind: 'building' }>,
+    body: RAPIER.RigidBody,
+    buckets: Buckets
+  ): void {
+    const outline = feature.outline!;
+    const shape = new THREE.Shape();
+    for (let i = 0; i < outline.length; i++) {
+      const [x, z] = outline[i];
+      if (i === 0) shape.moveTo(x, -z);
+      else shape.lineTo(x, -z);
+    }
+    shape.closePath();
+    const geometry = new THREE.ExtrudeGeometry(shape, {
+      depth: feature.height,
+      bevelEnabled: false,
+      steps: 1,
+      curveSegments: 1,
+    });
+    geometry.rotateX(-Math.PI / 2);
+    geometry.translate(feature.x, 0, feature.z);
+    geometry.computeVertexNormals();
+
+    const position = geometry.getAttribute('position');
+    const vertices = new Float32Array(position.count * 3);
+    for (let i = 0; i < position.count; i++) {
+      vertices[i * 3] = position.getX(i);
+      vertices[i * 3 + 1] = position.getY(i);
+      vertices[i * 3 + 2] = position.getZ(i);
+    }
+    const indices = geometry.index
+      ? Uint32Array.from(geometry.index.array)
+      : Uint32Array.from({ length: position.count }, (_, i) => i);
+    this.game.world.createCollider(RAPIER.ColliderDesc.trimesh(vertices, indices), body);
+    this.bucket(this.authoredBuildingMats[feature.style], geometry, buckets);
   }
 
   private authoredTree(
@@ -490,14 +572,49 @@ export class City {
     const offset = TILE * 0.3 * side;
     const x = feature.x + Math.cos(feature.rotation) * offset;
     const z = feature.z - Math.sin(feature.rotation) * offset;
+    // The open parking dataset may contain multiple bays that thin down to the
+    // same road-cell representative. Spawning all of them stacks rigid bodies.
+    for (const existing of this.game.vehicles) {
+      const t = existing.body.translation();
+      if (Math.hypot(t.x - x, t.z - z) < PARKED_CAR_CLEARANCE) return;
+    }
     const model = CIVILIAN_CARS[Math.floor(cellHash(cx, cz, 94) * CIVILIAN_CARS.length)];
     const vehicle = new Vehicle(this.game, model, x, z, feature.rotation + (side < 0 ? Math.PI : 0));
     this.game.addVehicle(vehicle);
     vehicles.push(vehicle);
   }
 
+  /** True when an authored building's box intrudes into a road spawn lane. */
+  private authoredBuildingBlocksRoad(
+    feature: Extract<AuthoredObject, { kind: 'building' }>
+  ): boolean {
+    const radius =
+      Math.hypot(feature.width / 2, feature.depth / 2) + ROAD_SPAWN_CLEARANCE;
+    const min = worldToCell(feature.x - radius, feature.z - radius);
+    const max = worldToCell(feature.x + radius, feature.z + radius);
+    const c = Math.cos(-feature.rotation);
+    const s = Math.sin(-feature.rotation);
+    for (let cz = min.cz; cz <= max.cz; cz++) {
+      for (let cx = min.cx; cx <= max.cx; cx++) {
+        if (!isRoad(cx, cz)) continue;
+        const point = cellToWorld(cx, cz);
+        const dx = point.x - feature.x;
+        const dz = point.z - feature.z;
+        const lx = dx * c - dz * s;
+        const lz = dx * s + dz * c;
+        if (
+          Math.abs(lx) <= feature.width / 2 + ROAD_SPAWN_CLEARANCE &&
+          Math.abs(lz) <= feature.depth / 2 + ROAD_SPAWN_CLEARANCE
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   private authoredProp(
-    feature: Exclude<AuthoredObject, { kind: 'building' | 'tree' | 'parking' }>,
+    feature: Exclude<AuthoredObject, { kind: 'road-surface' | 'building' | 'tree' | 'parking' }>,
     body: RAPIER.RigidBody,
     buckets: Buckets
   ): void {

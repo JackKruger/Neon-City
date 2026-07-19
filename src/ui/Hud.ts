@@ -4,6 +4,7 @@ import { Minimap } from './Minimap';
 export interface HudState {
   speedKmh?: number;
   stars?: number;
+  money?: number;
   prompt?: string;
   message?: string;
   pos?: { x: number; z: number };
@@ -18,6 +19,7 @@ export class Hud {
     root: HTMLDivElement;
     speed: HTMLDivElement;
     stars: HTMLDivElement;
+    money: HTMLDivElement;
     prompt: HTMLDivElement;
     message: HTMLDivElement;
     minimap: Minimap | null;
@@ -37,6 +39,9 @@ export class Hud {
       .hud-stars { position:absolute; right:18px; top:12px; font-size:24px; letter-spacing:3px;
         color:#ffd84d; text-shadow: 0 0 8px rgba(255,170,0,.9), 0 2px 2px rgba(0,0,0,.5); }
       .hud-stars .off { opacity:.22; }
+      .hud-money { position:absolute; left:18px; top:12px; font-size:23px; font-weight:800;
+        color:#74ffd1; font-variant-numeric:tabular-nums;
+        text-shadow:0 0 9px rgba(30,255,188,.65), 0 2px 2px rgba(0,0,0,.7); }
       .hud-prompt { position:absolute; left:50%; bottom:72px; transform:translateX(-50%);
         font-size:16px; background:rgba(20,8,40,.55); padding:6px 14px; border-radius:8px; }
       .hud-message { position:absolute; left:50%; top:18%; transform:translateX(-50%);
@@ -79,7 +84,7 @@ export class Hud {
     this.hint = document.createElement('div');
     this.hint.className = 'hud-hint';
     this.hint.textContent =
-      'P1: WASD drive/walk · Space handbrake · E enter/exit · Shift sprint · M map — P2: press Start on a gamepad to join';
+      'P1: WASD drive/walk · Space jump/handbrake · E enter/exit · Shift sprint · M map — P2: press Start on a gamepad to join';
     container.appendChild(this.hint);
   }
 
@@ -99,15 +104,17 @@ export class Hud {
       speed.className = 'hud-speed';
       const stars = document.createElement('div');
       stars.className = 'hud-stars';
+      const money = document.createElement('div');
+      money.className = 'hud-money';
       const prompt = document.createElement('div');
       prompt.className = 'hud-prompt';
       prompt.style.display = 'none';
       const message = document.createElement('div');
       message.className = 'hud-message';
-      root.append(speed, stars, prompt, message);
+      root.append(speed, stars, money, prompt, message);
       this.container.appendChild(root);
       const minimap = this.mapCanvas && this.map ? new Minimap(root, this.mapCanvas, this.map) : null;
-      this.panels.push({ root, speed, stars, prompt, message, minimap });
+      this.panels.push({ root, speed, stars, money, prompt, message, minimap });
     }
     if (n === 2) this.hint.style.display = 'none';
   }
@@ -129,8 +136,8 @@ export class Hud {
       el.className = 'hud-pause';
       el.innerHTML = `
         <h1>PAUSED</h1>
-        <p><b>P1 — keyboard:</b> WASD drive/walk · Space handbrake · Shift sprint · E enter/exit car</p>
-        <p><b>Gamepad:</b> left stick steer/walk · RT gas · LT brake · A handbrake/sprint · Y enter/exit</p>
+        <p><b>P1 — keyboard:</b> WASD drive/walk · Space jump/handbrake · Shift sprint · E enter/exit car</p>
+        <p><b>Gamepad:</b> left stick steer/walk · RT gas · LT brake · A jump/handbrake/sprint · Y enter/exit</p>
         <p><b>P2:</b> press Start on a second gamepad to join split-screen</p>
         <p><b>Map:</b> M / Back opens the city map</p>
         <p>Run over pedestrians or ram cars and the police will come for you…</p>
@@ -157,6 +164,7 @@ export class Hud {
     } else {
       p.stars.innerHTML = '';
     }
+    p.money.textContent = state.money !== undefined ? `$${Math.floor(state.money).toLocaleString()}` : '';
     p.prompt.style.display = state.prompt ? 'block' : 'none';
     p.prompt.textContent = state.prompt ?? '';
     p.message.textContent = state.message ?? '';

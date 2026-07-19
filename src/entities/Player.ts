@@ -33,6 +33,7 @@ export class Player implements Entity, CameraTarget {
   /** Camera view yaw, for camera-relative on-foot movement. */
   cameraYaw = 0;
   prompt: string | null = null;
+  private balance = 0;
 
   constructor(
     private game: Game,
@@ -46,6 +47,30 @@ export class Player implements Entity, CameraTarget {
 
   get driving(): boolean {
     return this.vehicle !== null;
+  }
+
+  get money(): number {
+    return this.balance;
+  }
+
+  /** Credit whole dollars to this player. */
+  earnMoney(amount: number): void {
+    const dollars = Math.floor(amount);
+    if (!Number.isFinite(amount) || dollars <= 0) {
+      throw new RangeError('Money earned must be a positive finite amount');
+    }
+    this.balance += dollars;
+  }
+
+  /** Debit whole dollars if the player can afford the purchase. */
+  spendMoney(amount: number): boolean {
+    const dollars = Math.floor(amount);
+    if (!Number.isFinite(amount) || dollars <= 0) {
+      throw new RangeError('Money spent must be a positive finite amount');
+    }
+    if (dollars > this.balance) return false;
+    this.balance -= dollars;
+    return true;
   }
 
   update(dt: number): void {
@@ -78,6 +103,7 @@ export class Player implements Entity, CameraTarget {
     } else {
       this.character.setMove(new THREE.Vector3(), false);
     }
+    if (input.jump) this.character.jump();
     this.character.update(dt);
 
     const nearest = this.nearestVehicle();
