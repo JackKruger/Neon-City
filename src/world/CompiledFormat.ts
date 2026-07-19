@@ -1,6 +1,6 @@
 export const COMPILED_MANIFEST_VERSION = 1;
-export const COMPILED_CONTAINER_VERSION = 1;
-export const COMPILED_RUNTIME_VERSION = 1;
+export const COMPILED_CONTAINER_VERSION = 2;
+export const COMPILED_RUNTIME_VERSION = 2;
 
 export interface CompiledChunkManifest {
   kx: number;
@@ -56,17 +56,18 @@ export interface CompiledCollisionMesh {
 }
 
 export interface CompiledNavNode {
-  cx: number;
-  cz: number;
+  x: number;
+  z: number;
   flags: number;
   speed: number;
 }
 
 export interface CompiledNavEdge {
-  fromCx: number;
-  fromCz: number;
-  toCx: number;
-  toCz: number;
+  fromX: number;
+  fromZ: number;
+  toX: number;
+  toZ: number;
+  flags: number;
 }
 
 export interface CompiledParkedSpawn {
@@ -140,6 +141,7 @@ class Reader {
   u8(): number { this.require(1); return this.view.getUint8(this.offset++); }
   u16(): number { this.require(2); const value = this.view.getUint16(this.offset, true); this.offset += 2; return value; }
   i16(): number { this.require(2); const value = this.view.getInt16(this.offset, true); this.offset += 2; return value; }
+  i32(): number { this.require(4); const value = this.view.getInt32(this.offset, true); this.offset += 4; return value; }
   u32(): number { this.require(4); const value = this.view.getUint32(this.offset, true); this.offset += 4; return value; }
   f32(): number { this.require(4); const value = this.view.getFloat32(this.offset, true); this.offset += 4; return value; }
   take(length: number): Uint8Array { this.require(length); const value = this.bytes.slice(this.offset, this.offset + length); this.offset += length; return value; }
@@ -165,12 +167,12 @@ export function parseCompiledChunk(buffer: ArrayBuffer, expectedKx: number, expe
     const type = new TextDecoder().decode(bytes.slice(offset, offset + 4));
     const sectionOffset = header.getUint32(offset + 4, true);
     const sectionLength = header.getUint32(offset + 8, true);
-    ensure(['HGT1', 'COL1', 'NAV1', 'GME1'].includes(type) && !sections.has(type), `invalid compiled section ${type}`);
+    ensure(['HGT1', 'COL1', 'NAV2', 'GME1'].includes(type) && !sections.has(type), `invalid compiled section ${type}`);
     ensure(sectionOffset >= headerSize && sectionOffset % 4 === 0 && sectionOffset >= previousEnd && sectionOffset + sectionLength <= bytes.length, `malformed compiled section ${type}`);
     sections.set(type, bytes.slice(sectionOffset, sectionOffset + sectionLength));
     previousEnd = sectionOffset + sectionLength;
   }
-  for (const type of ['HGT1', 'COL1', 'NAV1', 'GME1']) ensure(sections.has(type), `missing compiled section ${type}`);
+  for (const type of ['HGT1', 'COL1', 'NAV2', 'GME1']) ensure(sections.has(type), `missing compiled section ${type}`);
 
   const heightReader = new Reader(sections.get('HGT1')!);
   const heights = new Int16Array(121);
@@ -204,15 +206,24 @@ export function parseCompiledChunk(buffer: ArrayBuffer, expectedKx: number, expe
   }
   ensure(collisionReader.remaining() === 0, 'trailing COL1 data');
 
-  const navReader = new Reader(sections.get('NAV1')!);
-  ensure(navReader.u16() === 1, 'unsupported NAV1 version');
+  const navReader = new Reader(sections.get('NAV2')!);
+  ensure(navReader.u16() === 2, 'unsupported NAV2 version');
   const nodeCount = navReader.u16();
   const edgeCount = navReader.u32();
   const navNodes: CompiledNavNode[] = [];
-  for (let i = 0; i < nodeCount; i++) navNodes.push({ cx: navReader.i16(), cz: navReader.i16(), flags: navReader.u16(), speed: navReader.u16() });
+  for (let i = 0; i < nodeCount; i++) navNodes.push({
+    x: navReader.i32() / 100, z: navReader.i32() / 100, flags: navReader.u16(), speed: navReader.u16(),
+  });
   const navEdges: CompiledNavEdge[] = [];
-  for (let i = 0; i < edgeCount; i++) navEdges.push({ fromCx: navReader.i16(), fromCz: navReader.i16(), toCx: navReader.i16(), toCz: navReader.i16() });
-  ensure(navReader.remaining() === 0, 'trailing NAV1 data');
+  for (let i = 0; i < edgeCount; i++) {
+    navEdges.push({
+      fromX: navReader.i32() / 100, fromZ: navReader.i32() / 100,
+      toX: navReader.i32() / 100, toZ: navReader.i32() / 100,
+      flags: navReader.u16(),
+    });
+    navReader.u16();
+  }
+  ensure(navReader.remaining() === 0, 'trailing NAV2 data');
 
   const gameReader = new Reader(sections.get('GME1')!);
   ensure(gameReader.u16() === 1, 'unsupported GME1 version');

@@ -33,12 +33,12 @@ test('NBCH round-trips its versioned section table and rejects corrupt offsets',
   const sections = {
     HGT1: Buffer.alloc(242),
     COL1: Buffer.from([1, 0, 0, 0]),
-    NAV1: Buffer.from([1, 0, 0, 0]),
+    NAV2: Buffer.from([2, 0, 0, 0]),
     GME1: Buffer.from([1, 0, 0, 0]),
   };
   const encoded = encodeChunkContainer(4, -16, sections);
   const parsed = parseChunkContainer(encoded, { kx: 4, kz: -16 });
-  assert.equal(parsed.version, 1);
+  assert.equal(parsed.version, 2);
   assert.deepEqual([...parsed.sections], Object.entries(sections).map(([type, bytes]) => [type, Buffer.from(bytes)]));
   const malformed = Buffer.from(encoded);
   malformed.writeUInt32LE(malformed.length + 4, 20);

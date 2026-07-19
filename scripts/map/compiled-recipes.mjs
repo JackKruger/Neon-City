@@ -15,6 +15,7 @@ const COVERAGE_PARKING = 4;
 export const COVERAGE_BUILDING_SOURCE = 32;
 const TRANSPORT_BRIDGE = 2;
 const TRANSPORT_TUNNEL = 4;
+const rounded = (value) => Math.round(value * 100) / 100;
 
 export const MATERIALS = [
   { name: 'asphalt', color: [0.078, 0.091, 0.125], roughness: 0.92 },
@@ -28,6 +29,10 @@ export const MATERIALS = [
   { name: 'vegetation', color: [0.08, 0.38, 0.11], roughness: 1 },
   { name: 'prop', color: [0.14, 0.18, 0.22], roughness: 0.7, metalness: 0.25 },
   { name: 'art', color: [0.807, 0.107, 0.263], roughness: 0.35, metalness: 0.2 },
+  { name: 'marking', color: [0.94, 0.92, 0.78], roughness: 0.72 },
+  { name: 'rail', color: [0.34, 0.36, 0.39], roughness: 0.28, metalness: 0.82 },
+  { name: 'concrete', color: [0.42, 0.43, 0.45], roughness: 0.94 },
+  { name: 'cycleway', color: [0.34, 0.18, 0.14], roughness: 0.9 },
 ];
 
 function hashNumber(cx, cz, salt = 0) {
@@ -112,6 +117,37 @@ function addPolygonTop(bucket, points, yForPoint) {
   }
 }
 
+function addRaisedPolygon(bucket, points, heightAt, elevation) {
+  const positions = [];
+  const indices = [];
+  const emit = (a, b, c) => {
+    addTriangle(bucket, a, b, c);
+    const index = positions.length / 3;
+    positions.push(...a, ...b, ...c);
+    indices.push(index, index + 1, index + 2);
+  };
+  for (const face of triangulate(points)) {
+    const source = face.map((index) => {
+      const point = points[index];
+      return [point[0], heightAt(point[0], point[1]) + elevation, point[1]];
+    });
+    const [a, b, c] = source;
+    const crossY = (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]);
+    if (crossY >= 0) emit(a, b, c); else emit(a, c, b);
+  }
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    const bottomA = [a[0], heightAt(a[0], a[1]) + 0.025, a[1]];
+    const bottomB = [b[0], heightAt(b[0], b[1]) + 0.025, b[1]];
+    const topA = [a[0], heightAt(a[0], a[1]) + elevation, a[1]];
+    const topB = [b[0], heightAt(b[0], b[1]) + elevation, b[1]];
+    emit(bottomA, bottomB, topB);
+    emit(bottomA, topB, topA);
+  }
+  return { positions, indices };
+}
+
 function prismTriangles(points, baseY, height) {
   const positions = [];
   const indices = [];
@@ -150,6 +186,7 @@ function bufferWriter() {
     u8(value) { const b = Buffer.alloc(1); b.writeUInt8(value); chunks.push(b); },
     u16(value) { const b = Buffer.alloc(2); b.writeUInt16LE(value); chunks.push(b); },
     i16(value) { const b = Buffer.alloc(2); b.writeInt16LE(value); chunks.push(b); },
+    i32(value) { const b = Buffer.alloc(4); b.writeInt32LE(value); chunks.push(b); },
     u32(value) { const b = Buffer.alloc(4); b.writeUInt32LE(value); chunks.push(b); },
     f32(value) { const b = Buffer.alloc(4); b.writeFloatLE(value); chunks.push(b); },
     bytes(value) { chunks.push(Buffer.from(value)); },
@@ -180,12 +217,15 @@ function encodeColliders(cuboids, meshes, sourceIndices) {
 
 function encodeNavigation(nodes, edges) {
   const writer = bufferWriter();
-  writer.u16(1); writer.u16(nodes.length); writer.u32(edges.length);
+  writer.u16(2); writer.u16(nodes.length); writer.u32(edges.length);
   for (const node of nodes) {
-    writer.i16(node.cx); writer.i16(node.cz); writer.u16(node.flags); writer.u16(node.speed);
+    writer.i32(Math.round(node.x * 100)); writer.i32(Math.round(node.z * 100));
+    writer.u16(node.flags); writer.u16(node.speed);
   }
   for (const edge of edges) {
-    writer.i16(edge.fromCx); writer.i16(edge.fromCz); writer.i16(edge.toCx); writer.i16(edge.toCz);
+    writer.i32(Math.round(edge.fromX * 100)); writer.i32(Math.round(edge.fromZ * 100));
+    writer.i32(Math.round(edge.toX * 100)); writer.i32(Math.round(edge.toZ * 100));
+    writer.u16(edge.flags); writer.u16(0);
   }
   return writer.finish();
 }
@@ -261,6 +301,81 @@ function normalizeObjects(context, kx, kz) {
     .sort((a, b) => a.kind.localeCompare(b.kind) || a.sourceId.localeCompare(b.sourceId) || a.x - b.x || a.z - b.z);
 }
 
+const NAV_VEHICLE = 1;
+const NAV_PEDESTRIAN = 2;
+const NAV_TRAM = 4;
+
+function navigationFromPaths(objects, kx, kz) {
+  const nodes = new Map();
+  const edges = [];
+  const starts = [];
+  const ends = [];
+  const owner = (x, z) => ({
+    kx: Math.floor(Math.round(x / TILE) / CHUNK_TILES),
+    kz: Math.floor(Math.round(z / TILE) / CHUNK_TILES),
+  });
+  const flagFor = (mode) => mode === 'pedestrian' ? NAV_PEDESTRIAN : mode === 'tram' ? NAV_TRAM : NAV_VEHICLE;
+  const nodeKey = (point, flags) => `${Math.round(point.x * 100)},${Math.round(point.z * 100)},${flags}`;
+  const addNode = (point, flags, speed) => {
+    const owned = owner(point.x, point.z);
+    if (owned.kx !== kx || owned.kz !== kz) return;
+    const key = nodeKey(point, flags);
+    if (!nodes.has(key)) nodes.set(key, { x: rounded(point.x), z: rounded(point.z), flags, speed });
+  };
+  for (const object of objects) {
+    if (object.kind !== 'nav-path' || !Array.isArray(object.points) || object.points.length < 2) continue;
+    const flags = flagFor(object.mode) | (object.flags ?? 0);
+    const source = object.points.map(([x, z]) => ({ x: object.x + x, z: object.z + z }));
+    const points = [source[0]];
+    for (let i = 1; i < source.length; i++) {
+      const a = source[i - 1];
+      const b = source[i];
+      const parts = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / 10));
+      for (let part = 1; part <= parts; part++) {
+        const t = part / parts;
+        points.push({ x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t });
+      }
+    }
+    for (const point of points) addNode(point, flags, object.speed ?? 0);
+    starts.push({ point: points[0], next: points[1], flags, sourceId: object.sourceId });
+    ends.push({ point: points.at(-1), previous: points.at(-2), flags, sourceId: object.sourceId });
+    for (let i = 0; i + 1 < points.length; i++) {
+      const from = points[i];
+      const to = points[i + 1];
+      const owned = owner(from.x, from.z);
+      if (owned.kx === kx && owned.kz === kz) edges.push({
+        fromX: rounded(from.x), fromZ: rounded(from.z), toX: rounded(to.x), toZ: rounded(to.z), flags,
+      });
+    }
+  }
+  // OSM ways commonly end at an intersection. Join compatible directed lane
+  // endpoints across the paved junction instead of leaving every source way
+  // as an isolated route. The short limit avoids joining parallel streets.
+  for (const end of ends) {
+    const owned = owner(end.point.x, end.point.z);
+    if (owned.kx !== kx || owned.kz !== kz) continue;
+    const incoming = { x: end.point.x - end.previous.x, z: end.point.z - end.previous.z };
+    const incomingLength = Math.hypot(incoming.x, incoming.z) || 1;
+    const candidates = starts
+      .filter((start) => start.flags === end.flags && start.sourceId !== end.sourceId)
+      .map((start) => {
+        const distance = Math.hypot(start.point.x - end.point.x, start.point.z - end.point.z);
+        const outgoing = { x: start.next.x - start.point.x, z: start.next.z - start.point.z };
+        const outgoingLength = Math.hypot(outgoing.x, outgoing.z) || 1;
+        const dot = (incoming.x * outgoing.x + incoming.z * outgoing.z) / (incomingLength * outgoingLength);
+        return { start, distance, dot };
+      })
+      .filter((candidate) => candidate.distance > 0.05 && candidate.distance <= 15 && candidate.dot > -0.35)
+      .sort((a, b) => a.distance - b.distance || b.dot - a.dot)
+      .slice(0, 3);
+    for (const candidate of candidates) edges.push({
+      fromX: rounded(end.point.x), fromZ: rounded(end.point.z),
+      toX: rounded(candidate.start.point.x), toZ: rounded(candidate.start.point.z), flags: end.flags,
+    });
+  }
+  return { nodes: [...nodes.values()], edges };
+}
+
 export function compileChunkRecipe(context, kx, kz) {
   if (kx < MIN_CHUNK || kx > MAX_CHUNK || kz < MIN_CHUNK || kz > MAX_CHUNK) throw new Error(`chunk ${kx},${kz} is outside Melbourne bounds`);
   const c0x = kx * CHUNK_TILES;
@@ -283,6 +398,7 @@ export function compileChunkRecipe(context, kx, kz) {
   // Retain the object-level guard for older inputs that predate the explicit
   // source-coverage bit.
   const authoredBuildingArea = objectsByKind.has('building');
+  const authoredNavigation = objectsByKind.has('nav-path');
 
   // Terrain recipe: one quantized heightfield shared by render and Rapier.
   const heightBytes = Buffer.alloc((CHUNK_TILES + 1) ** 2 * 2);
@@ -327,13 +443,16 @@ export function compileChunkRecipe(context, kx, kz) {
         addQuad(bucket, [x0, y00, z0], [x0, y01, z1], [x1, y11, z1], [x1, y10, z0]);
       }
 
-      if (context.isRoad(cx, cz)) {
-        const flags = 3 | ((context.transportAt(cx, cz) & TRANSPORT_BRIDGE) ? 4 : 0) | ((context.transportAt(cx, cz) & TRANSPORT_TUNNEL) ? 8 : 0);
+      if (context.isRoad(cx, cz) && !authoredNavigation) {
+        const flags = 3 | ((context.transportAt(cx, cz) & TRANSPORT_BRIDGE) ? 8 : 0) | ((context.transportAt(cx, cz) & TRANSPORT_TUNNEL) ? 16 : 0);
         const speedCode = context.speed[context.index(cx, cz)] ?? 0;
         const speedKmh = [50, 30, 40, 50, 60, 70][speedCode] ?? 50;
-        nodes.push({ cx, cz, flags, speed: speedKmh });
+        nodes.push({ x: cx * TILE, z: cz * TILE, flags, speed: speedKmh });
         for (const [ox, oz] of [[0, -1], [1, 0], [0, 1], [-1, 0]]) {
-          if (context.isRoad(cx + ox, cz + oz)) edges.push({ fromCx: cx, fromCz: cz, toCx: cx + ox, toCz: cz + oz });
+          if (context.isRoad(cx + ox, cz + oz)) edges.push({
+            fromX: cx * TILE, fromZ: cz * TILE,
+            toX: (cx + ox) * TILE, toZ: (cz + oz) * TILE, flags,
+          });
         }
       }
 
@@ -381,7 +500,14 @@ export function compileChunkRecipe(context, kx, kz) {
   for (const object of objects) {
     if (object.kind === 'road-surface' && Array.isArray(object.outline) && object.outline.length >= 3) {
       const points = object.outline.map(([x, z]) => [object.x + x, object.z + z]);
-      addPolygonTop(buckets.get(object.surface === 'pavement' ? 'pavement' : 'asphalt'), points, ([x, z]) => context.heightAt(x, z) + 0.025);
+      const material = MATERIALS.some((entry) => entry.name === object.surface) ? object.surface : 'asphalt';
+      const elevation = object.elevation ?? 0.025;
+      if (elevation >= 0.1 && ['pavement', 'concrete'].includes(material)) {
+        const collision = addRaisedPolygon(buckets.get(material), points, context.heightAt, elevation);
+        collisionMeshes.push({ sourceId: object.sourceId, ...collision });
+      } else {
+        addPolygonTop(buckets.get(material), points, ([x, z]) => context.heightAt(x, z) + elevation);
+      }
     } else if (object.kind === 'building') {
       const baseY = Number.isFinite(object.baseY) ? object.baseY : context.heightAt(object.x, object.z);
       if (Array.isArray(object.outline) && object.outline.length >= 3) {
@@ -399,7 +525,7 @@ export function compileChunkRecipe(context, kx, kz) {
       cuboids.push({ sourceId: object.sourceId, x: object.x, y: base + object.height / 2, z: object.z, hx: 0.22, hy: object.height / 2, hz: 0.22, rotation: 0 });
     } else if (object.kind === 'parking') {
       parked.push({ sourceId: object.sourceId, x: object.x, z: object.z, rotation: object.rotation ?? 0, seed: Number.parseInt(createHash('sha256').update(object.sourceId).digest('hex').slice(0, 8), 16) });
-    } else if (object.kind !== 'road-surface') {
+    } else if (object.kind !== 'road-surface' && object.kind !== 'nav-path') {
       const base = context.heightAt(object.x, object.z);
       const isArt = object.kind === 'art';
       const height = object.kind === 'fountain' ? 0.8 : object.kind === 'bollard' ? 1.05 : 0.9;
@@ -409,9 +535,15 @@ export function compileChunkRecipe(context, kx, kz) {
     }
   }
 
+  if (authoredNavigation) {
+    const authored = navigationFromPaths(objects, kx, kz);
+    nodes.push(...authored.nodes);
+    edges.push(...authored.edges);
+  }
+
   parked.sort((a, b) => a.sourceId.localeCompare(b.sourceId));
-  nodes.sort((a, b) => a.cz - b.cz || a.cx - b.cx);
-  edges.sort((a, b) => a.fromCz - b.fromCz || a.fromCx - b.fromCx || a.toCz - b.toCz || a.toCx - b.toCx);
+  nodes.sort((a, b) => a.z - b.z || a.x - b.x || a.flags - b.flags);
+  edges.sort((a, b) => a.fromZ - b.fromZ || a.fromX - b.fromX || a.toZ - b.toZ || a.toX - b.toX || a.flags - b.flags);
   cuboids.sort((a, b) => a.sourceId.localeCompare(b.sourceId) || a.x - b.x || a.z - b.z);
   collisionMeshes.sort((a, b) => a.sourceId.localeCompare(b.sourceId));
   const sourceList = [...sources].sort();
@@ -432,7 +564,7 @@ export function compileChunkRecipe(context, kx, kz) {
     sections: {
       HGT1: heightBytes,
       COL1: encodeColliders(cuboids, collisionMeshes, sourceIndices),
-      NAV1: encodeNavigation(nodes, edges),
+      NAV2: encodeNavigation(nodes, edges),
       GME1: encodeGameplay(cells, parked, sourceList, sourceIndices),
     },
     counts: { nodes: nodes.length, edges: edges.length, cuboids: cuboids.length, meshes: collisionMeshes.length, parked: parked.length, sources: sourceList.length },

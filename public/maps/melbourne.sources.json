@@ -2,6 +2,27 @@
   "version": 1,
   "sources": [
     {
+      "key": "footpaths",
+      "title": "City of Melbourne Footpaths",
+      "license": "CC BY 4.0",
+      "status": "loaded",
+      "file": "footpaths.geojson",
+      "records": 12222,
+      "retrievedAt": "2026-07-19T12:44:15.504Z"
+    },
+    {
+      "key": "tramTracks",
+      "title": "PTV Tram Track Centreline",
+      "status": "missing",
+      "file": "tram-tracks.geojson"
+    },
+    {
+      "key": "streetOverrides",
+      "title": "Neon Bay reviewed street corrections",
+      "status": "missing",
+      "file": "street-overrides.geojson"
+    },
+    {
       "key": "planning",
       "title": "Vicmap Planning",
       "status": "missing",
@@ -111,6 +132,10 @@
     }
   ],
   "results": {
+    "footpaths": 11053,
+    "suppressedInferredFootpaths": 20864,
+    "tramTracks": 0,
+    "streetOverrides": 0,
     "landuse": 0,
     "transport": 0,
     "speeds": 0,

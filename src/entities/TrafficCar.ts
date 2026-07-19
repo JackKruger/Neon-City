@@ -69,7 +69,7 @@ export class TrafficCar implements Entity {
     const turning = Math.abs(angle) > 0.25;
     // Preserve the existing 8 m/s feel for a 50 km/h street while allowing
     // authored limits to slow shopping strips and speed up arterials.
-    const roadLimit = Math.min(12, speedLimitAt(this.to.cx, this.to.cz) * 0.16);
+    const roadLimit = Math.min(12, (this.to.speed ?? speedLimitAt(this.to.cx, this.to.cz)) * 0.16);
     let target = turning ? Math.min(TURN_SPEED, roadLimit) : roadLimit;
     if (this.blockedAhead()) target = 0;
 
@@ -99,7 +99,7 @@ export class TrafficCar implements Entity {
   }
 
   private advance(): void {
-    const next = nextRoadCell(this.from, this.to, Math.random());
+    const next = nextRoadCell(this.from, this.to, Math.random(), 'vehicle');
     this.from = this.to;
     this.to = next;
     this.waypoint = lanePoint(this.from, this.to, 0.18);

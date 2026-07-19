@@ -5,8 +5,7 @@ import { CIVILIAN_CARS } from '../core/const';
 import { Pedestrian } from '../entities/Pedestrian';
 import type { Outfit } from '../entities/HumanRig';
 import { TrafficCar } from '../entities/TrafficCar';
-import { CellRef, randomRoadCellNear, roadNeighbors } from './RoadGraph';
-import { cellToWorld } from './CityMap';
+import { CellRef, NavigationMode, pointWorld, randomRoadCellNear, roadNeighbors } from './RoadGraph';
 
 const MAX_PEDS = 26;
 const MAX_TRAFFIC = 12;
@@ -74,16 +73,16 @@ export class Npcs {
     return best;
   }
 
-  private randomSpawnEdge(): { from: CellRef; to: CellRef } | null {
+  private randomSpawnEdge(mode: NavigationMode): { from: CellRef; to: CellRef } | null {
     const players = this.game.playerPositions();
     for (let tries = 0; tries < 12; tries++) {
       const p = players[Math.floor(Math.random() * players.length)];
-      const cell = randomRoadCellNear(p.x, p.z, SPAWN_MIN, SPAWN_MAX);
+      const cell = randomRoadCellNear(p.x, p.z, SPAWN_MIN, SPAWN_MAX, mode);
       if (!cell) continue;
       // The ring is relative to one player; keep clear of the other too.
-      const { x, z } = cellToWorld(cell.cx, cell.cz);
+      const { x, z } = pointWorld(cell);
       if (this.distToPlayers(x, z) < SPAWN_MIN) continue;
-      const neighbors = roadNeighbors(cell);
+      const neighbors = roadNeighbors(cell, mode);
       if (neighbors.length === 0) continue;
       const to = neighbors[Math.floor(Math.random() * neighbors.length)];
       return { from: cell, to };
@@ -92,14 +91,14 @@ export class Npcs {
   }
 
   private spawnPed(): void {
-    const edge = this.randomSpawnEdge();
+    const edge = this.randomSpawnEdge('pedestrian');
     if (!edge) return;
     const heightScale = 0.92 + Math.random() * 0.13;
     this.peds.push(new Pedestrian(this.game, randomOutfit(), heightScale, edge.from, edge.to));
   }
 
   private spawnTraffic(): void {
-    const edge = this.randomSpawnEdge();
+    const edge = this.randomSpawnEdge('vehicle');
     if (!edge) return;
     const model = CIVILIAN_CARS[Math.floor(Math.random() * CIVILIAN_CARS.length)];
     this.traffic.push(new TrafficCar(this.game, model, edge.from, edge.to));
