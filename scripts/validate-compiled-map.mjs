@@ -47,30 +47,35 @@ function validateGlbDocument(bytes, gltf, key) {
 }
 
 function decodeNavigation(section, entry, nodes, edges) {
-  ensure(section.length >= 8 && section.readUInt16LE(0) === 1, `chunk ${chunkKey(entry.kx, entry.kz)} has invalid NAV1 header`);
+  ensure(section.length >= 8 && section.readUInt16LE(0) === 2, `chunk ${chunkKey(entry.kx, entry.kz)} has invalid NAV2 header`);
   const nodeCount = section.readUInt16LE(2);
   const edgeCount = section.readUInt32LE(4);
-  ensure(section.length === 8 + nodeCount * 8 + edgeCount * 8, `chunk ${chunkKey(entry.kx, entry.kz)} has invalid NAV1 length`);
+  ensure(section.length === 8 + nodeCount * 12 + edgeCount * 20, `chunk ${chunkKey(entry.kx, entry.kz)} has invalid NAV2 length`);
   let offset = 8;
   for (let i = 0; i < nodeCount; i++) {
-    const cx = section.readInt16LE(offset);
-    const cz = section.readInt16LE(offset + 2);
-    ensure(Math.floor(cx / CHUNK_TILES) === entry.kx && Math.floor(cz / CHUNK_TILES) === entry.kz, `navigation node ${cx},${cz} has wrong owner`);
-    const key = `${cx},${cz}`;
+    const xcm = section.readInt32LE(offset);
+    const zcm = section.readInt32LE(offset + 4);
+    const flags = section.readUInt16LE(offset + 8);
+    const cx = Math.round((xcm / 100) / TILE);
+    const cz = Math.round((zcm / 100) / TILE);
+    ensure(Math.floor(cx / CHUNK_TILES) === entry.kx && Math.floor(cz / CHUNK_TILES) === entry.kz, `navigation node ${xcm},${zcm} has wrong owner`);
+    ensure((flags & 7) !== 0, `navigation node ${xcm},${zcm} has no travel mode`);
+    const key = `${xcm},${zcm},${flags & 7}`;
     ensure(!nodes.has(key), `duplicate navigation node ${key}`);
     nodes.add(key);
-    offset += 8;
+    offset += 12;
   }
   for (let i = 0; i < edgeCount; i++) {
     const edge = {
-      fromCx: section.readInt16LE(offset),
-      fromCz: section.readInt16LE(offset + 2),
-      toCx: section.readInt16LE(offset + 4),
-      toCz: section.readInt16LE(offset + 6),
+      fromX: section.readInt32LE(offset),
+      fromZ: section.readInt32LE(offset + 4),
+      toX: section.readInt32LE(offset + 8),
+      toZ: section.readInt32LE(offset + 12),
+      flags: section.readUInt16LE(offset + 16) & 7,
     };
-    ensure(Math.abs(edge.fromCx - edge.toCx) + Math.abs(edge.fromCz - edge.toCz) === 1, `navigation edge is not cell-adjacent in ${entry.kx},${entry.kz}`);
+    ensure(Math.hypot(edge.fromX - edge.toX, edge.fromZ - edge.toZ) <= 1500, `navigation edge is longer than 15m in ${entry.kx},${entry.kz}`);
     edges.push(edge);
-    offset += 8;
+    offset += 20;
   }
 }
 
@@ -125,7 +130,7 @@ export function validateCompiledMap(outputRoot = join(ROOT, 'public', 'maps')) {
     ensure(container.sections.get('HGT1').length === 121 * 2, `chunk ${key} HGT1 length mismatch`);
     ensure(container.sections.get('COL1').length >= 12 && container.sections.get('COL1').readUInt16LE(0) === 1, `chunk ${key} COL1 is invalid`);
     ensure(container.sections.get('GME1').length >= 8 && container.sections.get('GME1').readUInt16LE(0) === 1, `chunk ${key} GME1 is invalid`);
-    decodeNavigation(container.sections.get('NAV1'), entry, nodes, edges);
+    decodeNavigation(container.sections.get('NAV2'), entry, nodes, edges);
     entries.set(key, entry);
     expectedFiles.add(glbName);
     expectedFiles.add(binName);
@@ -134,9 +139,12 @@ export function validateCompiledMap(outputRoot = join(ROOT, 'public', 'maps')) {
   }
 
   for (const edge of edges) {
-    ensure(nodes.has(`${edge.fromCx},${edge.fromCz}`), `dangling navigation edge source ${edge.fromCx},${edge.fromCz}`);
-    const targetChunk = chunkKey(Math.floor(edge.toCx / CHUNK_TILES), Math.floor(edge.toCz / CHUNK_TILES));
-    if (entries.has(targetChunk) || !manifest.partial) ensure(nodes.has(`${edge.toCx},${edge.toCz}`), `dangling navigation edge target ${edge.toCx},${edge.toCz}`);
+    ensure(nodes.has(`${edge.fromX},${edge.fromZ},${edge.flags}`), `dangling navigation edge source ${edge.fromX},${edge.fromZ}`);
+    const targetChunk = chunkKey(
+      Math.floor(Math.round((edge.toX / 100) / TILE) / CHUNK_TILES),
+      Math.floor(Math.round((edge.toZ / 100) / TILE) / CHUNK_TILES),
+    );
+    if (entries.has(targetChunk) || !manifest.partial) ensure(nodes.has(`${edge.toX},${edge.toZ},${edge.flags}`), `dangling navigation edge target ${edge.toX},${edge.toZ}`);
   }
   const actualFiles = new Set(readdirSync(chunkDirectory).filter((name) => name.endsWith('.glb') || name.endsWith('.bin')));
   ensure(actualFiles.size === expectedFiles.size && [...actualFiles].every((name) => expectedFiles.has(name)), 'compiled chunk directory contains stale or orphan assets');

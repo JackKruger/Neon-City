@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 
 export const MANIFEST_VERSION = 1;
-export const CONTAINER_VERSION = 1;
-export const RUNTIME_VERSION = 1;
+export const CONTAINER_VERSION = 2;
+export const RUNTIME_VERSION = 2;
 export const GLTF_VERSION = '2.0';
-export const SECTION_TYPES = ['HGT1', 'COL1', 'NAV1', 'GME1'];
+export const SECTION_TYPES = ['HGT1', 'COL1', 'NAV2', 'GME1'];
 
 export function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');

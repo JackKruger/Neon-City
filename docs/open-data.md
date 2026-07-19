@@ -8,11 +8,16 @@ Run `node scripts/build-map.mjs --list-open-data` for the complete filename list
 - `vicmap-address.geojson` or the fallback `gnaf-address.geojson`
 - `geoscape-localities.geojson` or the fallback `abs-localities.geojson`
 - `clue-floor-space.geojson` containing block or small-area geometry
+- `footpaths.geojson` containing City of Melbourne footpath polygons
+- `tram-tracks.geojson` containing PTV tram track centrelines (optional; OSM tram tracks remain the fallback)
+- `street-overrides.geojson` containing reviewed polygon or centreline corrections; set `mode`, `surface`, `role`, `width`, and normal OSM-style lane tags in feature properties
 - `melbourne-dsm.tif`, or set `MELBOURNE_DSM_PATH` to one GeoTIFF or a directory of tiles
 
 `npm run map:download` downloads the supported City of Melbourne GeoJSON exports for buildings, trees, canopy, street furniture, public art, and parking. Add `--refresh-open-data` to replace those cached exports. The 12 GB DSM and statewide Vicmap products are intentionally never downloaded automatically.
 
 `npm run map:build` consumes cached inputs, writes the base grid, SRTM corner-height grid, binary layers, sparse object index, address street index, ABS/locality area index, source report, attribution metadata, and preview under `public/maps`, then compiles every Melbourne chunk. Missing or invalid sources are recorded in `melbourne.sources.json` and deterministic compiler recipes fill unfinished coverage. Building import bakes a distinct authoritative-source bit into `melbourne.coverage.bin`; it covers footprint chunks, a one-chunk seam buffer, and enclosed empty areas such as parks. Synthetic buildings are generated only outside that mask. Use `node scripts/build-map.mjs --heights-only` to rebake terrain without rebuilding the other map sources, or `npm run map:compile -- --scope=spawn` to rebuild only the committed pilot.
+
+Street geometry follows explicit source measurements first, then OSM lane/sidewalk tags, and finally documented class defaults. Authoritative City of Melbourne footpath polygons suppress inferred sidewalk surfaces in covered chunks. Vehicle, pedestrian, and tram navigation paths are compiled from the same cross-sections as the render geometry; all runtime map data remains offline.
 
 Before committing regenerated assets, run:
 

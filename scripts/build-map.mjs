@@ -108,7 +108,7 @@ const UA = 'neon-bay-map-import/1.0 (hobby game; github.com/JackKruger/Neon-City
 function overpassQuery() {
   const bb = bbox().join(',');
   const roads =
-    '^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian)(_link)?$';
+    '^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|footway|path|cycleway|steps)(_link)?$';
   const green = '^(park|garden|golf_course|nature_reserve)$';
   const greenLanduse = '^(grass|recreation_ground|forest|meadow|cemetery|village_green)$';
   const commercial = '^(commercial|retail|industrial)$';
@@ -116,6 +116,11 @@ function overpassQuery() {
 (
   way["highway"~"${roads}"](${bb});
   way["highway"="service"]["service"!~"^(driveway|parking_aisle|drive-through)$"](${bb});
+  way["railway"="tram"](${bb});
+  way["railway"="platform"](${bb});
+  way["public_transport"="platform"](${bb});
+  way["area:highway"](${bb});
+  way["highway"="crossing"](${bb});
   way["natural"="coastline"](${bb});
   way["natural"="water"](${bb});
   relation["natural"="water"](${bb});
@@ -361,7 +366,7 @@ function writeRoadSurfacesOnly(data) {
   }
   const surfaces = roadSurfacesFromOverpass(data);
   const retained = Object.values(objects.chunks).flat()
-    .filter((object) => object.kind !== 'road-surface');
+    .filter((object) => (object.kind !== 'road-surface' || object.role === 'footpath-authoritative') && object.kind !== 'nav-path');
   const rebuilt = rechunkObjectIndex({
     version: 1,
     roadSurfaces: surfaces.length > 0,
@@ -484,7 +489,7 @@ async function main() {
   let counts = { road: 0, water: 0, coast: 0, park: 0, comm: 0 };
   for (const el of data.elements) {
     const tags = el.tags ?? {};
-    if (el.type === 'way' && tags.highway) {
+    if (el.type === 'way' && tags.highway && !/^(footway|path|cycleway|steps)$/.test(tags.highway)) {
       markLine(roads, el.geometry ?? []);
       counts.road++;
     } else if (el.type === 'way' && tags.natural === 'coastline') {

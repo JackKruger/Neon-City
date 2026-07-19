@@ -170,6 +170,10 @@ export class City implements CityStreamer {
     grass: new THREE.MeshStandardMaterial({ color: PALETTE.grass }),
     sand: new THREE.MeshStandardMaterial({ color: PALETTE.sand }),
     asphalt: new THREE.MeshStandardMaterial({ color: PALETTE.asphalt }),
+    marking: new THREE.MeshStandardMaterial({ color: 0xf0ead0, roughness: 0.72 }),
+    rail: new THREE.MeshStandardMaterial({ color: 0x5b5f65, roughness: 0.28, metalness: 0.82 }),
+    concrete: new THREE.MeshStandardMaterial({ color: 0x707275, roughness: 0.94 }),
+    cycleway: new THREE.MeshStandardMaterial({ color: 0x57352d, roughness: 0.9 }),
     water: new THREE.MeshStandardMaterial({
       color: PALETTE.water,
       roughness: 0.15,
@@ -473,6 +477,8 @@ export class City implements CityStreamer {
   ): void {
     if (feature.kind === 'road-surface') {
       this.authoredRoadSurface(feature, buckets);
+    } else if (feature.kind === 'nav-path') {
+      return;
     } else if (feature.kind === 'building') {
       this.authoredBuilding(feature, body, buckets);
     } else if (feature.kind === 'tree') {
@@ -498,7 +504,7 @@ export class City implements CityStreamer {
     shape.closePath();
     const coarse = new THREE.ShapeGeometry(shape);
     coarse.rotateX(-Math.PI / 2);
-    coarse.translate(feature.x, 0.018, feature.z);
+    coarse.translate(feature.x, feature.elevation ?? 0.018, feature.z);
     const geometry = this.subdivideForTerrain(coarse);
     coarse.dispose();
     this.displaceTerrain(geometry);
@@ -680,7 +686,7 @@ export class City implements CityStreamer {
   }
 
   private authoredProp(
-    feature: Exclude<AuthoredObject, { kind: 'road-surface' | 'building' | 'tree' | 'parking' }>,
+    feature: Exclude<AuthoredObject, { kind: 'road-surface' | 'nav-path' | 'building' | 'tree' | 'parking' }>,
     body: RAPIER.RigidBody,
     buckets: Buckets
   ): void {

@@ -127,7 +127,7 @@ export class Pedestrian implements Entity, CombatTarget {
 
     const dist = Math.hypot(this.waypoint.x - pos.x, this.waypoint.z - pos.z);
     if (dist < 1.2) {
-      const next = nextRoadCell(this.from, this.to, Math.random());
+      const next = nextRoadCell(this.from, this.to, Math.random(), 'pedestrian');
       this.from = this.to;
       this.to = next;
       this.waypoint = lanePoint(this.from, this.to, 0.4 + this.jitter);

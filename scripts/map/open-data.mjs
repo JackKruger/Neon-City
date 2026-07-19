@@ -33,6 +33,7 @@ import {
   toGrid,
   toWorld,
 } from './geo.mjs';
+import { roadSurfacesFromOverpass } from './roads.mjs';
 
 export const TRANSPORT = {
   ROAD: 1,
@@ -104,6 +105,14 @@ const SOURCE_DEFINITIONS = {
     title: 'City of Melbourne On-street Parking Bays',
     license: 'CC BY 4.0',
   },
+  footpaths: {
+    file: 'footpaths.geojson',
+    dataset: 'footpaths',
+    title: 'City of Melbourne Footpaths',
+    license: 'CC BY 4.0',
+  },
+  tramTracks: { file: 'tram-tracks.geojson', title: 'PTV Tram Track Centreline', license: 'CC BY 4.0' },
+  streetOverrides: { file: 'street-overrides.geojson', title: 'Neon Bay reviewed street corrections', license: 'Project data' },
   transport: { file: 'vicmap-transport.geojson', title: 'Vicmap Transport', license: 'CC BY 4.0' },
   speeds: { file: 'speed-zones.geojson', title: 'Victorian Speed Zones', license: 'CC BY 4.0' },
   planning: { file: 'vicmap-planning.geojson', title: 'Vicmap Planning', license: 'CC BY 4.0' },
@@ -214,6 +223,20 @@ function addObject(chunks, object) {
         outline: part.polygon.map(([x, z]) => [round(x - object.x), round(z - object.z)]),
       });
     }
+    return;
+  }
+  if (object.kind === 'nav-path' && object.points?.length >= 2) {
+    const absolute = object.points.map(([x, z]) => [object.x + x, object.z + z]);
+    const minX = Math.min(...absolute.map(([x]) => x));
+    const maxX = Math.max(...absolute.map(([x]) => x));
+    const minZ = Math.min(...absolute.map(([, z]) => z));
+    const maxZ = Math.max(...absolute.map(([, z]) => z));
+    const keys = new Set([
+      chunkKeyForWorld(minX, minZ), chunkKeyForWorld(maxX, minZ),
+      chunkKeyForWorld(minX, maxZ), chunkKeyForWorld(maxX, maxZ),
+      ...absolute.map(([x, z]) => chunkKeyForWorld(x, z)),
+    ]);
+    for (const key of keys) (chunks[key] ??= []).push(object);
     return;
   }
   const key = chunkKeyForWorld(object.x, object.z);
@@ -374,6 +397,96 @@ function importSpeeds(features, speedLayer, roadMask) {
     }
     accepted++;
   }
+  return accepted;
+}
+
+function importFootpathSurfaces(features, chunks) {
+  if (!features) return 0;
+  let accepted = 0;
+  for (const feature of features) {
+    const id = textValue(feature.properties, 'asset_id', 'mccid', 'objectid', 'roadseg_id') || accepted;
+    for (const polygon of polygons(feature.geometry)) {
+      const world = simplifyWorldRing(polygon[0]);
+      if (world.length < 3) continue;
+      const x = world.reduce((sum, point) => sum + point.x, 0) / world.length;
+      const z = world.reduce((sum, point) => sum + point.z, 0) / world.length;
+      addObject(chunks, {
+        kind: 'road-surface', sourceId: `footpath:${id}:${accepted}`, role: 'footpath-authoritative',
+        surface: 'pavement', elevation: 0.13, x: round(x), z: round(z),
+        outline: world.map((point) => [round(point.x - x), round(point.z - z)]),
+      });
+      accepted++;
+    }
+  }
+  return accepted;
+}
+
+function suppressInferredFootpaths(chunks) {
+  let removed = 0;
+  for (const values of Object.values(chunks)) {
+    if (!values.some((object) => object.kind === 'road-surface' && object.role === 'footpath-authoritative')) continue;
+    for (let i = values.length - 1; i >= 0; i--) {
+      if (values[i].kind === 'road-surface' && /^footpath-(left|right)$/.test(values[i].role ?? '')) {
+        values.splice(i, 1);
+        removed++;
+      }
+    }
+  }
+  return removed;
+}
+
+function importTramTracks(features, chunks) {
+  if (!features) return 0;
+  const elements = [];
+  let id = 0;
+  for (const feature of features) {
+    for (const line of lineStrings(feature.geometry)) {
+      if (line.length < 2) continue;
+      elements.push({
+        type: 'way', id: `ptv-${id++}`,
+        tags: { railway: 'tram', ...(feature.properties ?? {}) },
+        geometry: line.map(([lon, lat]) => ({ lon, lat })),
+      });
+    }
+  }
+  for (const object of roadSurfacesFromOverpass({ elements })) addObject(chunks, object);
+  return elements.length;
+}
+
+function importStreetOverrides(features, chunks) {
+  if (!features) return 0;
+  let accepted = 0;
+  const lines = [];
+  for (const feature of features) {
+    const properties = feature.properties ?? {};
+    for (const polygon of polygons(feature.geometry)) {
+      const world = simplifyWorldRing(polygon[0], 0.1, 256);
+      if (world.length < 3) continue;
+      const x = world.reduce((sum, point) => sum + point.x, 0) / world.length;
+      const z = world.reduce((sum, point) => sum + point.z, 0) / world.length;
+      addObject(chunks, {
+        kind: 'road-surface', sourceId: `street-override:${properties.id ?? accepted}`,
+        role: properties.role ?? 'reviewed-override', surface: properties.surface ?? 'pavement',
+        elevation: numeric(properties, 'elevation') ?? 0.025, x: round(x), z: round(z),
+        outline: world.map((point) => [round(point.x - x), round(point.z - z)]),
+      });
+      accepted++;
+    }
+    for (const line of lineStrings(feature.geometry)) {
+      const mode = properties.mode ?? 'vehicle';
+      lines.push({
+        type: 'way', id: `override-${properties.id ?? lines.length}`,
+        tags: {
+          ...properties,
+          ...(mode === 'tram' ? { railway: 'tram' } : {}),
+          ...(!properties.highway && mode !== 'tram' ? { highway: mode === 'pedestrian' ? 'footway' : 'residential' } : {}),
+        },
+        geometry: line.map(([lon, lat]) => ({ lon, lat })),
+      });
+      accepted++;
+    }
+  }
+  for (const object of roadSurfacesFromOverpass({ elements: lines })) addObject(chunks, object);
   return accepted;
 }
 
@@ -819,6 +932,11 @@ export async function enrichMelbourneMap({ root, grid, roadSurfaces = [], baseSu
   };
   const chunks = {};
   for (const surface of roadSurfaces) addObject(chunks, surface);
+
+  report.results.footpaths = importFootpathSurfaces(await loadSource(cacheDir, 'footpaths', options, report), chunks);
+  report.results.suppressedInferredFootpaths = suppressInferredFootpaths(chunks);
+  report.results.tramTracks = importTramTracks(await loadSource(cacheDir, 'tramTracks', options, report), chunks);
+  report.results.streetOverrides = importStreetOverrides(await loadSource(cacheDir, 'streetOverrides', options, report), chunks);
 
   const planning = await loadSource(cacheDir, 'planning', options, report);
   const clue = await loadSource(cacheDir, 'clue', options, report);

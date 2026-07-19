@@ -2,21 +2,25 @@ import { TILE } from '../core/const';
 import { cellToWorld, isRoad, nearestRoadCell, worldToCell } from './CityMap';
 import type { CompiledNavEdge, CompiledNavNode } from './CompiledFormat';
 
+export type NavigationMode = 'vehicle' | 'pedestrian' | 'tram';
+
 export interface CellRef {
   cx: number;
   cz: number;
+  /** Exact world position for compiled lane/footpath graphs. */
+  x?: number;
+  z?: number;
+  mode?: NavigationMode;
+  speed?: number;
 }
 
 const DIRS: CellRef[] = [
-  { cx: 0, cz: -1 }, // N
-  { cx: 1, cz: 0 }, // E
-  { cx: 0, cz: 1 }, // S
-  { cx: -1, cz: 0 }, // W
+  { cx: 0, cz: -1 }, { cx: 1, cz: 0 }, { cx: 0, cz: 1 }, { cx: -1, cz: 0 },
 ];
 
 export interface RoadNetwork {
-  neighbors(cell: CellRef): CellRef[];
-  nearest(cell: CellRef): CellRef | null;
+  neighbors(point: CellRef, mode?: NavigationMode): CellRef[];
+  nearest(point: CellRef, mode?: NavigationMode): CellRef | null;
 }
 
 class CellRoadNetwork implements RoadNetwork {
@@ -34,12 +38,14 @@ class CellRoadNetwork implements RoadNetwork {
   }
 }
 
-const cellKey = (cell: CellRef): string => `${cell.cx},${cell.cz}`;
+const modeFlag = (mode: NavigationMode): number => mode === 'pedestrian' ? 2 : mode === 'tram' ? 4 : 1;
+const positionKey = (x: number, z: number): string => `${Math.round(x * 100)},${Math.round(z * 100)}`;
+const adjacencyKey = (mode: NavigationMode, x: number, z: number): string => `${mode}:${positionKey(x, z)}`;
 
-/** Navigation graph populated and removed with compiled chunks. */
+/** Navigation graphs populated and removed with compiled chunks. */
 export class CompiledRoadNetwork implements RoadNetwork {
   private chunks = new Map<string, { nodes: CompiledNavNode[]; edges: CompiledNavEdge[] }>();
-  private nodes = new Set<string>();
+  private nodes = new Map<NavigationMode, Map<string, CellRef>>();
   private adjacency = new Map<string, CellRef[]>();
 
   registerChunk(key: string, nodes: CompiledNavNode[], edges: CompiledNavEdge[]): void {
@@ -52,23 +58,27 @@ export class CompiledRoadNetwork implements RoadNetwork {
     this.rebuild();
   }
 
-  neighbors(cell: CellRef): CellRef[] {
-    return this.adjacency.get(cellKey(cell)) ?? [];
+  neighbors(point: CellRef, mode: NavigationMode = point.mode ?? 'vehicle'): CellRef[] {
+    const world = pointWorld(point);
+    return this.adjacency.get(adjacencyKey(mode, world.x, world.z)) ?? [];
   }
 
-  nearest(cell: CellRef): CellRef | null {
-    if (this.nodes.has(cellKey(cell))) return cell;
-    for (let radius = 1; radius <= 24; radius++) {
-      for (let offset = -radius; offset <= radius; offset++) {
-        for (const candidate of [
-          { cx: cell.cx + offset, cz: cell.cz - radius },
-          { cx: cell.cx + offset, cz: cell.cz + radius },
-          { cx: cell.cx - radius, cz: cell.cz + offset },
-          { cx: cell.cx + radius, cz: cell.cz + offset },
-        ]) if (this.nodes.has(cellKey(candidate))) return candidate;
+  nearest(point: CellRef, mode: NavigationMode = 'vehicle'): CellRef | null {
+    const candidates = this.nodes.get(mode);
+    if (!candidates || candidates.size === 0) return null;
+    const target = point.x === undefined || point.z === undefined ? cellToWorld(point.cx, point.cz) : point;
+    let best: CellRef | null = null;
+    let bestDistance = (24 * TILE) ** 2;
+    for (const candidate of candidates.values()) {
+      const dx = candidate.x! - target.x!;
+      const dz = candidate.z! - target.z!;
+      const distance = dx * dx + dz * dz;
+      if (distance < bestDistance) {
+        best = candidate;
+        bestDistance = distance;
       }
     }
-    return null;
+    return best;
   }
 
   clear(): void {
@@ -78,23 +88,36 @@ export class CompiledRoadNetwork implements RoadNetwork {
   }
 
   private rebuild(): void {
-    this.nodes.clear();
+    this.nodes = new Map([
+      ['vehicle', new Map()], ['pedestrian', new Map()], ['tram', new Map()],
+    ]);
     this.adjacency.clear();
     for (const chunk of this.chunks.values()) {
-      for (const node of chunk.nodes) this.nodes.add(cellKey(node));
+      for (const node of chunk.nodes) {
+        for (const mode of ['vehicle', 'pedestrian', 'tram'] as const) {
+          if ((node.flags & modeFlag(mode)) === 0) continue;
+          const point: CellRef = {
+            ...worldToCell(node.x, node.z), x: node.x, z: node.z, mode, speed: node.speed,
+          };
+          this.nodes.get(mode)!.set(positionKey(node.x, node.z), point);
+        }
+      }
     }
     for (const chunk of this.chunks.values()) {
       for (const edge of chunk.edges) {
-        const from = { cx: edge.fromCx, cz: edge.fromCz };
-        const to = { cx: edge.toCx, cz: edge.toCz };
-        if (!this.nodes.has(cellKey(from)) || !this.nodes.has(cellKey(to))) continue;
-        const key = cellKey(from);
-        const neighbors = this.adjacency.get(key) ?? [];
-        if (!neighbors.some((neighbor) => neighbor.cx === to.cx && neighbor.cz === to.cz)) neighbors.push(to);
-        this.adjacency.set(key, neighbors);
+        for (const mode of ['vehicle', 'pedestrian', 'tram'] as const) {
+          if ((edge.flags & modeFlag(mode)) === 0) continue;
+          const from = this.nodes.get(mode)!.get(positionKey(edge.fromX, edge.fromZ));
+          const to = this.nodes.get(mode)!.get(positionKey(edge.toX, edge.toZ));
+          if (!from || !to) continue;
+          const key = adjacencyKey(mode, edge.fromX, edge.fromZ);
+          const neighbors = this.adjacency.get(key) ?? [];
+          if (!neighbors.some((neighbor) => positionKey(neighbor.x!, neighbor.z!) === positionKey(to.x!, to.z!))) neighbors.push(to);
+          this.adjacency.set(key, neighbors);
+        }
       }
     }
-    for (const neighbors of this.adjacency.values()) neighbors.sort((a, b) => a.cz - b.cz || a.cx - b.cx);
+    for (const neighbors of this.adjacency.values()) neighbors.sort((a, b) => a.z! - b.z! || a.x! - b.x!);
   }
 }
 
@@ -105,63 +128,64 @@ export function setRoadNetwork(network: RoadNetwork | null): void {
   activeRoadNetwork = network ?? cellRoadNetwork;
 }
 
-/** Road neighbors of a road cell. */
-export function roadNeighbors(c: CellRef): CellRef[] {
-  return activeRoadNetwork.neighbors(c);
+export function pointWorld(point: CellRef): { x: number; z: number } {
+  return point.x !== undefined && point.z !== undefined ? { x: point.x, z: point.z } : cellToWorld(point.cx, point.cz);
 }
 
-/**
- * Pick the next cell for a lane-following agent: prefer continuing straight,
- * otherwise a random turn; only reverse at dead ends.
- */
-export function nextRoadCell(from: CellRef, current: CellRef, rng: number): CellRef {
-  const options = roadNeighbors(current).filter(
-    (n) => !(n.cx === from.cx && n.cz === from.cz)
-  );
-  if (options.length === 0) return from; // dead end: U-turn
-  const straight = options.find(
-    (n) => n.cx - current.cx === current.cx - from.cx && n.cz - current.cz === current.cz - from.cz
-  );
-  if (straight && rng < 0.65) return straight;
-  // Rescale the roll so failing the go-straight check still covers [0,1).
-  const r = straight ? (rng - 0.65) / 0.35 : rng;
-  return options[Math.floor(r * options.length) % options.length];
+export function roadNeighbors(point: CellRef, mode: NavigationMode = point.mode ?? 'vehicle'): CellRef[] {
+  return activeRoadNetwork.neighbors(point, mode);
 }
 
-/**
- * Waypoint at a cell for travel direction from->to, offset to the right-hand
- * lane (laneFrac ~0.18 for cars) or the sidewalk (~0.40 for pedestrians).
- */
-export function lanePoint(
-  from: CellRef,
-  to: CellRef,
-  laneFrac: number
-): { x: number; z: number } {
+/** Find the nearest waypoint in the active navigation network. */
+export function nearestRoadPoint(x: number, z: number, mode: NavigationMode = 'vehicle'): CellRef | null {
+  return activeRoadNetwork.nearest({ ...worldToCell(x, z), x, z }, mode);
+}
+
+/** Prefer continuing along the current lane/path, otherwise select a legal outgoing edge. */
+export function nextRoadCell(from: CellRef, current: CellRef, rng: number, mode: NavigationMode = current.mode ?? 'vehicle'): CellRef {
+  const options = roadNeighbors(current, mode).filter((candidate) => {
+    const a = pointWorld(candidate);
+    const b = pointWorld(from);
+    return Math.hypot(a.x - b.x, a.z - b.z) > 0.05;
+  });
+  if (options.length === 0) return from;
+  const a = pointWorld(from);
+  const b = pointWorld(current);
+  const incoming = { x: b.x - a.x, z: b.z - a.z };
+  const incomingLength = Math.hypot(incoming.x, incoming.z) || 1;
+  const straight = options
+    .map((point) => {
+      const world = pointWorld(point);
+      const dx = world.x - b.x;
+      const dz = world.z - b.z;
+      const length = Math.hypot(dx, dz) || 1;
+      return { point, dot: (incoming.x * dx + incoming.z * dz) / (incomingLength * length) };
+    })
+    .sort((left, right) => right.dot - left.dot)[0];
+  if (straight && straight.dot > 0.75 && rng < 0.65) return straight.point;
+  const alternatives = options.filter((point) => point !== straight?.point);
+  return alternatives.length > 0 ? alternatives[Math.floor(rng * alternatives.length) % alternatives.length] : straight.point;
+}
+
+/** Exact compiled waypoint, or a legacy lane/sidewalk offset for grid maps. */
+export function lanePoint(from: CellRef, to: CellRef, laneFrac: number): { x: number; z: number } {
+  if (to.x !== undefined && to.z !== undefined) return { x: to.x, z: to.z };
   const { x, z } = cellToWorld(to.cx, to.cz);
   const dx = Math.sign(to.cx - from.cx);
   const dz = Math.sign(to.cz - from.cz);
-  // Right-hand side of travel: right = (-dz, dx) in (x,z)... using screen
-  // convention right-of-forward(f) = (-f.z, f.x) would be left; verified in
-  // Player: right = (-cos, sin) for forward (sin, cos) => right = (-dz, dx).
   return { x: x + -dz * laneFrac * TILE, z: z + dx * laneFrac * TILE };
 }
 
-/**
- * Random road cell in a distance ring around a world position, or null if
- * the sample lands outside the ring after snapping to the road grid.
- */
 export function randomRoadCellNear(
-  x: number,
-  z: number,
-  minDist: number,
-  maxDist: number
+  x: number, z: number, minDist: number, maxDist: number, mode: NavigationMode = 'vehicle'
 ): CellRef | null {
-  const ang = Math.random() * Math.PI * 2;
-  const r = minDist + Math.random() * (maxDist - minDist);
-  const raw = worldToCell(x + Math.sin(ang) * r, z + Math.cos(ang) * r);
-  const cell = activeRoadNetwork.nearest(raw);
-  if (!cell) return null; // sample landed in open water / off-map
-  const w = cellToWorld(cell.cx, cell.cz);
-  const d = Math.hypot(w.x - x, w.z - z);
-  return d >= minDist && d <= maxDist ? cell : null;
+  const angle = Math.random() * Math.PI * 2;
+  const distance = minDist + Math.random() * (maxDist - minDist);
+  const world = { x: x + Math.sin(angle) * distance, z: z + Math.cos(angle) * distance };
+  const raw = { ...worldToCell(world.x, world.z), ...world };
+  const point = activeRoadNetwork.nearest(raw, mode);
+  if (!point) return null;
+  const snapped = pointWorld(point);
+  const actual = Math.hypot(snapped.x - x, snapped.z - z);
+  return actual >= minDist && actual <= maxDist ? point : null;
 }
