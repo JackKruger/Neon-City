@@ -10,6 +10,8 @@ export interface HudState {
   pos?: { x: number; z: number };
   heading?: number;
   suburb?: string | null;
+  roadName?: string | null;
+  speedLimitKmh?: number;
   cops?: { x: number; z: number }[];
   /** 0..1 fractions; bars hide when undefined. */
   health?: number;
@@ -56,10 +58,26 @@ export class Hud {
         font-size:16px; background:rgba(20,8,40,.55); padding:6px 14px; border-radius:8px; }
       .hud-message { position:absolute; left:50%; top:18%; transform:translateX(-50%);
         font-size:30px; font-weight:800; letter-spacing:1px; }
-      .hud-minimap { position:absolute; left:14px; bottom:14px; width:166px; aspect-ratio:1; }
-      .hud-minimap-canvas { width:100%; height:100%; border-radius:50%; box-sizing:border-box;
+      .hud-minimap { position:absolute; left:14px; bottom:14px; width:238px; aspect-ratio:1; }
+      .hud-panel.is-split .hud-minimap { width:min(210px, calc(100% - 28px)); }
+      .hud-minimap-canvas { width:100%; height:100%; border-radius:12px; box-sizing:border-box;
         border:2px solid rgba(94,243,255,.85); background:#151326;
         box-shadow:0 0 0 3px rgba(12,8,28,.72), 0 0 18px rgba(94,243,255,.32); }
+      .hud-north { position:absolute; top:9px; right:9px; width:34px; height:42px;
+        display:flex; flex-direction:column; align-items:center; justify-content:center;
+        border-radius:8px; color:#fff; background:rgba(9,8,24,.78); border:1px solid rgba(255,255,255,.32);
+        box-shadow:0 2px 8px rgba(0,0,0,.5); font:800 11px/1 sans-serif; }
+      .hud-north-arrow { display:block; color:#ff5db1; font-size:21px; line-height:18px;
+        transform-origin:50% 55%; text-shadow:0 0 7px rgba(255,60,180,.9); }
+      .hud-road-info { position:absolute; left:9px; right:9px; bottom:9px; display:flex;
+        align-items:center; gap:8px; min-width:0; }
+      .hud-road-name { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+        padding:7px 9px; border-radius:7px; background:rgba(9,8,24,.82); border:1px solid rgba(255,255,255,.2);
+        font-size:13px; font-weight:800; text-transform:uppercase; }
+      .hud-road-limit { flex:0 0 39px; width:39px; height:39px; display:flex; align-items:center;
+        justify-content:center; box-sizing:border-box; border-radius:50%; border:3px solid #f0445f;
+        color:#151326; background:#fff; font-size:16px; font-weight:900; line-height:1;
+        text-shadow:none; box-shadow:0 2px 8px rgba(0,0,0,.55); font-variant-numeric:tabular-nums; }
       .hud-weapon { position:absolute; right:18px; bottom:52px; font-size:15px; font-weight:700;
         text-align:right; color:#cfe6ff; font-variant-numeric:tabular-nums;
         text-shadow:0 0 8px rgba(94,163,255,.8), 0 2px 2px rgba(0,0,0,.6); }
@@ -94,9 +112,9 @@ export class Hud {
         max-width:calc(100% - 32px); color:#fff; font-size:12px; text-align:center;
         white-space:nowrap; opacity:.78; pointer-events:none; text-shadow:0 2px 3px #000; }
       @media (max-width:700px) {
-        .hud-minimap { width:128px; }
-        .hud-panel.is-split .hud-speed { bottom:146px; }
-        .hud-panel.is-split .hud-weapon { bottom:184px; }
+        .hud-minimap, .hud-panel.is-split .hud-minimap { width:176px; }
+        .hud-panel.is-split .hud-speed { bottom:194px; }
+        .hud-panel.is-split .hud-weapon { bottom:232px; }
         .hud-hint { display:none; }
         .hud-map-title { font-size:19px; }
         .hud-map-footer { white-space:normal; }
@@ -240,6 +258,8 @@ export class Hud {
         z: state.pos.z,
         heading: state.heading,
         suburb: state.suburb ?? null,
+        roadName: state.roadName ?? null,
+        speedLimitKmh: state.speedLimitKmh,
         cops: state.cops ?? [],
       });
     }

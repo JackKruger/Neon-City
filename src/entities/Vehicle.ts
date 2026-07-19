@@ -2,9 +2,12 @@ import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { Entity, Game } from '../core/Game';
 import { VEHICLE_COLLISION_GROUPS } from '../core/const';
+import type { CombatTarget } from '../gameplay/Combat';
+import type { WeaponDef } from '../gameplay/Weapons';
 import type { CameraTarget } from '../render/Viewports';
 import { heightAt } from '../world/CityMap';
 import type { Drivable, DriveCommand } from './Drivable';
+import type { Player } from './Player';
 
 /** Uniform scale for all Kenney car models (sedan 2.55u -> ~4.4m). */
 const CAR_SCALE = 1.73;
@@ -22,6 +25,12 @@ interface VehicleDoor {
   pivot: THREE.Group;
   amount: number;
   target: number;
+}
+
+interface DamageMaterial {
+  material: THREE.MeshStandardMaterial;
+  original: THREE.Color;
+  roughness: number;
 }
 
 const SUSPENSION_REST = 0.3;
@@ -54,9 +63,16 @@ const DOOR_OPEN_ANGLE = 1.18;
  */
 const CHASSIS_DENSITY = 60;
 const BALLAST_DENSITY = 500;
+const MAX_HEALTH = 200;
+const FIRE_HEALTH = 40;
+const BURN_DURATION = 6;
+const IMPACT_DAMAGE_SPEED = 5.5;
+const CHARRED = new THREE.Color(0x17151a);
 
-export class Vehicle implements Entity, CameraTarget, Drivable {
+export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
   readonly kind = 'car' as const;
+  readonly hitEffect = 'metal' as const;
+  readonly aimAssist = false;
   readonly root = new THREE.Group();
   readonly body: RAPIER.RigidBody;
   private controller: RAPIER.DynamicRayCastVehicleController;
@@ -67,14 +83,24 @@ export class Vehicle implements Entity, CameraTarget, Drivable {
   private chassisCenter = new THREE.Vector3();
   private chassisHalfSize = new THREE.Vector3();
   private doors = new Map<1 | -1, VehicleDoor>();
+  private colliders: RAPIER.Collider[] = [];
+  private damageMaterials: DamageMaterial[] = [];
+  private preStepVelocity = new THREE.Vector3();
+  private hasPreStepVelocity = false;
+  private impactCooldown = 0;
+  private fireFxCooldown = 0;
+  private burnTime = 0;
+  private lastAttacker: Player | null = null;
   private parkingAnchor: { x: number; z: number; rotation: RAPIER.Rotation } | null = null;
 
   // Vehicles are parked until a player or AI driver supplies a command.
   command: DriveCommand = { steer: 0, throttle: 0, brake: 0, handbrake: true };
   /** Current driver (Player or an AI), if any. */
   driver: object | null = null;
-  /** Set false to leave the physics parked (traffic converts on impact). */
+  /** True after the fire stage has converted this car into a wreck. */
   destroyed = false;
+  health = MAX_HEALTH;
+  burning = false;
 
   constructor(
     private game: Game,
@@ -85,6 +111,30 @@ export class Vehicle implements Entity, CameraTarget, Drivable {
   ) {
     const model = game.assets.get(modelName);
     model.scale.setScalar(CAR_SCALE);
+    const materialClones = new Map<THREE.Material, THREE.Material>();
+    model.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const cloneMaterial = (source: THREE.Material): THREE.Material => {
+        let clone = materialClones.get(source);
+        if (!clone) {
+          clone = source.clone();
+          materialClones.set(source, clone);
+          const colored = clone as THREE.MeshStandardMaterial;
+          if (colored.color && typeof colored.roughness === 'number') {
+            this.damageMaterials.push({
+              material: colored,
+              original: colored.color.clone(),
+              roughness: colored.roughness,
+            });
+          }
+        }
+        return clone;
+      };
+      mesh.material = Array.isArray(mesh.material)
+        ? mesh.material.map(cloneMaterial)
+        : cloneMaterial(mesh.material);
+    });
     this.root.add(model);
     model.updateMatrixWorld(true);
 
@@ -123,7 +173,7 @@ export class Vehicle implements Entity, CameraTarget, Drivable {
         .setAngularDamping(1.2)
         .setCcdEnabled(true)
     );
-    world.createCollider(
+    const chassisCollider = world.createCollider(
       RAPIER.ColliderDesc.cuboid(size.x / 2, size.y / 2, size.z / 2)
         .setTranslation(center.x, center.y, center.z)
         .setFriction(BODY_FRICTION)
@@ -133,8 +183,9 @@ export class Vehicle implements Entity, CameraTarget, Drivable {
         .setCollisionGroups(VEHICLE_COLLISION_GROUPS),
       this.body
     );
+    this.colliders.push(chassisCollider);
     // Dense low slab drops the center of mass for flatter cornering.
-    world.createCollider(
+    const ballastCollider = world.createCollider(
       RAPIER.ColliderDesc.cuboid(size.x / 2, 0.08, size.z / 2)
         .setTranslation(center.x, center.y - size.y / 4, center.z)
         .setFriction(BODY_FRICTION)
@@ -143,6 +194,8 @@ export class Vehicle implements Entity, CameraTarget, Drivable {
         .setCollisionGroups(VEHICLE_COLLISION_GROUPS),
       this.body
     );
+    this.colliders.push(ballastCollider);
+    for (const collider of this.colliders) game.combat.register(collider, this);
 
     this.controller = world.createVehicleController(this.body);
     const mass = this.body.mass();
@@ -252,9 +305,18 @@ export class Vehicle implements Entity, CameraTarget, Drivable {
   }
 
   update(dt: number): void {
+    this.impactCooldown = Math.max(0, this.impactCooldown - dt);
+    const before = this.body.linvel();
+    this.preStepVelocity.set(before.x, before.y, before.z);
+    this.hasPreStepVelocity = true;
+    this.updateBurning(dt);
+    if (this.destroyed) {
+      this.command = { steer: 0, throttle: 0, brake: 0, handbrake: true };
+    }
     this.updateDoors(dt);
     const { steer, throttle, brake, handbrake } = this.command;
     this.pinWhileParked(
+      !this.destroyed && !this.burning &&
       this.driver === null && handbrake && steer === 0 && throttle === 0 && brake === 0
     );
     const mass = this.body.mass();
@@ -281,7 +343,8 @@ export class Vehicle implements Entity, CameraTarget, Drivable {
     // Quadratic taper keeps midrange pull strong and still reaches top speed.
     const speedRatio = THREE.MathUtils.clamp(speed / MAX_FORWARD_SPEED, 0, 1);
     const forwardTaper = 1 - speedRatio * speedRatio;
-    let engine = throttle * mass * 8 * forwardTaper;
+    const engineHealth = THREE.MathUtils.clamp(0.38 + 0.62 * (this.health / MAX_HEALTH), 0.38, 1);
+    let engine = (this.destroyed ? 0 : throttle * mass * 8 * forwardTaper * engineHealth);
     let brakeForce = 0;
     if (brake > 0) {
       if (speed < 1.0) {
@@ -363,10 +426,145 @@ export class Vehicle implements Entity, CameraTarget, Drivable {
     }
   }
 
+  // CombatTarget
+  alive(): boolean {
+    return !this.destroyed;
+  }
+
+  position(): THREE.Vector3 {
+    const t = this.body.translation();
+    return new THREE.Vector3(t.x, t.y, t.z);
+  }
+
+  takeHit(damage: number, direction: THREE.Vector3, weapon: WeaponDef, attacker: Player | null): void {
+    if (this.destroyed) return;
+    let multiplier = 1;
+    if (weapon.kind === 'melee') {
+      multiplier = weapon.name === 'Explosion'
+        ? 1
+        : weapon.id === 'fists'
+          ? 0.08
+          : weapon.id === 'knife'
+            ? 0.18
+            : 0.48;
+    }
+    this.lastAttacker = attacker ?? this.lastAttacker;
+    this.applyDamage(damage * multiplier);
+    if (weapon.name !== 'Explosion') {
+      const impulse = direction.clone().setY(0).multiplyScalar(this.body.mass() * Math.min(0.18, damage * 0.002));
+      this.body.applyImpulse(new RAPIER.Vector3(impulse.x, 0, impulse.z), true);
+    }
+  }
+
+  applyBlast(velocityChange: THREE.Vector3): void {
+    if (this.destroyed) return;
+    const mass = this.body.mass();
+    this.body.applyImpulse(
+      new RAPIER.Vector3(
+        velocityChange.x * mass,
+        Math.max(1.5, velocityChange.y) * mass,
+        velocityChange.z * mass
+      ),
+      true
+    );
+  }
+
+  private applyDamage(amount: number): void {
+    if (this.destroyed || !Number.isFinite(amount) || amount <= 0) return;
+    this.health = Math.max(0, this.health - amount);
+    this.updateDamageAppearance();
+    if (this.health <= FIRE_HEALTH) this.startBurning();
+    if (this.health <= 0) this.burnTime = Math.max(this.burnTime, BURN_DURATION - 1.35);
+  }
+
+  private startBurning(): void {
+    if (this.burning || this.destroyed) return;
+    this.burning = true;
+    this.fireFxCooldown = 0;
+    this.parkingAnchor = null;
+    this.body.wakeUp();
+  }
+
+  private updateBurning(dt: number): void {
+    if (!this.burning || this.destroyed) return;
+    this.burnTime += dt;
+    this.fireFxCooldown -= dt;
+    if (this.fireFxCooldown <= 0) {
+      this.fireFxCooldown = 0.065 + Math.random() * 0.055;
+      this.game.fx.vehicleFire(this.effectPosition(), 0.8 + this.burnTime / BURN_DURATION);
+    }
+    if (this.burnTime >= BURN_DURATION) this.explode();
+  }
+
+  private effectPosition(out = new THREE.Vector3()): THREE.Vector3 {
+    const t = this.body.translation();
+    const local = new THREE.Vector3(
+      this.chassisCenter.x,
+      this.chassisCenter.y + this.chassisHalfSize.y * 0.75,
+      this.chassisCenter.z + this.chassisHalfSize.z * 0.55
+    ).applyQuaternion(this.quaternion());
+    return out.set(t.x + local.x, t.y + local.y, t.z + local.z);
+  }
+
+  private explode(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.burning = false;
+    this.health = 0;
+    this.command = { steer: 0, throttle: 0, brake: 0, handbrake: true };
+    this.parkingAnchor = null;
+    this.updateDamageAppearance();
+    const origin = this.effectPosition();
+    this.game.fx.explosion(origin);
+    const nearest = Math.min(...this.game.playerPositions().map((position) =>
+      Math.hypot(position.x - origin.x, position.z - origin.z)
+    ));
+    this.game.audio.explosion(nearest);
+    const mass = this.body.mass();
+    this.body.applyImpulse(new RAPIER.Vector3(0, mass * 3.2, 0), true);
+    this.body.applyTorqueImpulse(
+      new RAPIER.Vector3(
+        (Math.random() - 0.5) * mass * 1.2,
+        (Math.random() - 0.5) * mass * 0.45,
+        (Math.random() - 0.5) * mass * 1.2
+      ),
+      true
+    );
+    this.game.onVehicleExploded(this, origin, this.lastAttacker);
+  }
+
+  private updateDamageAppearance(): void {
+    const damage = this.destroyed ? 1 : 1 - this.health / MAX_HEALTH;
+    for (const entry of this.damageMaterials) {
+      entry.material.color.copy(entry.original).lerp(CHARRED, damage * 0.88);
+      entry.material.roughness = Math.min(1, entry.roughness + damage * 0.18);
+    }
+  }
+
   /** Apply post-step parking constraints, then render the final physics pose. */
   afterPhysics(): void {
     if (this.parkingAnchor) this.restoreParkingAnchor();
+    this.recordImpactDamage();
     this.syncVisuals();
+  }
+
+  private recordImpactDamage(): void {
+    if (!this.hasPreStepVelocity || this.destroyed || this.impactCooldown > 0) return;
+    const velocity = this.body.linvel();
+    const dx = velocity.x - this.preStepVelocity.x;
+    const dy = (velocity.y - this.preStepVelocity.y) * 0.65;
+    const dz = velocity.z - this.preStepVelocity.z;
+    const deltaV = Math.hypot(dx, dy, dz);
+    if (deltaV <= IMPACT_DAMAGE_SPEED) return;
+    const damage = Math.min(85, Math.pow(deltaV - IMPACT_DAMAGE_SPEED, 1.35) * 2.1);
+    this.impactCooldown = 0.22;
+    this.applyDamage(damage);
+    const point = this.effectPosition();
+    this.game.fx.spark(point);
+    const nearest = Math.min(...this.game.playerPositions().map((position) =>
+      Math.hypot(position.x - point.x, position.z - point.z)
+    ));
+    this.game.audio.thwack(nearest);
   }
 
   /**
@@ -462,6 +660,8 @@ export class Vehicle implements Entity, CameraTarget, Drivable {
 
   dispose(): void {
     this.game.scene.remove(this.root);
+    for (const collider of this.colliders) this.game.combat.unregister(collider);
+    for (const entry of this.damageMaterials) entry.material.dispose();
     this.controller.free();
     this.game.world.removeRigidBody(this.body);
   }

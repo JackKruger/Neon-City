@@ -1,4 +1,4 @@
-import { inMap, toWorld } from './geo.mjs';
+import { CHUNK_TILES, TILE, chunkKeyForWorld, inMap, toWorld } from './geo.mjs';
 
 const MAX_PATH_LENGTH = 90;
 const MAX_SEGMENT_LENGTH = 30;
@@ -167,6 +167,63 @@ function speedKmh(tags, highway) {
   const speed = metres(tags.maxspeed);
   if (speed !== null && speed <= 130) return Math.round(speed);
   return ({ motorway: 100, trunk: 80, primary: 60, secondary: 60, living_street: 20 }[highway] ?? 50);
+}
+
+/** Compact, chunk-indexed road names and limits for the in-game HUD. */
+export function roadInfoFromOverpass(data) {
+  const rawSegments = [];
+  const names = new Set();
+  const excluded = new Set(['footway', 'path', 'steps', 'cycleway', 'pedestrian']);
+  const compact = (value) => Math.round(value * 10) / 10;
+
+  for (const element of data?.elements ?? []) {
+    if (element.type !== 'way' || !Array.isArray(element.geometry)) continue;
+    const tags = element.tags ?? {};
+    const highway = String(tags.highway ?? '').replace(/_link$/, '');
+    if (!highway || excluded.has(highway)) continue;
+    const name = String(tags.name ?? tags.ref ?? '').replace(/\s+/g, ' ').trim() || null;
+    if (name) names.add(name);
+    const speed = speedKmh(tags, highway);
+    const points = element.geometry
+      .filter((point) => Number.isFinite(point?.lat) && Number.isFinite(point?.lon))
+      .map((point) => ({ ...toWorld(point.lat, point.lon), lat: point.lat, lon: point.lon }));
+    for (let i = 0; i + 1 < points.length; i++) {
+      const a = points[i];
+      const b = points[i + 1];
+      if (!inMap(a.lat, a.lon, MAX_SEGMENT_LENGTH) && !inMap(b.lat, b.lon, MAX_SEGMENT_LENGTH)) continue;
+      const length = Math.hypot(b.x - a.x, b.z - a.z);
+      const parts = Math.max(1, Math.ceil(length / MAX_SEGMENT_LENGTH));
+      for (let part = 0; part < parts; part++) {
+        const t0 = part / parts;
+        const t1 = (part + 1) / parts;
+        const ax = compact(a.x + (b.x - a.x) * t0);
+        const az = compact(a.z + (b.z - a.z) * t0);
+        const bx = compact(a.x + (b.x - a.x) * t1);
+        const bz = compact(a.z + (b.z - a.z) * t1);
+        rawSegments.push({ name, speed, ax, az, bx, bz });
+      }
+    }
+  }
+
+  const nameList = [...names].sort((a, b) => a.localeCompare(b));
+  const nameIndices = new Map(nameList.map((name, index) => [name, index]));
+  const chunks = {};
+  for (const segment of rawSegments) {
+    const key = chunkKeyForWorld((segment.ax + segment.bx) / 2, (segment.az + segment.bz) / 2);
+    (chunks[key] ??= []).push([
+      segment.name ? nameIndices.get(segment.name) : -1,
+      segment.speed,
+      segment.ax,
+      segment.az,
+      segment.bx,
+      segment.bz,
+    ]);
+  }
+  const sortedChunks = {};
+  for (const key of Object.keys(chunks).sort()) {
+    sortedChunks[key] = chunks[key].sort((a, b) => a[3] - b[3] || a[2] - b[2] || a[0] - b[0]);
+  }
+  return { version: 1, chunkTiles: CHUNK_TILES, tileSize: TILE, names: nameList, chunks: sortedChunks };
 }
 
 function laneCounts(tags) {

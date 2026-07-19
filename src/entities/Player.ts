@@ -143,6 +143,10 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     if (!this.dead && knockDown) this.knockDown(impact);
   }
 
+  applyBlast(velocityChange: THREE.Vector3): void {
+    if (!this.dead && !this.knockedDown && !this.driving) this.knockDown(velocityChange);
+  }
+
   private knockDown(impact: THREE.Vector3): void {
     this.knockedDown = true;
     this.knockdownTimer = KNOCKDOWN_TIME;
@@ -385,6 +389,7 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     let best: Drivable | null = null;
     let bestDist = ENTER_RADIUS;
     for (const v of this.game.vehicles) {
+      if (v.destroyed) continue;
       const occupiedTraffic = v.driver instanceof TrafficCar && v.getSpeed() < 2.5;
       if (v.driver && !occupiedTraffic) continue;
       const t = v.body.translation();
@@ -398,7 +403,7 @@ export class Player implements Entity, CameraTarget, CombatTarget {
   }
 
   enterVehicle(v: Drivable): void {
-    if (this.vehicle || this.vehicleTransition) return;
+    if (this.vehicle || this.vehicleTransition || v.destroyed) return;
     const occupant = v.driver instanceof TrafficCar ? v.driver : null;
     if (v.driver && !occupant) return;
     if (occupant && v.getSpeed() >= 2.5) return;
@@ -451,6 +456,29 @@ export class Player implements Entity, CameraTarget, CombatTarget {
       occupantEjected: false,
     };
     this.character.beginVehicleTransition(false);
+  }
+
+  /** Emergency exit used immediately before an occupied vehicle's blast. */
+  ejectFromDestroyedVehicle(vehicle: Drivable, origin: THREE.Vector3): void {
+    if (this.vehicle !== vehicle) return;
+    this.vehicleTransition = null;
+    this.pendingMelee = null;
+    vehicle.driver = null;
+    vehicle.setDoorOpen(this.vehicleDoorSide, false);
+    const outside = vehicle.doorPosition(this.vehicleDoorSide, 1.35);
+    const away = outside.clone().sub(origin).setY(0);
+    if (away.lengthSq() < 0.01) away.set(1, 0, 0).applyQuaternion(vehicle.quaternion());
+    away.normalize();
+    outside.addScaledVector(away, 0.8);
+    this.vehicle = null;
+    this.character.setEnabled(true);
+    this.character.teleport(
+      outside.x,
+      Math.max(outside.y, heightAt(outside.x, outside.z) + 0.1),
+      outside.z
+    );
+    this.character.setFacing(Math.atan2(away.x, away.z));
+    this.vehicleHitCooldown = 0.8;
   }
 
   private updateVehicleTransition(dt: number): void {

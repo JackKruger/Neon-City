@@ -177,6 +177,13 @@ export class AudioSys {
     this.blip('sine', 620, 1240, 0.09, 0.12);
   }
 
+  /** Heavy layered blast for an exploding vehicle. */
+  explosion(dist = 0): void {
+    const volume = Math.min(0.65, 16 / Math.max(dist, 8));
+    this.noiseBurst(0.55, 'lowpass', 520, volume);
+    this.blip('sine', 105, 28, 0.48, volume * 0.85);
+  }
+
   /** Fade everything out (used while paused). */
   duck(): void {
     if (!this.ctx || this.ctx.state !== 'running') return;

@@ -144,6 +144,13 @@ export const VEHICLE_IMPACT: MeleeDef = {
   heatPerHit: 0,
 };
 
+/** Pseudo-weapon used for radial vehicle explosions. */
+export const VEHICLE_EXPLOSION: MeleeDef = {
+  ...VEHICLE_IMPACT,
+  name: 'Explosion',
+  knockback: 12,
+};
+
 export const PED_HEALTH = 60;
 export const COP_HEALTH = 80;
 export const PLAYER_HEALTH = 100;

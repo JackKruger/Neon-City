@@ -1,4 +1,4 @@
-import { AuthoredMap, MapLayerName, setAuthoredMap } from './CityMap';
+import { AuthoredMap, MapLayerName, RoadInfoIndex, setAuthoredMap } from './CityMap';
 
 /**
  * Fetch an authored map (produced by scripts/build-map.mjs) from /public/maps
@@ -80,6 +80,20 @@ export async function loadAuthoredMap(
     map.layers = {};
     for (const entry of loaded) {
       if (entry) map.layers[entry[0]] = entry[1];
+    }
+  }
+  {
+    try {
+      const response = await fetch(`/maps/${name}.roads.json`);
+      if (!response.ok) throw new Error(`${response.status}`);
+      const roadInfo = await response.json() as RoadInfoIndex;
+      if (roadInfo.version !== 1 || roadInfo.chunkTiles !== 10 || roadInfo.tileSize !== 12 ||
+          !Array.isArray(roadInfo.names) || typeof roadInfo.chunks !== 'object') {
+        throw new Error('incompatible road information index');
+      }
+      map.roadInfo = roadInfo;
+    } catch (error) {
+      console.warn(`[map] ${name}: road names unavailable (${error})`);
     }
   }
   if (options.loadObjects !== false && typeof meta.objects === 'string') {

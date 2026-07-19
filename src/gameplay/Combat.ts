@@ -2,14 +2,18 @@ import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { Game } from '../core/Game';
 import type { Player } from '../entities/Player';
-import { GunDef, MeleeDef, WeaponDef } from './Weapons';
+import { GunDef, MeleeDef, VEHICLE_EXPLOSION, WeaponDef } from './Weapons';
 
 /** Anything that can be punched or shot. */
 export interface CombatTarget {
+  readonly hitEffect?: 'blood' | 'metal';
+  readonly aimAssist?: boolean;
   alive(): boolean;
   /** Ground-level position; chest offsets are applied by the combat service. */
   position(): THREE.Vector3;
   takeHit(damage: number, dir: THREE.Vector3, weapon: WeaponDef, attacker: Player | null): void;
+  /** Optional physics response expressed as a desired velocity change. */
+  applyBlast?(velocityChange: THREE.Vector3): void;
 }
 
 const TO_TARGET = new THREE.Vector3();
@@ -64,7 +68,8 @@ export class Combat {
       target.takeHit(def.damage, direction, def, attacker);
       const hitPoint = pos.clone();
       hitPoint.y += 1.05;
-      this.game.fx.blood(hitPoint, direction, def.id === 'fists' ? 0.55 : 0.9);
+      if (target.hitEffect === 'metal') this.game.fx.spark(hitPoint);
+      else this.game.fx.blood(hitPoint, direction, def.id === 'fists' ? 0.55 : 0.9);
       hits++;
     }
     return hits;
@@ -84,7 +89,7 @@ export class Combat {
     let best: CombatTarget | null = null;
     let bestDist = range;
     for (const target of new Set(this.byCollider.values())) {
-      if ((target as object) === exclude || !target.alive()) continue;
+      if ((target as object) === exclude || !target.alive() || target.aimAssist === false) continue;
       const pos = target.position();
       const dx = pos.x - origin.x;
       const dz = pos.z - origin.z;
@@ -143,7 +148,8 @@ export class Combat {
       const target = this.byCollider.get(hit.collider.handle);
       if (target && target.alive()) {
         target.takeHit(def.damage, d, def, attacker);
-        fx.blood(end, d, def.pellets > 1 ? 0.7 : 1);
+        if (target.hitEffect === 'metal') fx.spark(end);
+        else fx.blood(end, d, def.pellets > 1 ? 0.7 : 1);
         hits++;
       } else {
         fx.spark(end);
@@ -157,12 +163,39 @@ export class Combat {
   anyTargetNear(pos: THREE.Vector3, radius: number, exclude?: object): boolean {
     const r2 = radius * radius;
     for (const target of this.byCollider.values()) {
-      if ((target as object) === exclude || !target.alive()) continue;
+      if ((target as object) === exclude || !target.alive() || target.hitEffect === 'metal') continue;
       const t = target.position();
       const dx = t.x - pos.x;
       const dz = t.z - pos.z;
       if (dx * dx + dz * dz < r2) return true;
     }
     return false;
+  }
+
+  /** Damage every unique target in a radial blast, with linear falloff. */
+  blast(
+    origin: THREE.Vector3,
+    radius: number,
+    maxDamage: number,
+    attacker: Player | null,
+    exclude?: object
+  ): void {
+    for (const target of new Set(this.byCollider.values())) {
+      if ((target as object) === exclude || !target.alive()) continue;
+      const position = target.position();
+      const direction = position.clone().sub(origin);
+      const distance = direction.length();
+      if (distance > radius) continue;
+      if (distance < 0.1) direction.set(0, 0.35, 1);
+      else direction.multiplyScalar(1 / distance);
+      const falloff = 1 - distance / radius;
+      const damage = Math.max(1, Math.round(maxDamage * (0.25 + falloff * 0.75)));
+      target.takeHit(damage, direction, VEHICLE_EXPLOSION, attacker);
+      target.applyBlast?.(direction.clone().multiplyScalar(3 + falloff * 7));
+      const hitPoint = position.clone();
+      hitPoint.y += target.hitEffect === 'metal' ? 0.4 : 0.9;
+      if (target.hitEffect === 'metal') this.game.fx.spark(hitPoint);
+      else this.game.fx.blood(hitPoint, direction, 0.7 + falloff * 0.7);
+    }
   }
 }

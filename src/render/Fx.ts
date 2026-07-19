@@ -8,7 +8,7 @@ import { heightAt } from '../world/CityMap';
  * of being disposed.
  */
 
-type FxKind = 'tracer' | 'flash' | 'blood' | 'stain' | 'spark';
+type FxKind = 'tracer' | 'flash' | 'blood' | 'stain' | 'spark' | 'fire' | 'smoke' | 'explosion' | 'debris';
 
 interface FxItem {
   kind: FxKind;
@@ -16,6 +16,8 @@ interface FxItem {
   life: number;
   maxLife: number;
   velocity: THREE.Vector3 | null;
+  gravity: number;
+  growth: number;
 }
 
 function makeSplatGeometry(): THREE.BufferGeometry {
@@ -46,6 +48,10 @@ const GEO: Record<FxKind, THREE.BufferGeometry> = {
   blood: new THREE.BoxGeometry(0.06, 0.06, 0.06),
   stain: makeSplatGeometry(),
   spark: new THREE.BoxGeometry(0.04, 0.04, 0.04),
+  fire: new THREE.TetrahedronGeometry(0.18, 0),
+  smoke: new THREE.SphereGeometry(0.22, 7, 5),
+  explosion: new THREE.SphereGeometry(0.5, 12, 8),
+  debris: new THREE.BoxGeometry(0.1, 0.06, 0.16),
 };
 
 const MAT: Record<FxKind, THREE.MeshBasicMaterial> = {
@@ -63,6 +69,10 @@ const MAT: Record<FxKind, THREE.MeshBasicMaterial> = {
     polygonOffsetUnits: -2,
   }),
   spark: new THREE.MeshBasicMaterial({ color: 0xffe36b }),
+  fire: new THREE.MeshBasicMaterial({ color: 0xff7b18, transparent: true, opacity: 0.9 }),
+  smoke: new THREE.MeshBasicMaterial({ color: 0x28232f, transparent: true, opacity: 0.62, depthWrite: false }),
+  explosion: new THREE.MeshBasicMaterial({ color: 0xffb321, transparent: true, opacity: 0.82, depthWrite: false }),
+  debris: new THREE.MeshBasicMaterial({ color: 0x29242d }),
 };
 
 const MID = new THREE.Vector3();
@@ -78,11 +88,21 @@ export class Fx {
     blood: [],
     stain: [],
     spark: [],
+    fire: [],
+    smoke: [],
+    explosion: [],
+    debris: [],
   };
 
   constructor(private scene: THREE.Scene) {}
 
-  private spawn(kind: FxKind, maxLife: number, withVelocity: boolean): FxItem {
+  private spawn(
+    kind: FxKind,
+    maxLife: number,
+    withVelocity: boolean,
+    gravity = -9,
+    growth = 0
+  ): FxItem {
     if (kind === 'stain') {
       const stains = this.active.filter((active) => active.kind === 'stain');
       if (stains.length >= MAX_STAINS) this.release(this.active.indexOf(stains[0]));
@@ -97,11 +117,15 @@ export class Fx {
         life: 0,
         maxLife,
         velocity: null,
+        gravity,
+        growth,
       };
     }
     item.life = 0;
     item.maxLife = maxLife;
     item.velocity = withVelocity ? item.velocity ?? new THREE.Vector3() : null;
+    item.gravity = gravity;
+    item.growth = growth;
     item.mesh.scale.setScalar(1);
     item.mesh.rotation.set(0, 0, 0);
     this.scene.add(item.mesh);
@@ -190,14 +214,75 @@ export class Fx {
     }
   }
 
+  /** A small flame and intermittent soot puff attached to a burning vehicle. */
+  vehicleFire(pos: THREE.Vector3, intensity = 1): void {
+    const flame = this.spawn('fire', 0.22 + Math.random() * 0.18, true, 1.2, 0.7);
+    flame.mesh.position.copy(pos);
+    flame.mesh.scale.setScalar(0.75 + Math.random() * 0.75 * intensity);
+    flame.velocity!.set(
+      (Math.random() - 0.5) * 0.8,
+      1.4 + Math.random() * 1.2,
+      (Math.random() - 0.5) * 0.8
+    );
+    if (Math.random() < 0.42) {
+      const smoke = this.spawn('smoke', 1.1 + Math.random() * 0.8, true, 0.45, 0.55);
+      smoke.mesh.position.copy(pos);
+      smoke.mesh.scale.setScalar(0.7 + Math.random() * 0.5 * intensity);
+      smoke.velocity!.set(
+        (Math.random() - 0.5) * 0.55,
+        0.85 + Math.random() * 0.65,
+        (Math.random() - 0.5) * 0.55
+      );
+    }
+  }
+
+  /** Expanding flash, flame cloud, smoke, sparks, and bodywork fragments. */
+  explosion(pos: THREE.Vector3): void {
+    const flash = this.spawn('explosion', 0.28, false, 0, 8.5);
+    flash.mesh.position.copy(pos);
+    flash.mesh.scale.setScalar(0.7);
+    for (let i = 0; i < 24; i++) {
+      const direction = new THREE.Vector3(
+        Math.random() - 0.5,
+        0.2 + Math.random() * 0.8,
+        Math.random() - 0.5
+      ).normalize();
+      const flame = this.spawn('fire', 0.35 + Math.random() * 0.45, true, -3, 1.1);
+      flame.mesh.position.copy(pos);
+      flame.mesh.scale.setScalar(0.8 + Math.random() * 1.4);
+      flame.velocity!.copy(direction).multiplyScalar(4 + Math.random() * 7);
+    }
+    for (let i = 0; i < 10; i++) {
+      const smoke = this.spawn('smoke', 1.4 + Math.random(), true, 0.2, 1.1);
+      smoke.mesh.position.copy(pos);
+      smoke.mesh.scale.setScalar(1 + Math.random());
+      smoke.velocity!.set(
+        (Math.random() - 0.5) * 4,
+        1.5 + Math.random() * 3,
+        (Math.random() - 0.5) * 4
+      );
+    }
+    for (let i = 0; i < 16; i++) {
+      const debris = this.spawn('debris', 1.2 + Math.random() * 1.2, true);
+      debris.mesh.position.copy(pos);
+      debris.mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+      debris.velocity!.set(
+        (Math.random() - 0.5) * 13,
+        3 + Math.random() * 8,
+        (Math.random() - 0.5) * 13
+      );
+    }
+  }
+
   update(dt: number): void {
     for (let i = this.active.length - 1; i >= 0; i--) {
       const item = this.active[i];
       item.life += dt;
       if (item.velocity) {
-        item.velocity.y -= 9 * dt;
+        item.velocity.y += item.gravity * dt;
         item.mesh.position.addScaledVector(item.velocity, dt);
       }
+      if (item.growth !== 0) item.mesh.scale.addScalar(item.growth * dt);
       if (item.life >= item.maxLife) {
         this.release(i);
       }

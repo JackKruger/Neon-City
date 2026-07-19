@@ -46,6 +46,17 @@ export type AuthoredObject =
   | { kind: 'parking'; x: number; z: number; rotation: number }
   | { kind: 'bollard' | 'bicycle-rail' | 'bin' | 'fountain' | 'seat' | 'planter' | 'barbecue' | 'art'; x: number; z: number; rotation: number };
 
+/** [name index, speed km/h, start x, start z, end x, end z]. */
+export type RoadInfoSegment = [number, number, number, number, number, number];
+
+export interface RoadInfoIndex {
+  version: 1;
+  chunkTiles: number;
+  tileSize: number;
+  names: string[];
+  chunks: Record<string, RoadInfoSegment[]>;
+}
+
 export type MapLayerName = 'transport' | 'speed' | 'landuse' | 'height' | 'address' | 'coverage';
 
 export interface AuthoredMap {
@@ -62,6 +73,8 @@ export interface AuthoredMap {
   suburbGrid?: Uint8Array;
   layers?: Partial<Record<MapLayerName, Uint8Array>>;
   objectChunks?: Record<string, AuthoredObject[]>;
+  /** Compact OSM street-centreline index used by the driving HUD. */
+  roadInfo?: RoadInfoIndex;
   /** Exact buffered OSM road polygons are available for visual rendering. */
   roadSurfaces?: boolean;
   /** Suggested player spawn (world meters, on a road cell). */
@@ -182,6 +195,48 @@ export function suburbNameAt(x: number, z: number): string | null {
   const suburbIndex = authored.suburbGrid[gx + gz * authored.width];
   if (suburbIndex === 255) return null;
   return authored.suburbs[suburbIndex]?.name ?? null;
+}
+
+export interface CurrentRoadInfo {
+  name: string | null;
+  speedLimitKmh: number;
+}
+
+/** Nearest drivable OSM centreline, biased toward the vehicle's heading at junctions. */
+export function roadInfoAt(x: number, z: number, heading?: number): CurrentRoadInfo | null {
+  const info = authored?.roadInfo;
+  if (!info) return null;
+  const cx = Math.floor(Math.round(x / TILE) / info.chunkTiles);
+  const cz = Math.floor(Math.round(z / TILE) / info.chunkTiles);
+  const travelX = heading === undefined ? 0 : Math.sin(heading);
+  const travelZ = heading === undefined ? 0 : Math.cos(heading);
+  let best: RoadInfoSegment | null = null;
+  let bestScore = Infinity;
+
+  for (let oz = -1; oz <= 1; oz++) {
+    for (let ox = -1; ox <= 1; ox++) {
+      for (const segment of info.chunks[`${cx + ox},${cz + oz}`] ?? []) {
+        const [, , ax, az, bx, bz] = segment;
+        const dx = bx - ax;
+        const dz = bz - az;
+        const lengthSq = dx * dx + dz * dz;
+        if (lengthSq < 0.01) continue;
+        const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / lengthSq));
+        const distance = Math.hypot(x - (ax + dx * t), z - (az + dz * t));
+        if (distance > 28) continue;
+        const alignment = heading === undefined
+          ? 1
+          : Math.abs((travelX * dx + travelZ * dz) / Math.sqrt(lengthSq));
+        const score = distance + (1 - alignment) * 9;
+        if (score < bestScore) {
+          best = segment;
+          bestScore = score;
+        }
+      }
+    }
+  }
+  if (!best) return null;
+  return { name: info.names[best[0]] ?? null, speedLimitKmh: best[1] };
 }
 
 /**

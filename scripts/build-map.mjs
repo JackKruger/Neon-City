@@ -14,15 +14,16 @@
  * Map data © OpenStreetMap contributors, licensed under ODbL:
  * https://www.openstreetmap.org/copyright
  *
- * Usage: node scripts/build-map.mjs [--fresh] [--roads-only] [--heights-only]
+ * Usage: node scripts/build-map.mjs [--fresh] [--roads-only] [--road-info-only] [--heights-only]
  *   --fresh         ignore cached source responses and re-download
  *   --roads-only    update polygon road objects without rebuilding other data
+ *   --road-info-only update HUD road names and speed limits from cached OSM
  *   --heights-only  rebake terrain against the existing authored cell grid
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -32,7 +33,7 @@ import {
   rechunkObjectIndex,
 } from './map/open-data.mjs';
 import { CHUNK_TILES } from './map/geo.mjs';
-import { roadSurfacesFromOverpass } from './map/roads.mjs';
+import { roadInfoFromOverpass, roadSurfacesFromOverpass } from './map/roads.mjs';
 import {
   HEIGHT_SCALE,
   buildTerrainHeights,
@@ -146,6 +147,19 @@ function fetchOverpass() {
   if (!process.argv.includes('--fresh') && existsSync(cacheFile)) {
     console.log(`using cached Overpass response: ${cacheFile}`);
     return JSON.parse(readFileSync(cacheFile, 'utf8'));
+  }
+  // HUD road metadata can safely be regenerated from the latest complete OSM
+  // snapshot even when harmless query edits changed the cache hash.
+  if (!process.argv.includes('--fresh') && process.argv.includes('--road-info-only') && existsSync(cacheDir)) {
+    const fallback = readdirSync(cacheDir)
+      .filter((name) => new RegExp(`^${MAP.name}-[0-9a-f]+\\.json$`).test(name))
+      .sort()
+      .at(-1);
+    if (fallback) {
+      const fallbackPath = join(cacheDir, fallback);
+      console.log(`using cached Overpass snapshot: ${fallbackPath}`);
+      return JSON.parse(readFileSync(fallbackPath, 'utf8'));
+    }
   }
   let lastErr;
   for (let attempt = 0; attempt < 6; attempt++) {
@@ -376,6 +390,15 @@ function writeRoadSurfacesOnly(data) {
   console.log(`wrote ${surfaces.length} polygon road surfaces to public/maps/${MAP.name}.objects.json`);
 }
 
+function writeRoadInfo(data) {
+  const outDir = join(ROOT, 'public', 'maps');
+  const roadInfo = roadInfoFromOverpass(data);
+  writeFileSync(join(outDir, `${MAP.name}.roads.json`), JSON.stringify(roadInfo));
+  const segmentCount = Object.values(roadInfo.chunks).reduce((sum, segments) => sum + segments.length, 0);
+  console.log(`wrote ${segmentCount} road segments and ${roadInfo.names.length} names to public/maps/${MAP.name}.roads.json`);
+  return roadInfo;
+}
+
 function writeObjectIndex(outDir, chunks, roadSurfaces) {
   writeFileSync(join(outDir, `${MAP.name}.objects.json`), JSON.stringify({
     version: OBJECT_INDEX_VERSION,
@@ -451,8 +474,13 @@ async function main() {
     return;
   }
   const data = fetchOverpass();
+  if (process.argv.includes('--road-info-only')) {
+    writeRoadInfo(data);
+    return;
+  }
   if (process.argv.includes('--roads-only')) {
     writeRoadSurfacesOnly(data);
+    writeRoadInfo(data);
     return;
   }
   if (process.argv.includes('--fetch-osm-only')) {
@@ -628,6 +656,7 @@ async function main() {
   if (enrichment?.objectChunks) {
     writeObjectIndex(outDir, enrichment.objectChunks, enrichment.roadSurfaces);
   }
+  writeRoadInfo(data);
 
   const meta = {
     version: enrichment ? 3 : 2,

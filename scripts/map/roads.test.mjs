@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { roadSurfacesFromOverpass, roadWidth, sidewalkWidth } from './roads.mjs';
+import { roadInfoFromOverpass, roadSurfacesFromOverpass, roadWidth, sidewalkWidth } from './roads.mjs';
 
 test('road widths prefer OSM dimensions and sensible class defaults', () => {
   assert.equal(roadWidth({ highway: 'residential' }), 8);
@@ -41,4 +41,16 @@ test('tram centrelines generate standard-gauge rails and a tram graph', () => {
   }] });
   assert.equal(features.filter((item) => item.role?.startsWith('tram-rail')).length, 2);
   assert.ok(features.some((item) => item.kind === 'nav-path' && item.mode === 'tram'));
+});
+
+test('road information preserves names and speed limits in spatial chunks', () => {
+  const info = roadInfoFromOverpass({ elements: [{
+    type: 'way', id: 10, tags: { highway: 'primary', name: 'Flinders Street', maxspeed: '40' }, geometry: [
+      { lat: -37.835, lon: 144.9595 }, { lat: -37.835, lon: 144.9605 },
+    ],
+  }] });
+  assert.deepEqual(info.names, ['Flinders Street']);
+  const segments = Object.values(info.chunks).flat();
+  assert.ok(segments.length >= 2);
+  assert.ok(segments.every(([name, speed]) => name === 0 && speed === 40));
 });

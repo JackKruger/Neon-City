@@ -11,7 +11,7 @@ const MAP_COLORS: readonly [number, number, number][] = [
 ];
 
 const RADIUS_METERS = 300;
-const CANVAS_SIZE = 340;
+const CANVAS_SIZE = 480;
 
 /** Paint the authored byte grid once for reuse by every map view. */
 export function buildMapCanvas(map: AuthoredMap): HTMLCanvasElement {
@@ -37,6 +37,8 @@ export interface MinimapState {
   z: number;
   heading: number;
   suburb: string | null;
+  roadName: string | null;
+  speedLimitKmh?: number;
   cops: { x: number; z: number }[];
 }
 
@@ -45,6 +47,11 @@ export class Minimap {
   private root = document.createElement('div');
   private label = document.createElement('div');
   private canvas = document.createElement('canvas');
+  private north = document.createElement('div');
+  private northArrow = document.createElement('span');
+  private roadInfo = document.createElement('div');
+  private roadName = document.createElement('div');
+  private speedLimit = document.createElement('div');
   private ctx: CanvasRenderingContext2D;
   private lastSuburb: string | null = null;
 
@@ -56,10 +63,18 @@ export class Minimap {
     this.root.className = 'hud-minimap';
     this.label.className = 'hud-suburb';
     this.canvas.className = 'hud-minimap-canvas';
+    this.north.className = 'hud-north';
+    this.northArrow.className = 'hud-north-arrow';
+    this.northArrow.textContent = '↑';
+    this.north.append(this.northArrow, 'N');
+    this.roadInfo.className = 'hud-road-info';
+    this.roadName.className = 'hud-road-name';
+    this.speedLimit.className = 'hud-road-limit';
+    this.roadInfo.append(this.roadName, this.speedLimit);
     this.canvas.width = CANVAS_SIZE;
     this.canvas.height = CANVAS_SIZE;
     this.ctx = this.canvas.getContext('2d')!;
-    this.root.append(this.label, this.canvas);
+    this.root.append(this.label, this.canvas, this.north, this.roadInfo);
     parent.appendChild(this.root);
   }
 
@@ -77,6 +92,13 @@ export class Minimap {
     const px = state.x / TILE + this.map.width / 2;
     const py = state.z / TILE + this.map.height / 2;
     const mapRotation = state.heading - Math.PI;
+    this.northArrow.style.transform = `rotate(${mapRotation}rad)`;
+    const showRoad = Boolean(state.roadName) || state.speedLimitKmh !== undefined;
+    this.roadInfo.style.display = showRoad ? 'flex' : 'none';
+    this.roadName.style.display = state.roadName ? 'block' : 'none';
+    this.roadName.textContent = state.roadName ?? '';
+    this.speedLimit.style.display = state.speedLimitKmh !== undefined ? 'flex' : 'none';
+    this.speedLimit.textContent = state.speedLimitKmh !== undefined ? String(Math.round(state.speedLimitKmh)) : '';
 
     ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
     ctx.save();

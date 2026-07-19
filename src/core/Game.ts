@@ -17,7 +17,9 @@ import {
   getAuthoredMap,
   heightAt,
   nearestRoadCell,
+  roadInfoAt,
   setAuthoredMap,
+  speedLimitAt,
   suburbNameAt,
   worldToCell,
 } from '../world/CityMap';
@@ -201,6 +203,14 @@ export class Game {
     }
   }
 
+  /** Eject occupants, resolve radial damage, and attribute a destroyed car. */
+  onVehicleExploded(vehicle: Vehicle, origin: THREE.Vector3, attacker: Player | null): void {
+    for (const player of this.players) player.ejectFromDestroyedVehicle(vehicle, origin);
+    vehicle.driver = null;
+    this.combat.blast(origin, 10, 105, attacker, vehicle);
+    this.reportCrime(attacker, 24);
+  }
+
   /** Split the screen and drop player 2 next to player 1. */
   joinPlayer2(): void {
     if (this.players.length >= 2) return;
@@ -329,6 +339,13 @@ export class Game {
       const pos = positions[i];
       if (!this.debugCam) this.viewports.cameras[i]?.update(p, dt);
       const def = p.inventory.def();
+      const heading = p.getHeading();
+      const drivingCar = p.driving && p.vehicle!.kind === 'car';
+      const currentRoad = drivingCar ? roadInfoAt(pos.x, pos.z, heading) : null;
+      const roadCell = worldToCell(pos.x, pos.z);
+      const fallbackLimit = drivingCar && cellAt(roadCell.cx, roadCell.cz) === '#'
+        ? speedLimitAt(roadCell.cx, roadCell.cz)
+        : undefined;
       this.hud.update(i, {
         speedKmh: p.driving ? p.vehicle!.speedKmh() : undefined,
         prompt: p.prompt ?? undefined,
@@ -341,8 +358,10 @@ export class Game {
         armour: p.armour / 100,
         message: p.hudMessage ?? undefined,
         pos,
-        heading: p.getHeading(),
+        heading,
         suburb: this.suburbAt(i, pos.x, pos.z),
+        roadName: currentRoad ? currentRoad.name ?? 'Unnamed road' : undefined,
+        speedLimitKmh: currentRoad?.speedLimitKmh ?? fallbackLimit,
         cops: p.wanted.police.map((cop) => {
           const t = cop.vehicle.body.translation();
           return { x: t.x, z: t.z };
