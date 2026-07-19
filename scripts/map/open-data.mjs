@@ -212,7 +212,7 @@ async function loadSource(cacheDir, key, options, report) {
 }
 
 function addObject(chunks, object) {
-  if ((object.kind === 'road-surface' || object.kind === 'building') && object.outline?.length >= 3) {
+  if ((object.kind === 'road-surface' || object.kind === 'building' || object.kind === 'structure') && object.outline?.length >= 3) {
     const sourceId = object.sourceId ??
       `${object.kind}:${object.x}:${object.z}:${object.rotation ?? 0}:${object.width ?? 0}:${object.depth ?? 0}`;
     const polygon = object.outline.map(([x, z]) => [object.x + x, object.z + z]);
@@ -303,6 +303,26 @@ function classifyBuildingStyle(landUse, height) {
   if (landUse === LAND_USE.RESIDENTIAL_LOW && height < 14) return 'suburban';
   if (height >= 45) return 'skyscraper';
   return 'commercial';
+}
+
+// The City of Melbourne footprint dataset labels non-building structures in its
+// `footprint_type` field. Left unmapped these extrude as generic towers, so
+// retag them to a dedicated `structure` kind that carries the specific type.
+const FOOTPRINT_STRUCTURE_KINDS = {
+  bridge: 'bridge',
+  tunnel: 'tunnel',
+  jetty: 'jetty',
+  'tram stop': 'tram-stop',
+  'train platform': 'train-platform',
+  ramp: 'ramp',
+  toilet: 'toilet',
+  'public toilet': 'toilet',
+};
+
+/** Map a footprint's `footprint_type` to a structure kind, or null for buildings. */
+function footprintStructureType(properties) {
+  const type = textValue(properties, 'footprint_type').trim().toLowerCase();
+  return FOOTPRINT_STRUCTURE_KINDS[type] ?? null;
 }
 
 function buildingHeight(properties) {
@@ -520,14 +540,18 @@ function importBuildings(features, chunks, coverage, heightLayer, landUseLayer, 
 }
 
 function addBuilding(feature, ring, bounds, landUse, rawHeight, chunks, coverage, heightLayer, sourceId) {
-  const height = Math.max(3, Math.min(255, Number(rawHeight) || Math.max(5, Math.sqrt(bounds.width * bounds.depth) * 0.7)));
-  const style = classifyBuildingStyle(landUse, height);
+  const structureType = footprintStructureType(feature.properties);
+  // Buildings fall back to a footprint-scaled height when the source omits one;
+  // labelled structures (bridges, jetties, ramps…) keep their real low profile
+  // rather than being inflated into towers.
+  const height = structureType
+    ? Math.max(1, Math.min(255, Number(rawHeight) || 3))
+    : Math.max(3, Math.min(255, Number(rawHeight) || Math.max(5, Math.sqrt(bounds.width * bounds.depth) * 0.7)));
   const outline = simplifyWorldRing(ring).map((point) => [
     round(point.x - bounds.x),
     round(point.z - bounds.z),
   ]);
-  addObject(chunks, {
-    kind: 'building',
+  const common = {
     sourceId,
     x: round(bounds.x),
     z: round(bounds.z),
@@ -535,10 +559,16 @@ function addBuilding(feature, ring, bounds, landUse, rawHeight, chunks, coverage
     width: round(Math.max(2, bounds.width)),
     depth: round(Math.max(2, bounds.depth)),
     height: round(height),
-    style,
-    roof: textValue(feature.properties, 'roof_type', 'rooftype').toLowerCase() || undefined,
     ...(outline.length >= 3 ? { outline } : {}),
-  });
+  };
+  addObject(chunks, structureType
+    ? { kind: 'structure', structureType, ...common }
+    : {
+        kind: 'building',
+        ...common,
+        style: classifyBuildingStyle(landUse, height),
+        roof: textValue(feature.properties, 'roof_type', 'rooftype').toLowerCase() || undefined,
+      });
   for (const polygon of [ring]) {
     fillPolygon(coverage, polygon, coverageBuilding(coverage));
     const temp = new Uint8Array(heightLayer.length);
@@ -575,7 +605,7 @@ export function markBuildingSourceCoverage(
   const inBounds = (kx, kz) => kx >= minChunk && kx <= maxChunk && kz >= minChunk && kz <= maxChunk;
   const seeds = new Uint8Array(chunkWidth * chunkWidth);
   for (const [key, objects] of Object.entries(chunks ?? {})) {
-    if (!objects.some((object) => object.kind === 'building')) continue;
+    if (!objects.some((object) => object.kind === 'building' || object.kind === 'structure')) continue;
     const [kx, kz] = key.split(',').map(Number);
     if (inBounds(kx, kz)) seeds[chunkIndex(kx, kz)] = 1;
   }

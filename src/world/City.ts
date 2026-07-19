@@ -186,6 +186,11 @@ export class City implements CityStreamer {
     civic: new THREE.MeshStandardMaterial({ color: 0x489fb5, roughness: 0.55 }),
     art: new THREE.MeshStandardMaterial({ color: 0xe85d75, roughness: 0.35, metalness: 0.2 }),
   };
+  // Bridges, jetties, ramps and platforms read as bare civil infrastructure.
+  private structureMats = {
+    concrete: new THREE.MeshStandardMaterial({ color: 0x6b7075, roughness: 0.92 }),
+    timber: new THREE.MeshStandardMaterial({ color: 0x7a5a3f, roughness: 0.88 }),
+  };
   private authoredBuildingMats = {
     commercial: new THREE.MeshStandardMaterial({ color: 0xb985cf, roughness: 0.78 }),
     skyscraper: new THREE.MeshStandardMaterial({ color: 0x718caf, roughness: 0.5, metalness: 0.18 }),
@@ -276,7 +281,7 @@ export class City implements CityStreamer {
     const authoredObjects = authoredObjectsForChunk(kx, kz);
     // Keep the local object check as a safe fallback if an older map omits the
     // source mask or the coverage layer fails to load.
-    const authoredBuildingArea = authoredObjects.some((object) => object.kind === 'building');
+    const authoredBuildingArea = authoredObjects.some((object) => object.kind === 'building' || object.kind === 'structure');
 
     const c0x = kx * CHUNK_TILES;
     const c0z = kz * CHUNK_TILES;
@@ -481,6 +486,8 @@ export class City implements CityStreamer {
       return;
     } else if (feature.kind === 'building') {
       this.authoredBuilding(feature, body, buckets);
+    } else if (feature.kind === 'structure') {
+      this.authoredStructure(feature, body, buckets);
     } else if (feature.kind === 'tree') {
       this.authoredTree(feature, body, buckets);
     } else if (feature.kind === 'parking') {
@@ -592,6 +599,69 @@ export class City implements CityStreamer {
     this.bucket(this.authoredBuildingMats[feature.style], geometry, buckets);
   }
 
+  /**
+   * Bridges, tunnels, jetties, ramps, tram stops, platforms and toilets are
+   * labelled in the footprint source and retagged away from `building`, so they
+   * render as low civil structures at their real profile instead of towers.
+   */
+  private authoredStructure(
+    feature: Extract<AuthoredObject, { kind: 'structure' }>,
+    body: RAPIER.RigidBody,
+    buckets: Buckets
+  ): void {
+    const material = feature.structureType === 'jetty'
+      ? this.structureMats.timber
+      : this.structureMats.concrete;
+    const baseY = this.authoredBuildingBase(feature);
+
+    if (feature.outline && feature.outline.length >= 3) {
+      const shape = new THREE.Shape();
+      for (let i = 0; i < feature.outline.length; i++) {
+        const [x, z] = feature.outline[i];
+        if (i === 0) shape.moveTo(x, -z);
+        else shape.lineTo(x, -z);
+      }
+      shape.closePath();
+      const geometry = new THREE.ExtrudeGeometry(shape, {
+        depth: feature.height,
+        bevelEnabled: false,
+        steps: 1,
+        curveSegments: 1,
+      });
+      geometry.rotateX(-Math.PI / 2);
+      geometry.translate(feature.x, baseY, feature.z);
+      geometry.computeVertexNormals();
+
+      const position = geometry.getAttribute('position');
+      const vertices = new Float32Array(position.count * 3);
+      for (let i = 0; i < position.count; i++) {
+        vertices[i * 3] = position.getX(i);
+        vertices[i * 3 + 1] = position.getY(i);
+        vertices[i * 3 + 2] = position.getZ(i);
+      }
+      const indices = geometry.index
+        ? Uint32Array.from(geometry.index.array)
+        : Uint32Array.from({ length: position.count }, (_, i) => i);
+      this.game.world.createCollider(RAPIER.ColliderDesc.trimesh(vertices, indices), body);
+      this.bucket(material, geometry, buckets);
+      return;
+    }
+
+    // No simplified outline: fall back to the oriented footprint box.
+    const geometry = new THREE.BoxGeometry(feature.width, feature.height, feature.depth);
+    geometry.translate(0, feature.height / 2, 0);
+    geometry.applyMatrix4(
+      new THREE.Matrix4().makeRotationY(feature.rotation).setPosition(feature.x, baseY, feature.z)
+    );
+    this.bucket(material, geometry, buckets);
+    this.game.world.createCollider(
+      RAPIER.ColliderDesc.cuboid(feature.width / 2, feature.height / 2, feature.depth / 2)
+        .setTranslation(feature.x, baseY + feature.height / 2, feature.z)
+        .setRotation({ x: 0, y: Math.sin(feature.rotation / 2), z: 0, w: Math.cos(feature.rotation / 2) }),
+      body
+    );
+  }
+
   private authoredTree(
     feature: Extract<AuthoredObject, { kind: 'tree' }>,
     body: RAPIER.RigidBody,
@@ -633,7 +703,7 @@ export class City implements CityStreamer {
 
   /** Lowest terrain sample under an authored footprint, used as its level pad. */
   private authoredBuildingBase(
-    feature: Extract<AuthoredObject, { kind: 'building' }>
+    feature: Extract<AuthoredObject, { kind: 'building' | 'structure' }>
   ): number {
     if (Number.isFinite(feature.baseY)) return feature.baseY as number;
     if (feature.outline && feature.outline.length >= 3) {
@@ -686,7 +756,7 @@ export class City implements CityStreamer {
   }
 
   private authoredProp(
-    feature: Exclude<AuthoredObject, { kind: 'road-surface' | 'nav-path' | 'building' | 'tree' | 'parking' }>,
+    feature: Exclude<AuthoredObject, { kind: 'road-surface' | 'nav-path' | 'building' | 'structure' | 'tree' | 'parking' }>,
     body: RAPIER.RigidBody,
     buckets: Buckets
   ): void {

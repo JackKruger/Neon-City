@@ -42,6 +42,7 @@ export type AuthoredObject =
   | { kind: 'road-surface'; sourceId?: string; role?: string; elevation?: number; x: number; z: number; surface: 'asphalt' | 'pavement' | 'marking' | 'rail' | 'concrete' | 'cycleway'; outline: [number, number][] }
   | { kind: 'nav-path'; sourceId?: string; x: number; z: number; mode: 'vehicle' | 'pedestrian' | 'tram'; speed: number; flags?: number; points: [number, number][] }
   | { kind: 'building'; sourceId?: string; x: number; z: number; rotation: number; width: number; depth: number; height: number; baseY?: number; style: 'commercial' | 'skyscraper' | 'suburban' | 'industrial'; roof?: string; outline?: [number, number][] }
+  | { kind: 'structure'; sourceId?: string; structureType: 'bridge' | 'tunnel' | 'jetty' | 'tram-stop' | 'train-platform' | 'ramp' | 'toilet'; x: number; z: number; rotation: number; width: number; depth: number; height: number; baseY?: number; outline?: [number, number][] }
   | { kind: 'tree'; x: number; z: number; height: number; variant: 'small' | 'large' }
   | { kind: 'parking'; x: number; z: number; rotation: number }
   | { kind: 'bollard' | 'bicycle-rail' | 'bin' | 'fountain' | 'seat' | 'planter' | 'barbecue' | 'art'; x: number; z: number; rotation: number };

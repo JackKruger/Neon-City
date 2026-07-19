@@ -28,12 +28,16 @@ test('open data enrichment emits all runtime contracts', async () => {
     const writeGeo = (name, features) => writeFileSync(join(cache, name), JSON.stringify({ type: 'FeatureCollection', features }));
     const block = [[144.9596, -37.8346], [144.9604, -37.8346], [144.9604, -37.8354], [144.9596, -37.8354], [144.9596, -37.8346]];
     const building = [[144.9599, -37.8349], [144.9601, -37.8349], [144.9601, -37.8351], [144.9599, -37.8351], [144.9599, -37.8349]];
+    const bridge = [[144.96015, -37.83515], [144.96035, -37.83515], [144.96035, -37.83535], [144.96015, -37.83535], [144.96015, -37.83515]];
     const road = [[144.9595, -37.835], [144.9605, -37.835]];
 
     writeGeo('vicmap-planning.geojson', [polygon('Commercial 1 Zone', block)]);
     writeGeo('vicmap-transport.geojson', [line({ feature_type: 'Road Bridge' }, road)]);
     writeGeo('speed-zones.geojson', [line({ speed_zone: 40 }, road)]);
-    writeGeo('building-footprints.geojson', [polygon('building', building, { structure_id: 'A', structure_extrusion: 28, roof_type: 'Flat' })]);
+    writeGeo('building-footprints.geojson', [
+      polygon('building', building, { structure_id: 'A', structure_extrusion: 28, roof_type: 'Flat', footprint_type: 'Structure' }),
+      polygon('span', bridge, { structure_id: 'B', structure_extrusion: 4, footprint_type: 'Bridge' }),
+    ]);
     writeGeo('urban-forest-trees.geojson', [point({ common_name: 'Elm', tree_height: 9 }, [144.96025, -37.8348])]);
     writeGeo('street-furniture.geojson', [point({ asset_type: 'Bollard' }, [144.9603, -37.8349])]);
     writeGeo('public-art.geojson', [point({ asset_type: 'Monument' }, [144.96035, -37.8349])]);
@@ -76,6 +80,12 @@ test('open data enrichment emits all runtime contracts', async () => {
     for (const kind of ['road-surface', 'building', 'tree', 'bollard', 'art', 'parking']) assert.ok(authored.some((item) => item.kind === kind), kind);
     assert.equal(objects.roadSurfaces, true);
     assert.ok(authored.find((item) => item.kind === 'building')?.outline?.length >= 3);
+    // Labelled footprints (footprint_type != Structure) are retagged, not extruded as buildings.
+    const structure = authored.find((item) => item.kind === 'structure');
+    assert.ok(structure, 'bridge footprint emitted as a structure');
+    assert.equal(structure.structureType, 'bridge');
+    assert.ok(structure.height <= 4, 'structure keeps its real low profile');
+    assert.ok(!authored.some((item) => item.kind === 'building' && item.sourceId === 'building:B'), 'bridge is not also a building');
     assert.equal(result.suburbs?.[0]?.name, 'Melbourne');
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -112,4 +122,11 @@ test('building source coverage buffers footprint chunks and fills enclosed gaps'
   }, { mapSize, chunkTiles });
   assert.equal(bufferedResult.coveredChunks, 9);
   assert.ok((buffered[35 + 35 * mapSize] & COVERAGE.BUILDING_SOURCE) !== 0, 'neighboring chunk buffer is absent');
+
+  // A chunk holding only retagged structures still seeds authoritative coverage.
+  const structuresOnly = new Uint8Array(mapSize * mapSize);
+  const structureResult = markBuildingSourceCoverage(structuresOnly, {
+    '0,0': [{ kind: 'structure', structureType: 'bridge' }],
+  }, { mapSize, chunkTiles, bufferChunks: 0 });
+  assert.equal(structureResult.seedChunks, 1);
 });
