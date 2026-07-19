@@ -8,8 +8,8 @@ export const TILE = 12;
 export const GRAVITY = -20;
 
 /**
- * Living pedestrians are detected by gameplay code instead of acting as
- * immovable solver contacts against vehicles. Other collision pairs retain
+ * Living on-foot characters are detected by gameplay code instead of acting
+ * as immovable solver contacts against vehicles. Other collision pairs retain
  * Rapier's default all-groups behavior.
  */
 const VEHICLE_GROUP = 0x0004;

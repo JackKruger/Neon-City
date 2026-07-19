@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { Entity, Game } from '../core/Game';
 import type { PlayerInput } from '../core/Input';
+import { PEDESTRIAN_COLLISION_GROUPS } from '../core/const';
 import type { CameraTarget } from '../render/Viewports';
 import { Character } from './Character';
 import type { Outfit } from './HumanRig';
@@ -9,11 +10,12 @@ import { Vehicle } from './Vehicle';
 import { Wanted } from '../gameplay/Wanted';
 import { Inventory } from '../gameplay/Inventory';
 import type { CombatTarget } from '../gameplay/Combat';
-import { MeleeDef, PLAYER_HEALTH, WeaponDef, WeaponId } from '../gameplay/Weapons';
+import { MeleeDef, PLAYER_HEALTH, VEHICLE_IMPACT, WeaponDef, WeaponId } from '../gameplay/Weapons';
 import { buildWeaponMesh } from './WeaponMeshes';
 import { cellToWorld, heightAt, nearestRoadCell, worldToCell } from '../world/CityMap';
 
 const ENTER_RADIUS = 3.5;
+const KNOCKDOWN_TIME = 2.6;
 
 const P1_OUTFIT: Outfit = {
   skin: 0xe0ac69,
@@ -43,6 +45,7 @@ export class Player implements Entity, CameraTarget, CombatTarget {
   health = PLAYER_HEALTH;
   armour = 0;
   dead = false;
+  knockedDown = false;
   /** Message for this player's HUD center slot ("WASTED"). */
   hudMessage: string | null = null;
   private balance = 0;
@@ -55,6 +58,7 @@ export class Player implements Entity, CameraTarget, CombatTarget {
   /** Rate limit on vehicle contact damage. */
   private vehicleHitCooldown = 0;
   private respawnTimer = 0;
+  private knockdownTimer = 0;
   private ragdoll: Ragdoll | null = null;
 
   constructor(
@@ -63,7 +67,14 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     x: number,
     z: number
   ) {
-    this.character = new Character(game, index === 0 ? P1_OUTFIT : P2_OUTFIT, x, z);
+    this.character = new Character(
+      game,
+      index === 0 ? P1_OUTFIT : P2_OUTFIT,
+      x,
+      z,
+      1,
+      PEDESTRIAN_COLLISION_GROUPS
+    );
     this.wanted = new Wanted(game, this);
     game.combat.register(this.character.collider, this);
   }
@@ -74,11 +85,11 @@ export class Player implements Entity, CameraTarget, CombatTarget {
   }
 
   position(): THREE.Vector3 {
-    return this.character.position();
+    return this.ragdoll ? this.ragdoll.position() : this.character.position();
   }
 
   takeHit(damage: number, dir: THREE.Vector3, _weapon: WeaponDef, _attacker: Player | null): void {
-    if (this.dead || this.driving) return;
+    if (this.dead || this.knockedDown || this.driving) return;
     const absorbed = Math.min(this.armour, damage * 0.7);
     this.armour -= absorbed;
     this.health -= damage - absorbed;
@@ -86,9 +97,48 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     if (this.health <= 0) this.die(dir);
   }
 
+  /** Apply a car hit, entering a recoverable ragdoll state when fast enough. */
+  takeVehicleHit(damage: number, impact: THREE.Vector3, knockDown: boolean): void {
+    if (!this.canReceiveVehicleImpact()) return;
+    this.vehicleHitCooldown = 0.8;
+    this.takeHit(damage, impact, VEHICLE_IMPACT, null);
+    if (!this.dead && knockDown) this.knockDown(impact);
+  }
+
+  private knockDown(impact: THREE.Vector3): void {
+    this.knockedDown = true;
+    this.knockdownTimer = KNOCKDOWN_TIME;
+    this.pendingMelee = null;
+    this.game.combat.unregister(this.character.collider);
+    this.ragdoll = new Ragdoll(this.game, this.character.rig, impact);
+    this.character.setEnabled(false);
+  }
+
+  private standUp(): void {
+    const landing = this.ragdoll?.position() ?? this.character.position();
+    this.ragdoll?.dispose();
+    this.ragdoll = null;
+    this.character.dispose();
+    this.character = new Character(
+      this.game,
+      this.index === 0 ? P1_OUTFIT : P2_OUTFIT,
+      landing.x,
+      landing.z,
+      1,
+      PEDESTRIAN_COLLISION_GROUPS
+    );
+    this.character.rig.setHeldItem(buildWeaponMesh(this.inventory.current));
+    this.heldWeaponId = this.inventory.current;
+    this.character.flinch();
+    this.game.combat.register(this.character.collider, this);
+    this.knockedDown = false;
+    this.vehicleHitCooldown = 0.8;
+  }
+
   private die(impactDir: THREE.Vector3): void {
     this.dead = true;
     this.health = 0;
+    this.knockedDown = false;
     this.hudMessage = 'WASTED';
     this.respawnTimer = 4;
     this.game.combat.unregister(this.character.collider);
@@ -100,7 +150,7 @@ export class Player implements Entity, CameraTarget, CombatTarget {
   }
 
   private respawn(): void {
-    const deathPos = this.character.position();
+    const deathPos = this.position();
     this.ragdoll?.dispose();
     this.ragdoll = null;
     this.character.dispose();
@@ -111,12 +161,15 @@ export class Player implements Entity, CameraTarget, CombatTarget {
       this.game,
       this.index === 0 ? P1_OUTFIT : P2_OUTFIT,
       spot.x,
-      spot.z
+      spot.z,
+      1,
+      PEDESTRIAN_COLLISION_GROUPS
     );
     this.game.combat.register(this.character.collider, this);
     this.health = PLAYER_HEALTH;
     this.armour = 0;
     this.dead = false;
+    this.knockdownTimer = 0;
     this.hudMessage = null;
     this.balance = Math.max(0, this.balance - 100); // hospital fee
     this.inventory.loseReserves();
@@ -160,6 +213,12 @@ export class Player implements Entity, CameraTarget, CombatTarget {
       this.ragdoll?.update();
       this.respawnTimer -= dt;
       if (this.respawnTimer <= 0) this.respawn();
+      return;
+    }
+    if (this.knockedDown) {
+      this.ragdoll?.update();
+      this.knockdownTimer -= dt;
+      if (this.knockdownTimer <= 0) this.standUp();
       return;
     }
     if (!input) return;
@@ -307,13 +366,9 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     this.character.setEnabled(true);
   }
 
-  /** Vehicle contact damage; scaled by impact speed, lethal at ragdoll speeds. */
+  /** Vehicle contact damage is ignored while driving, downed, or on cooldown. */
   canReceiveVehicleImpact(): boolean {
-    return !this.dead && !this.driving && this.vehicleHitCooldown <= 0;
-  }
-
-  notifyVehicleImpact(): void {
-    this.vehicleHitCooldown = 0.4;
+    return !this.dead && !this.knockedDown && !this.driving && this.vehicleHitCooldown <= 0;
   }
 
   // CameraTarget

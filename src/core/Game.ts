@@ -152,7 +152,7 @@ export class Game {
         const t = p.vehicle!.body.translation();
         return { x: t.x, z: t.z };
       }
-      const c = p.character.position();
+      const c = p.position();
       return { x: c.x, z: c.z };
     });
   }
@@ -204,7 +204,7 @@ export class Game {
     const p1 = this.players[0];
     const pos = p1.driving
       ? new THREE.Vector3().copy(p1.vehicle!.root.position)
-      : p1.character.position();
+      : p1.position();
     const p2 = new Player(this, 1, pos.x + 2.5, pos.z + 2.5);
     this.players.push(p2);
     this.entities.push(p2);

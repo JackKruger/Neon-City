@@ -7,7 +7,6 @@ import type { Outfit } from '../entities/HumanRig';
 import { TrafficCar } from '../entities/TrafficCar';
 import { CellRef, randomRoadCellNear, roadNeighbors } from './RoadGraph';
 import { cellToWorld } from './CityMap';
-import { VEHICLE_IMPACT } from '../gameplay/Weapons';
 
 const MAX_PEDS = 26;
 const MAX_TRAFFIC = 12;
@@ -16,6 +15,7 @@ const SPAWN_MAX = 100;
 const DESPAWN = 140;
 const MIN_CONTACT_SPEED = 0.65;
 const RAGDOLL_IMPACT_SPEED = 4.5;
+const MAX_PLAYER_VEHICLE_DAMAGE = 45;
 
 const SKINS = [0xffdbc4, 0xf1c27d, 0xe0ac69, 0xc68642, 0x8d5524, 0x5c3a21];
 const HAIRS = [0x241b17, 0x4a2f23, 0x8c5a3c, 0xb5651d, 0xd8c6a0, 0x707580, 0x1a1a2e];
@@ -164,6 +164,11 @@ export class Npcs {
         const horizontal = Math.hypot(impact.x, impact.z);
         if (horizontal > 20) impact.multiplyScalar(20 / horizontal);
         p.die(impact);
+        this.game.fx.blood(
+          new THREE.Vector3(pos.x, pos.y + 0.9, pos.z),
+          impact,
+          1.6
+        );
 
         // A human impact scrubs a little speed and can impart a small yaw,
         // without the abrupt stop caused by an immovable kinematic capsule.
@@ -192,10 +197,26 @@ export class Npcs {
         const approachSpeed = Math.max(0, velocity.x * away.x + velocity.z * away.z);
         const impactSpeed = approachSpeed + (speed - approachSpeed) * 0.28;
         if (impactSpeed < MIN_CONTACT_SPEED) continue;
-        player.notifyVehicleImpact();
-        const damage =
-          impactSpeed >= RAGDOLL_IMPACT_SPEED ? 999 : Math.ceil(impactSpeed * 6);
-        player.takeHit(damage, away, VEHICLE_IMPACT, null);
+        const knockDown = impactSpeed >= RAGDOLL_IMPACT_SPEED;
+        const damage = knockDown
+          ? Math.min(MAX_PLAYER_VEHICLE_DAMAGE, Math.ceil(12 + impactSpeed * 1.8))
+          : Math.max(1, Math.ceil(impactSpeed * 4));
+        const carry = knockDown ? 0.38 + Math.min(0.24, approachSpeed / Math.max(speed, 0.01) * 0.24) : 0;
+        const impact = knockDown
+          ? new THREE.Vector3(
+              velocity.x * carry + away.x * impactSpeed * 0.18,
+              Math.min(1.1, impactSpeed * 0.06),
+              velocity.z * carry + away.z * impactSpeed * 0.18
+            )
+          : away;
+        const horizontal = Math.hypot(impact.x, impact.z);
+        if (horizontal > 16) impact.multiplyScalar(16 / horizontal);
+        player.takeVehicleHit(damage, impact, knockDown);
+        this.game.fx.blood(
+          new THREE.Vector3(pos.x, pos.y + 0.9, pos.z),
+          impact,
+          knockDown ? 1.5 : 0.65
+        );
       }
     }
   }

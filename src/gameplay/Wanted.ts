@@ -111,7 +111,7 @@ export class Wanted {
   private spawnPolice(): void {
     const pos = this.player.driving
       ? this.player.vehicle!.root.position
-      : this.player.character.position();
+      : this.player.position();
     for (let tries = 0; tries < 14; tries++) {
       const cell = randomRoadCellNear(pos.x, pos.z, 40, 90);
       if (!cell) continue;

@@ -60,7 +60,11 @@ export class Combat {
       if (Math.abs(delta) > def.arc / 2) continue;
       TO_TARGET.set(dx, 0, dz);
       if (TO_TARGET.lengthSq() < 0.001) TO_TARGET.set(Math.sin(facingYaw), 0, Math.cos(facingYaw));
-      target.takeHit(def.damage, TO_TARGET.clone().normalize(), def, attacker);
+      const direction = TO_TARGET.clone().normalize();
+      target.takeHit(def.damage, direction, def, attacker);
+      const hitPoint = pos.clone();
+      hitPoint.y += 1.05;
+      this.game.fx.blood(hitPoint, direction, def.id === 'fists' ? 0.55 : 0.9);
       hits++;
     }
     return hits;
@@ -139,7 +143,7 @@ export class Combat {
       const target = this.byCollider.get(hit.collider.handle);
       if (target && target.alive()) {
         target.takeHit(def.damage, d, def, attacker);
-        fx.blood(end);
+        fx.blood(end, d, def.pellets > 1 ? 0.7 : 1);
         hits++;
       } else {
         fx.spark(end);

@@ -39,6 +39,13 @@ const GRIP_REAR = 4.2;
 const SIDE_STIFFNESS_FRONT = 1.3;
 /** Extra downward acceleration at top speed (m/s^2); keeps fast cars planted. */
 const DOWNFORCE_ACCEL = 6;
+/**
+ * Average densities for the hollow chassis and its low ballast. Together they
+ * put a sedan around a tonne, so a ~60 kg ragdoll cannot absorb most of the
+ * car's momentum. Drive forces and suspension limits already scale with mass.
+ */
+const CHASSIS_DENSITY = 60;
+const BALLAST_DENSITY = 500;
 
 export class Vehicle implements Entity, CameraTarget {
   readonly root = new THREE.Group();
@@ -110,7 +117,7 @@ export class Vehicle implements Entity, CameraTarget {
         .setTranslation(center.x, center.y, center.z)
         .setFriction(0.4)
         .setRestitution(0.3)
-        .setDensity(0.6)
+        .setDensity(CHASSIS_DENSITY)
         .setCollisionGroups(VEHICLE_COLLISION_GROUPS),
       this.body
     );
@@ -118,7 +125,7 @@ export class Vehicle implements Entity, CameraTarget {
     world.createCollider(
       RAPIER.ColliderDesc.cuboid(size.x / 2, 0.08, size.z / 2)
         .setTranslation(center.x, center.y - size.y / 4, center.z)
-        .setDensity(5)
+        .setDensity(BALLAST_DENSITY)
         .setCollisionGroups(VEHICLE_COLLISION_GROUPS),
       this.body
     );
