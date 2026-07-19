@@ -100,6 +100,38 @@ export class Character implements Entity {
     this.body.setEnabled(on);
   }
 
+  /** Disable gameplay collision while leaving the rig available to animate. */
+  beginVehicleTransition(visible: boolean): void {
+    this.enabled = false;
+    this.grounded = false;
+    this.moveDir.set(0, 0, 0);
+    this.moveSpeed = 0;
+    this.body.setEnabled(false);
+    this.root.visible = visible;
+  }
+
+  /** Draw one frame of an enter/exit animation independently of the capsule. */
+  setVehicleTransitionPose(
+    feet: THREE.Vector3,
+    yaw: number,
+    seatBlend: number,
+    side: 1 | -1,
+    visible: boolean,
+    carjackPull = 0
+  ): void {
+    this.root.visible = visible;
+    this.root.position.set(feet.x, feet.y + HALF_HEIGHT, feet.z);
+    this.root.rotation.y = yaw;
+    this.rig.setLocomotion(this.walkPhase, 0, 0, this.time);
+    this.rig.poseVehicleTransition(seatBlend, side);
+    if (carjackPull > 0) this.rig.poseCarjackPull(carjackPull, side);
+  }
+
+  setFacing(yaw: number): void {
+    this.facing = yaw;
+    this.root.rotation.y = yaw;
+  }
+
   teleport(x: number, y: number, z: number): void {
     this.body.setTranslation(new RAPIER.Vector3(x, y + HALF_HEIGHT + GROUND_CLEARANCE, z), true);
     this.vy = 0;

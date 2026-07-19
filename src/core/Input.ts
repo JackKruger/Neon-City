@@ -8,6 +8,8 @@ export interface PlayerInput {
   throttle: number; // 0..1
   brake: number; // 0..1 (reverse when stopped)
   handbrake: boolean;
+  /** Aircraft descent (Shift on keyboard, B/Circle on gamepad). */
+  descend: boolean;
   sprint: boolean;
   /** Held: fire/swing (auto weapons keep attacking while held). */
   attack: boolean;
@@ -37,6 +39,7 @@ function emptyInput(): PlayerInput {
     throttle: 0,
     brake: 0,
     handbrake: false,
+    descend: false,
     sprint: false,
     attack: false,
     aim: false,
@@ -216,6 +219,7 @@ export class Input {
     input.brake = k.has('KeyS') ? 1 : 0;
     input.handbrake = k.has('Space');
     input.sprint = k.has('ShiftLeft') || k.has('ShiftRight');
+    input.descend = input.sprint;
     input.attack = k.has('KeyF') || this.mouseButtons.has(0);
     input.aim = this.mouseButtons.has(2);
   }
@@ -229,6 +233,7 @@ export class Input {
     input.throttle = Math.max(input.throttle, pad.buttons[7]?.value ?? 0);
     input.brake = Math.max(input.brake, pad.buttons[6]?.value ?? 0);
     input.handbrake = input.handbrake || (pad.buttons[0]?.pressed ?? false);
+    input.descend = input.descend || (pad.buttons[1]?.pressed ?? false);
     input.sprint = input.sprint || (pad.buttons[0]?.pressed ?? false);
     input.attack = input.attack || (pad.buttons[7]?.pressed ?? false);
     input.aim = input.aim || (pad.buttons[6]?.pressed ?? false);

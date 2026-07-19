@@ -12,7 +12,7 @@ import { CellRef, lanePoint, nextRoadCell } from '../world/RoadGraph';
 const WALK_DIR = new THREE.Vector3();
 
 export class Pedestrian implements Entity, CombatTarget {
-  readonly character: Character;
+  character: Character;
   dead = false;
   health = PED_HEALTH;
   /** Time since death, for despawn. */
@@ -31,24 +31,29 @@ export class Pedestrian implements Entity, CombatTarget {
   private brawlTime = 0;
   private punchCooldown = 0;
   private pendingPunch = false;
+  private knockedDown = false;
+  private knockdownTimer = 0;
 
   constructor(
     private game: Game,
-    outfit: Outfit,
-    heightScale: number,
+    private readonly outfit: Outfit,
+    private readonly heightScale: number,
     from: CellRef,
-    to: CellRef
+    to: CellRef,
+    spawn?: { x: number; z: number }
   ) {
     this.from = from;
     this.to = to;
     this.brave = Math.random() < game.pedBraveChance;
     this.jitter = Math.random() * 0.08 - 0.04;
     this.waypoint = lanePoint(from, to, 0.4 + this.jitter);
+    const x = spawn?.x ?? this.waypoint.x + (Math.random() - 0.5) * 2;
+    const z = spawn?.z ?? this.waypoint.z + (Math.random() - 0.5) * 2;
     this.character = new Character(
       game,
       outfit,
-      this.waypoint.x + (Math.random() - 0.5) * 2,
-      this.waypoint.z + (Math.random() - 0.5) * 2,
+      x,
+      z,
       heightScale,
       PEDESTRIAN_COLLISION_GROUPS
     );
@@ -61,7 +66,7 @@ export class Pedestrian implements Entity, CombatTarget {
 
   /** Weapon damage from players (and later cops/brawlers). */
   takeHit(damage: number, dir: THREE.Vector3, weapon: WeaponDef, attacker: Player | null): void {
-    if (this.dead) return;
+    if (this.dead || this.knockedDown) return;
     this.health -= damage;
     if (this.health <= 0) {
       const strength = weapon.kind === 'melee' ? 3.5 + weapon.knockback : 6;
@@ -84,6 +89,12 @@ export class Pedestrian implements Entity, CombatTarget {
     if (this.dead) {
       this.deadFor += dt;
       this.ragdoll?.update();
+      return;
+    }
+    if (this.knockedDown) {
+      this.ragdoll?.update();
+      this.knockdownTimer -= dt;
+      if (this.knockdownTimer <= 0) this.standUp();
       return;
     }
     const pos = this.character.position();
@@ -176,7 +187,49 @@ export class Pedestrian implements Entity, CombatTarget {
   }
 
   canReceiveVehicleImpact(): boolean {
-    return !this.dead && this.impactCooldown <= 0;
+    return !this.dead && !this.knockedDown && this.impactCooldown <= 0;
+  }
+
+  /** Throw an occupied-car driver through the doorway, then let them recover. */
+  pullFromVehicle(
+    position: THREE.Vector3,
+    yaw: number,
+    side: 1 | -1,
+    impact: THREE.Vector3
+  ): void {
+    if (this.dead || this.knockedDown) return;
+    this.brawlTarget = null;
+    this.pendingPunch = false;
+    this.fleeDir = impact.clone().setY(0);
+    if (this.fleeDir.lengthSq() < 0.001) this.fleeDir.set(side, 0, 0);
+    this.fleeDir.normalize();
+    this.fleeTime = 4;
+    this.impactCooldown = 3;
+    this.knockedDown = true;
+    this.knockdownTimer = 2.4;
+    this.character.teleport(position.x, position.y, position.z);
+    this.character.setVehicleTransitionPose(position, yaw, 0.9, side, true);
+    this.game.combat.unregister(this.character.collider);
+    this.ragdoll = new Ragdoll(this.game, this.character.rig, impact);
+    this.character.setEnabled(false);
+  }
+
+  private standUp(): void {
+    const landing = this.ragdoll?.position() ?? this.character.position();
+    this.ragdoll?.dispose();
+    this.ragdoll = null;
+    this.character.dispose();
+    this.character = new Character(
+      this.game,
+      this.outfit,
+      landing.x,
+      landing.z,
+      this.heightScale,
+      PEDESTRIAN_COLLISION_GROUPS
+    );
+    this.game.combat.register(this.character.collider, this);
+    this.knockedDown = false;
+    this.impactCooldown = 0.8;
   }
 
   /** Low-speed contact makes the pedestrian move away without a physics launch. */

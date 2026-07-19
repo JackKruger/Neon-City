@@ -6,7 +6,8 @@ import type { CameraTarget } from '../render/Viewports';
 import { Character } from './Character';
 import type { Outfit } from './HumanRig';
 import { Ragdoll } from './Ragdoll';
-import { Vehicle } from './Vehicle';
+import { TrafficCar } from './TrafficCar';
+import type { Drivable, DriveCommand } from './Drivable';
 import { Wanted } from '../gameplay/Wanted';
 import { Inventory } from '../gameplay/Inventory';
 import type { CombatTarget } from '../gameplay/Combat';
@@ -15,7 +16,42 @@ import { buildWeaponMesh } from './WeaponMeshes';
 import { cellToWorld, heightAt, nearestRoadCell, worldToCell } from '../world/CityMap';
 
 const ENTER_RADIUS = 3.5;
+const ENTER_VEHICLE_TIME = 0.9;
+const EXIT_VEHICLE_TIME = 0.75;
+const CARJACK_TIME = 1.6;
 const KNOCKDOWN_TIME = 2.6;
+
+interface VehicleTransition {
+  kind: 'enter' | 'exit' | 'carjack';
+  vehicle: Drivable;
+  elapsed: number;
+  duration: number;
+  side: 1 | -1;
+  startFeet: THREE.Vector3;
+  startYaw: number;
+  occupantEjected: boolean;
+}
+
+function ease(t: number): number {
+  return THREE.MathUtils.smootherstep(THREE.MathUtils.clamp(t, 0, 1), 0, 1);
+}
+
+function lerpYaw(from: number, to: number, t: number): number {
+  let delta = to - from;
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  while (delta < -Math.PI) delta += Math.PI * 2;
+  return from + delta * t;
+}
+
+function transitionCommand(vehicle: Drivable): DriveCommand {
+  return {
+    steer: 0,
+    throttle: 0,
+    brake: 0,
+    handbrake: vehicle.kind === 'car',
+    descend: false,
+  };
+}
 
 const P1_OUTFIT: Outfit = {
   skin: 0xe0ac69,
@@ -35,7 +71,7 @@ const P2_OUTFIT: Outfit = {
 export class Player implements Entity, CameraTarget, CombatTarget {
   character: Character;
   readonly wanted: Wanted;
-  vehicle: Vehicle | null = null;
+  vehicle: Drivable | null = null;
   /** Set each fixed step by Game before update(). */
   input: PlayerInput | null = null;
   /** Camera view yaw, for camera-relative on-foot movement. */
@@ -60,6 +96,8 @@ export class Player implements Entity, CameraTarget, CombatTarget {
   private respawnTimer = 0;
   private knockdownTimer = 0;
   private ragdoll: Ragdoll | null = null;
+  private vehicleTransition: VehicleTransition | null = null;
+  private vehicleDoorSide: 1 | -1 = 1;
 
   constructor(
     private game: Game,
@@ -221,6 +259,10 @@ export class Player implements Entity, CameraTarget, CombatTarget {
       if (this.knockdownTimer <= 0) this.standUp();
       return;
     }
+    if (this.vehicleTransition) {
+      this.updateVehicleTransition(dt);
+      return;
+    }
     if (!input) return;
 
     if (this.vehicle) {
@@ -229,7 +271,13 @@ export class Player implements Entity, CameraTarget, CombatTarget {
         throttle: input.throttle,
         brake: input.brake,
         handbrake: input.handbrake,
+        descend: input.descend,
       };
+      if (this.vehicle.kind === 'helicopter') {
+        this.prompt = this.vehicle.canExit()
+          ? 'Space ascend · Shift descend · E / Y exit'
+          : 'Space ascend · Shift descend · land to exit';
+      }
       if (input.interact) this.exitVehicle();
       return;
     }
@@ -253,7 +301,11 @@ export class Player implements Entity, CameraTarget, CombatTarget {
 
     const nearest = this.nearestVehicle();
     if (nearest) {
-      this.prompt = 'E / Y — steal car';
+      this.prompt = nearest.driver instanceof TrafficCar
+        ? 'E / Y — pull driver out'
+        : nearest.kind === 'helicopter'
+          ? 'E / Y — enter helicopter'
+          : 'E / Y — enter car';
       if (input.interact) this.enterVehicle(nearest);
     }
   }
@@ -328,12 +380,13 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     }
   }
 
-  private nearestVehicle(): Vehicle | null {
+  private nearestVehicle(): Drivable | null {
     const pos = this.character.position();
-    let best: Vehicle | null = null;
+    let best: Drivable | null = null;
     let bestDist = ENTER_RADIUS;
     for (const v of this.game.vehicles) {
-      if (v.driver) continue;
+      const occupiedTraffic = v.driver instanceof TrafficCar && v.getSpeed() < 2.5;
+      if (v.driver && !occupiedTraffic) continue;
       const t = v.body.translation();
       const d = Math.hypot(t.x - pos.x, t.z - pos.z);
       if (d < bestDist) {
@@ -344,25 +397,148 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     return best;
   }
 
-  enterVehicle(v: Vehicle): void {
+  enterVehicle(v: Drivable): void {
+    if (this.vehicle || this.vehicleTransition) return;
+    const occupant = v.driver instanceof TrafficCar ? v.driver : null;
+    if (v.driver && !occupant) return;
+    if (occupant && v.getSpeed() >= 2.5) return;
+    const startFeet = this.character.position();
+    const t = v.body.translation();
+    const local = startFeet
+      .clone()
+      .sub(new THREE.Vector3(t.x, t.y, t.z))
+      .applyQuaternion(v.quaternion().invert());
+    // Melbourne traffic is right-hand drive; occupied cars are taken from the
+    // driver's +X door. Empty cars still use whichever side is nearer.
+    const side: 1 | -1 = occupant ? 1 : local.x >= 0 ? 1 : -1;
+
+    v.command = transitionCommand(v);
+    occupant?.prepareForCarjacking();
     v.driver = this;
     this.vehicle = v;
-    this.character.setEnabled(false);
+    v.setDoorOpen(side, true);
+    this.vehicleDoorSide = side;
+    this.pendingMelee = null;
+    this.vehicleTransition = {
+      kind: occupant ? 'carjack' : 'enter',
+      vehicle: v,
+      elapsed: 0,
+      duration: occupant ? CARJACK_TIME : ENTER_VEHICLE_TIME,
+      side,
+      startFeet,
+      startYaw: this.character.getFacing(),
+      occupantEjected: false,
+    };
+    this.character.beginVehicleTransition(true);
   }
 
   exitVehicle(): void {
     const v = this.vehicle;
-    if (!v) return;
-    const t = v.body.translation();
-    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(v.quaternion());
+    if (!v || this.vehicleTransition) return;
+    if (!v.canExit()) return;
     // Handbrake only: `brake` acts as reverse throttle once nearly stopped,
     // which would make the abandoned car creep backwards.
-    v.command = { steer: 0, throttle: 0, brake: 0, handbrake: true };
+    v.command = transitionCommand(v);
+    v.setDoorOpen(this.vehicleDoorSide, true);
+    this.vehicleTransition = {
+      kind: 'exit',
+      vehicle: v,
+      elapsed: 0,
+      duration: EXIT_VEHICLE_TIME,
+      side: this.vehicleDoorSide,
+      startFeet: v.seatPosition(this.vehicleDoorSide),
+      startYaw: this.character.getFacing(),
+      occupantEjected: false,
+    };
+    this.character.beginVehicleTransition(false);
+  }
+
+  private updateVehicleTransition(dt: number): void {
+    const transition = this.vehicleTransition;
+    if (!transition) return;
+    transition.elapsed = Math.min(transition.duration, transition.elapsed + dt);
+    const p = transition.elapsed / transition.duration;
+    const v = transition.vehicle;
+    const side = transition.side;
+
+    // Keep a moving or sloped car under control while the player crosses the
+    // doorway. The anchor points are recomputed so the animation follows it.
+    v.command = transitionCommand(v);
+    const seat = v.seatPosition(side);
+    const doorway = v.doorPosition(side, 0.18);
+    const outside = v.doorPosition(side, 1.05);
+    const t = v.body.translation();
+    const inwardYaw = Math.atan2(t.x - outside.x, t.z - outside.z);
+    const feet = new THREE.Vector3();
+    let seatBlend: number;
+    let visible: boolean;
+    let yaw: number;
+    let carjackPull = 0;
+
+    if (transition.kind === 'enter') {
+      if (p < 0.42) {
+        feet.lerpVectors(transition.startFeet, outside, ease(p / 0.42));
+      } else if (p < 0.7) {
+        feet.lerpVectors(outside, doorway, ease((p - 0.42) / 0.28));
+      } else {
+        feet.lerpVectors(doorway, seat, ease((p - 0.7) / 0.3));
+      }
+      seatBlend = ease((p - 0.42) / 0.58);
+      yaw = lerpYaw(transition.startYaw, inwardYaw, ease(p / 0.38));
+      visible = p < 0.9;
+    } else if (transition.kind === 'carjack') {
+      if (p < 0.28) {
+        feet.lerpVectors(transition.startFeet, outside, ease(p / 0.28));
+      } else if (p < 0.58) {
+        feet.copy(outside);
+      } else if (p < 0.78) {
+        feet.lerpVectors(outside, doorway, ease((p - 0.58) / 0.2));
+      } else {
+        feet.lerpVectors(doorway, seat, ease((p - 0.78) / 0.22));
+      }
+      seatBlend = ease((p - 0.58) / 0.42);
+      yaw = lerpYaw(transition.startYaw, inwardYaw, ease(p / 0.25));
+      visible = p < 0.92;
+      carjackPull = ease((p - 0.28) / 0.3);
+      if (!transition.occupantEjected && p >= 0.48) {
+        transition.occupantEjected = true;
+        this.game.npcs.ejectTrafficDriver(v, side);
+        this.game.audio.thwack();
+        this.game.reportCrime(this, 28);
+      }
+    } else {
+      if (p < 0.38) {
+        feet.lerpVectors(seat, doorway, ease(p / 0.38));
+      } else if (p < 0.82) {
+        feet.lerpVectors(doorway, outside, ease((p - 0.38) / 0.44));
+      } else {
+        feet.copy(outside);
+      }
+      seatBlend = 1 - ease(p / 0.82);
+      yaw = inwardYaw;
+      visible = p > 0.08;
+    }
+
+    this.character.setVehicleTransitionPose(feet, yaw, seatBlend, side, visible, carjackPull);
+    if (p < 1) return;
+
+    this.vehicleTransition = null;
+    if (transition.kind !== 'exit') {
+      v.setDoorOpen(side, false);
+      this.character.setEnabled(false);
+      return;
+    }
+
     v.driver = null;
+    v.setDoorOpen(side, false);
     this.vehicle = null;
-    const ex = t.x + right.x * 2.4;
-    const ez = t.z + right.z * 2.4;
-    this.character.teleport(ex, Math.max(t.y, heightAt(ex, ez) + 0.1), ez);
+    this.vehicleHitCooldown = Math.max(this.vehicleHitCooldown, 0.6);
+    this.character.setFacing(inwardYaw);
+    this.character.teleport(
+      outside.x,
+      Math.max(outside.y, heightAt(outside.x, outside.z) + 0.1),
+      outside.z
+    );
     this.character.setEnabled(true);
   }
 

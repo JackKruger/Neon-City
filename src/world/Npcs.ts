@@ -5,8 +5,9 @@ import { CIVILIAN_CARS } from '../core/const';
 import { Pedestrian } from '../entities/Pedestrian';
 import type { Outfit } from '../entities/HumanRig';
 import { TrafficCar } from '../entities/TrafficCar';
+import type { Drivable } from '../entities/Drivable';
 import { CellRef, randomRoadCellNear, roadNeighbors } from './RoadGraph';
-import { cellToWorld } from './CityMap';
+import { cellToWorld, nearestRoadCell, worldToCell } from './CityMap';
 
 const MAX_PEDS = 26;
 const MAX_TRAFFIC = 12;
@@ -103,6 +104,37 @@ export class Npcs {
     if (!edge) return;
     const model = CIVILIAN_CARS[Math.floor(Math.random() * CIVILIAN_CARS.length)];
     this.traffic.push(new TrafficCar(this.game, model, edge.from, edge.to));
+  }
+
+  /** Materialize an abstract traffic driver as a recoverable ejected NPC. */
+  ejectTrafficDriver(vehicle: Drivable, side: 1 | -1): void {
+    const doorway = vehicle.doorPosition(side, 0.52);
+    const cell = worldToCell(doorway.x, doorway.z);
+    const from = nearestRoadCell(cell.cx, cell.cz);
+    if (!from) return;
+    const neighbors = roadNeighbors(from);
+    if (neighbors.length === 0) return;
+    const to = neighbors[Math.floor(Math.random() * neighbors.length)];
+    const pedestrian = new Pedestrian(
+      this.game,
+      randomOutfit(),
+      0.94 + Math.random() * 0.1,
+      from,
+      to,
+      { x: doorway.x, z: doorway.z }
+    );
+
+    const t = vehicle.body.translation();
+    const outward = new THREE.Vector3(doorway.x - t.x, 0, doorway.z - t.z).normalize();
+    const velocity = vehicle.body.linvel();
+    const impact = new THREE.Vector3(
+      outward.x * 4.2 + velocity.x * 0.35,
+      0.45,
+      outward.z * 4.2 + velocity.z * 0.35
+    );
+    const inwardYaw = Math.atan2(t.x - doorway.x, t.z - doorway.z);
+    pedestrian.pullFromVehicle(doorway, inwardYaw, side, impact);
+    this.peds.push(pedestrian);
   }
 
   private recycle(): void {

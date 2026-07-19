@@ -397,6 +397,58 @@ export class HumanRig {
   }
 
   /**
+   * Fold the standing pose into the compact step-and-duck used while crossing
+   * a vehicle doorway. `blend` is 0 outside and 1 once tucked into the seat.
+   */
+  poseVehicleTransition(blend: number, side: 1 | -1): void {
+    const w = THREE.MathUtils.smoothstep(blend, 0, 1);
+    const mix = THREE.MathUtils.lerp;
+
+    // Lead with the leg nearest the chosen door, then pull the trailing leg in.
+    const lead = side > 0 ? this.legR : this.legL;
+    const trail = side > 0 ? this.legL : this.legR;
+    lead.hip.rotation.x = mix(lead.hip.rotation.x, -1.08, w);
+    lead.knee.rotation.x = mix(lead.knee.rotation.x, 1.58, w);
+    lead.ankle.rotation.x = mix(lead.ankle.rotation.x, -0.46, w);
+    trail.hip.rotation.x = mix(trail.hip.rotation.x, -0.72, w);
+    trail.knee.rotation.x = mix(trail.knee.rotation.x, 1.28, w);
+    trail.ankle.rotation.x = mix(trail.ankle.rotation.x, -0.34, w);
+
+    // Duck and reach into the cabin. A small twist keeps the silhouette from
+    // looking like a symmetrical squat as it passes through the bodywork.
+    this.pelvis.position.y = mix(this.pelvis.position.y, PELVIS_Y - 0.2, w);
+    this.pelvis.rotation.y = mix(this.pelvis.rotation.y, side * 0.28, w);
+    this.spine.rotation.x = mix(this.spine.rotation.x, 0.24, w);
+    this.spine.rotation.y = mix(this.spine.rotation.y, -side * 0.22, w);
+    this.neck.rotation.x = mix(this.neck.rotation.x, -0.08, w);
+
+    this.armL.shoulder.rotation.x = mix(this.armL.shoulder.rotation.x, -0.96, w);
+    this.armR.shoulder.rotation.x = mix(this.armR.shoulder.rotation.x, -1.08, w);
+    this.armL.elbow.rotation.x = mix(this.armL.elbow.rotation.x, -0.58, w);
+    this.armR.elbow.rotation.x = mix(this.armR.elbow.rotation.x, -0.72, w);
+  }
+
+  /** Reach into a cabin and yank an occupant toward the open door. */
+  poseCarjackPull(progress: number, side: 1 | -1): void {
+    const p = THREE.MathUtils.clamp(progress, 0, 1);
+    const reach = Math.sin(Math.PI * Math.min(1, p * 1.45));
+    const pull = THREE.MathUtils.smoothstep(p, 0.45, 1);
+    const fade = Math.min(1, p * 5, (1 - p) * 5);
+    const w = Math.max(reach, pull) * fade;
+    const mix = THREE.MathUtils.lerp;
+
+    this.spine.rotation.x = mix(this.spine.rotation.x, 0.2 - pull * 0.28, w);
+    this.spine.rotation.y = mix(this.spine.rotation.y, -side * 0.32, w);
+    this.pelvis.rotation.y = mix(this.pelvis.rotation.y, side * 0.18, w);
+    this.armL.shoulder.rotation.x = mix(this.armL.shoulder.rotation.x, -1.32, w);
+    this.armR.shoulder.rotation.x = mix(this.armR.shoulder.rotation.x, -1.42, w);
+    this.armL.elbow.rotation.x = mix(this.armL.elbow.rotation.x, -0.18 - pull * 0.95, w);
+    this.armR.elbow.rotation.x = mix(this.armR.elbow.rotation.x, -0.12 - pull * 1.08, w);
+    this.legL.knee.rotation.x = mix(this.legL.knee.rotation.x, 0.22, w);
+    this.legR.knee.rotation.x = mix(this.legR.knee.rotation.x, 0.22, w);
+  }
+
+  /**
    * Overlay an attack swing on the locomotion pose (call after setLocomotion).
    * The right arm at side -1 sits at negative X; positive spine yaw brings it
    * forward. @param t swing progress 0..1; contact lands around t≈0.45.

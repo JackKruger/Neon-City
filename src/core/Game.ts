@@ -23,20 +23,22 @@ import {
 } from '../world/CityMap';
 import { loadAuthoredMap } from '../world/MapLoad';
 import { Vehicle } from '../entities/Vehicle';
+import { Helicopter } from '../entities/Helicopter';
+import type { Drivable } from '../entities/Drivable';
 import { Player } from '../entities/Player';
 import { Npcs } from '../world/Npcs';
 import type { TrafficCar } from '../entities/TrafficCar';
 import { Combat } from '../gameplay/Combat';
 import { Fx } from '../render/Fx';
 import { Pickup } from '../entities/Pickup';
-import type { WeaponId } from '../gameplay/Weapons';
+import { WEAPONS, WEAPON_ORDER, type WeaponId } from '../gameplay/Weapons';
 import { randomRoadCellNear } from '../world/RoadGraph';
 
 export interface Entity {
   update(dt: number): void;
 }
 
-const ACTOR_ASSETS = [...CIVILIAN_CARS, 'cars/police'];
+const ACTOR_ASSETS = [...CIVILIAN_CARS, 'cars/police', 'cars/debris-door-window'];
 const LEGACY_ASSETS = [...ACTOR_ASSETS, ...CITY_ASSETS];
 type MapMode = 'procedural' | 'legacy' | 'compiled';
 
@@ -57,7 +59,7 @@ export class Game {
   private debugCam = false;
   private suburbCache: { cx: number; cz: number; name: string | null }[] = [];
 
-  readonly vehicles: Vehicle[] = [];
+  readonly vehicles: Drivable[] = [];
   readonly players: Player[] = [];
   readonly audio = new AudioSys();
   readonly combat = new Combat(this);
@@ -142,6 +144,7 @@ export class Game {
     this.npcs = new Npcs(this);
 
     this.spawnStarterPickups(spawn.x, spawn.z);
+    this.spawnHelicopter(spawn.x, spawn.z);
     this.applyDebugParams();
   }
 
@@ -162,12 +165,12 @@ export class Game {
     return heightAt(x, z);
   }
 
-  addVehicle(v: Vehicle): void {
+  addVehicle(v: Drivable): void {
     this.vehicles.push(v);
     this.entities.push(v);
   }
 
-  removeVehicle(v: Vehicle): void {
+  removeVehicle(v: Drivable): void {
     const vi = this.vehicles.indexOf(v);
     if (vi >= 0) this.vehicles.splice(vi, 1);
     const ei = this.entities.indexOf(v);
@@ -181,7 +184,7 @@ export class Game {
   }
 
   /** Crime hooks from the NPC simulation. */
-  onPedestrianKilled(vehicle: Vehicle): void {
+  onPedestrianKilled(vehicle: Drivable): void {
     this.reportCrime(vehicle.driver instanceof Player ? vehicle.driver : null, 45);
   }
 
@@ -212,19 +215,30 @@ export class Game {
     this.hud.setPlayerCount(2);
   }
 
-  /** A few weapons scattered on streets near spawn until shops exist. */
+  /** Every usable weapon, arranged in a deterministic ring around spawn. */
   private spawnStarterPickups(x: number, z: number): void {
-    const wanted: { weapon: WeaponId; ammo: number }[] = [
-      { weapon: 'bat', ammo: 0 },
-      { weapon: 'knife', ammo: 0 },
-      { weapon: 'pistol', ammo: 24 },
-    ];
-    for (const item of wanted) {
-      const cell = randomRoadCellNear(x, z, 8, 30);
-      if (!cell) continue;
-      const spot = cellToWorld(cell.cx, cell.cz);
-      this.pickups.push(new Pickup(this, item.weapon, item.ammo, spot.x, 0, spot.z));
+    const wanted = WEAPON_ORDER.filter(
+      (weapon): weapon is Exclude<WeaponId, 'fists'> => weapon !== 'fists'
+    );
+    for (let i = 0; i < wanted.length; i++) {
+      const weapon = wanted[i];
+      const def = WEAPONS[weapon];
+      const angle = -Math.PI * 0.8 + (i / Math.max(1, wanted.length - 1)) * Math.PI * 1.6;
+      const px = x + Math.sin(angle) * 5;
+      const pz = z + Math.cos(angle) * 5;
+      const ammo = def.kind === 'gun' ? def.magSize * 5 : 0;
+      this.pickups.push(new Pickup(this, weapon, ammo, px, heightAt(px, pz), pz));
     }
+  }
+
+  /** Put a flyable helicopter on a nearby road-sized clear patch. */
+  private spawnHelicopter(x: number, z: number): void {
+    let cell = randomRoadCellNear(x, z, 10, 24);
+    for (let attempt = 1; !cell && attempt < 10; attempt++) {
+      cell = randomRoadCellNear(x, z, 10, 24);
+    }
+    const spot = cell ? cellToWorld(cell.cx, cell.cz) : { x: x + 12, z };
+    this.addVehicle(new Helicopter(this, spot.x, spot.z, 0));
   }
 
   private applyDebugParams(): void {
@@ -363,7 +377,10 @@ export class Game {
       if (p.vehicle) {
         speed = Math.max(speed, p.vehicle.getSpeed());
         throttle = Math.max(throttle, p.vehicle.command.throttle);
-        skidding ||= p.vehicle.command.handbrake && p.vehicle.getSpeed() > 6;
+        skidding ||=
+          p.vehicle.kind === 'car' &&
+          p.vehicle.command.handbrake &&
+          p.vehicle.getSpeed() > 6;
       }
       for (const cop of p.wanted.police) {
         sirenDist = Math.min(sirenDist, cop.distanceToTarget());

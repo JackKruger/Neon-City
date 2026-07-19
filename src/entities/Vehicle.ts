@@ -4,22 +4,24 @@ import type { Entity, Game } from '../core/Game';
 import { VEHICLE_COLLISION_GROUPS } from '../core/const';
 import type { CameraTarget } from '../render/Viewports';
 import { heightAt } from '../world/CityMap';
+import type { Drivable, DriveCommand } from './Drivable';
 
 /** Uniform scale for all Kenney car models (sedan 2.55u -> ~4.4m). */
 const CAR_SCALE = 1.73;
 
-export interface DriveCommand {
-  steer: number; // -1..1
-  throttle: number; // 0..1
-  brake: number; // 0..1, acts as reverse when nearly stopped
-  handbrake: boolean;
-}
+export type { DriveCommand } from './Drivable';
 
 interface WheelVisual {
   node: THREE.Object3D;
   connection: THREE.Vector3;
   rest: number;
   front: boolean;
+}
+
+interface VehicleDoor {
+  pivot: THREE.Group;
+  amount: number;
+  target: number;
 }
 
 const SUSPENSION_REST = 0.3;
@@ -40,6 +42,12 @@ const SIDE_STIFFNESS_FRONT = 1.3;
 /** Extra downward acceleration at top speed (m/s^2); keeps fast cars planted. */
 const DOWNFORCE_ACCEL = 6;
 /**
+ * Bodywork should glance off obstacles instead of gripping them. Road holding
+ * comes from the raycast wheels, so chassis contact friction can stay low.
+ */
+const BODY_FRICTION = 0.08;
+const DOOR_OPEN_ANGLE = 1.18;
+/**
  * Average densities for the hollow chassis and its low ballast. Together they
  * put a sedan around a tonne, so a ~60 kg ragdoll cannot absorb most of the
  * car's momentum. Drive forces and suspension limits already scale with mass.
@@ -47,7 +55,8 @@ const DOWNFORCE_ACCEL = 6;
 const CHASSIS_DENSITY = 60;
 const BALLAST_DENSITY = 500;
 
-export class Vehicle implements Entity, CameraTarget {
+export class Vehicle implements Entity, CameraTarget, Drivable {
+  readonly kind = 'car' as const;
   readonly root = new THREE.Group();
   readonly body: RAPIER.RigidBody;
   private controller: RAPIER.DynamicRayCastVehicleController;
@@ -57,6 +66,7 @@ export class Vehicle implements Entity, CameraTarget {
   private flippedTime = 0;
   private chassisCenter = new THREE.Vector3();
   private chassisHalfSize = new THREE.Vector3();
+  private doors = new Map<1 | -1, VehicleDoor>();
   private parkingAnchor: { x: number; z: number; rotation: RAPIER.Rotation } | null = null;
 
   // Vehicles are parked until a player or AI driver supplies a command.
@@ -102,6 +112,7 @@ export class Vehicle implements Entity, CameraTarget {
     const center = bbox.getCenter(new THREE.Vector3());
     this.chassisCenter.copy(center);
     this.chassisHalfSize.copy(size).multiplyScalar(0.5);
+    this.buildDoors();
 
     const world = game.world;
     this.body = world.createRigidBody(
@@ -115,7 +126,8 @@ export class Vehicle implements Entity, CameraTarget {
     world.createCollider(
       RAPIER.ColliderDesc.cuboid(size.x / 2, size.y / 2, size.z / 2)
         .setTranslation(center.x, center.y, center.z)
-        .setFriction(0.4)
+        .setFriction(BODY_FRICTION)
+        .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
         .setRestitution(0.3)
         .setDensity(CHASSIS_DENSITY)
         .setCollisionGroups(VEHICLE_COLLISION_GROUPS),
@@ -125,6 +137,8 @@ export class Vehicle implements Entity, CameraTarget {
     world.createCollider(
       RAPIER.ColliderDesc.cuboid(size.x / 2, 0.08, size.z / 2)
         .setTranslation(center.x, center.y - size.y / 4, center.z)
+        .setFriction(BODY_FRICTION)
+        .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
         .setDensity(BALLAST_DENSITY)
         .setCollisionGroups(VEHICLE_COLLISION_GROUPS),
       this.body
@@ -183,6 +197,40 @@ export class Vehicle implements Entity, CameraTarget {
     return new THREE.Quaternion(r.x, r.y, r.z, r.w);
   }
 
+  /** World-space point beside the front door, with its Y on the terrain. */
+  doorPosition(side: 1 | -1, clearance: number, out = new THREE.Vector3()): THREE.Vector3 {
+    const t = this.body.translation();
+    const local = new THREE.Vector3(
+      this.chassisCenter.x + side * (this.chassisHalfSize.x + clearance),
+      0,
+      this.chassisCenter.z + this.chassisHalfSize.z * 0.25
+    ).applyQuaternion(this.quaternion());
+    const x = t.x + local.x;
+    const z = t.z + local.z;
+    return out.set(x, heightAt(x, z), z);
+  }
+
+  /** Approximate foot point inside the front seat for transition animation. */
+  seatPosition(side: 1 | -1, out = new THREE.Vector3()): THREE.Vector3 {
+    const t = this.body.translation();
+    const local = new THREE.Vector3(
+      this.chassisCenter.x + side * this.chassisHalfSize.x * 0.24,
+      this.chassisCenter.y - this.chassisHalfSize.y + 0.12,
+      this.chassisCenter.z + this.chassisHalfSize.z * 0.25
+    ).applyQuaternion(this.quaternion());
+    return out.set(t.x + local.x, t.y + local.y, t.z + local.z);
+  }
+
+  /** Open or close one front door. Door panels are visual-only. */
+  setDoorOpen(side: 1 | -1, open: boolean): void {
+    const door = this.doors.get(side);
+    if (door) door.target = open ? 1 : 0;
+  }
+
+  canExit(): boolean {
+    return true;
+  }
+
   speedKmh(): number {
     const v = this.body.linvel();
     return Math.hypot(v.x, v.y, v.z) * 3.6;
@@ -204,6 +252,7 @@ export class Vehicle implements Entity, CameraTarget {
   }
 
   update(dt: number): void {
+    this.updateDoors(dt);
     const { steer, throttle, brake, handbrake } = this.command;
     this.pinWhileParked(
       this.driver === null && handbrake && steer === 0 && throttle === 0 && brake === 0
@@ -276,6 +325,42 @@ export class Vehicle implements Entity, CameraTarget {
 
     this.updateFlipRecovery(dt);
     this.controller.updateVehicle(dt);
+  }
+
+  private buildDoors(): void {
+    for (const side of [-1, 1] as const) {
+      const panel = this.game.assets.get('cars/debris-door-window');
+      panel.scale.setScalar(CAR_SCALE);
+      panel.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(panel);
+      const doorLength = box.max.z - box.min.z;
+
+      // Put the panel origin on its lower-front hinge. The standalone debris
+      // mesh has the same proportions and palette as the source car pack.
+      panel.position.set(-box.getCenter(new THREE.Vector3()).x, -box.min.y, -box.max.z);
+      if (side < 0) panel.scale.x *= -1;
+
+      const pivot = new THREE.Group();
+      pivot.position.set(
+        this.chassisCenter.x + side * (this.chassisHalfSize.x + 0.035),
+        this.chassisCenter.y - this.chassisHalfSize.y + 0.04,
+        this.chassisCenter.z + this.chassisHalfSize.z * 0.25 + doorLength / 2
+      );
+      pivot.visible = false;
+      pivot.add(panel);
+      this.root.add(pivot);
+      this.doors.set(side, { pivot, amount: 0, target: 0 });
+    }
+  }
+
+  private updateDoors(dt: number): void {
+    const blend = 1 - Math.exp(-10 * dt);
+    for (const [side, door] of this.doors) {
+      door.amount = THREE.MathUtils.lerp(door.amount, door.target, blend);
+      if (Math.abs(door.amount - door.target) < 0.002) door.amount = door.target;
+      door.pivot.visible = door.amount > 0.01;
+      door.pivot.rotation.y = -side * DOOR_OPEN_ANGLE * door.amount;
+    }
   }
 
   /** Apply post-step parking constraints, then render the final physics pose. */

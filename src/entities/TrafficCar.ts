@@ -138,6 +138,12 @@ export class TrafficCar implements Entity {
     this.vehicle.driver = null;
   }
 
+  /** Stop AI control before a player claims the occupied vehicle. */
+  prepareForCarjacking(): void {
+    this.crashed = true;
+    this.vehicle.command = { steer: 0, throttle: 0, brake: 0, handbrake: true };
+  }
+
   /** Cell the car currently occupies (for recycling). */
   cell(): CellRef {
     const t = this.vehicle.body.translation();

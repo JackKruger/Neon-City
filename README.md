@@ -36,6 +36,7 @@ Current features and fixes are tracked in [TODO.md](TODO.md).
 | Jump / handbrake | Space                    | A                           |
 | Sprint         | Shift                      | A (hold)                    |
 | Enter/exit car | E                          | Y                           |
+| Helicopter up/down | Space / Shift          | A / B                       |
 | Pause          | Esc                        | Start                       |
 
 - **Player 2**: press **Start** on a second gamepad to join — the screen
@@ -46,6 +47,8 @@ Current features and fixes are tracked in [TODO.md](TODO.md).
   police cruisers will hunt you down. Shake them off (stay >45 m away)
   and the heat clears.
 - Crashed traffic cars get abandoned by their drivers — free wheels.
+- Every weapon and a flyable helicopter spawn nearby. Helicopters use W/S
+  for forward/back, A/D to yaw, and Space/Shift (A/B) to climb/descend.
 
 ## Project layout
 

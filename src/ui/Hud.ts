@@ -185,12 +185,12 @@ export class Hud {
       el.className = 'hud-pause';
       el.innerHTML = `
         <h1>PAUSED</h1>
-        <p><b>P1 — keyboard:</b> WASD drive/walk · Space jump/handbrake · Shift sprint · E enter/exit car</p>
+        <p><b>P1 — keyboard:</b> WASD drive/walk/fly · Space jump/handbrake/ascend · Shift sprint/descend · E enter/exit</p>
         <p><b>Combat:</b> LMB / F attack · RMB aim · Q / C (Tab) switch weapon · R reload</p>
-        <p><b>Gamepad:</b> left stick steer/walk · RT gas/fire · LT brake/aim · A jump · Y enter/exit · LB/RB weapon · X reload</p>
+        <p><b>Gamepad:</b> left stick steer/walk · RT gas/fire · LT brake/aim · A jump/ascend · B descend · Y enter/exit · LB/RB weapon · X reload</p>
         <p><b>P2:</b> press Start on a second gamepad to join split-screen</p>
         <p><b>Map:</b> M / Back opens the city map</p>
-        <p>Grab the glowing weapons near spawn — but cause trouble and the police will come for you…</p>
+        <p>Every weapon and a flyable helicopter are waiting near spawn — but cause trouble and the police will come for you…</p>
         <p style="margin-top:1em; opacity:.6">Esc / Start to resume</p>
         <p style="margin-top:1.5em; opacity:.45; font-size:12px">Map data © OpenStreetMap contributors (ODbL)</p>`;
       this.container.appendChild(el);
