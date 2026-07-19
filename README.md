@@ -28,6 +28,10 @@ Production build: `npm run build`, then `npm run preview`.
 
 Current features and fixes are tracked in [TODO.md](TODO.md).
 
+The architecture, data sources, quality tiers, rollout phases, and release criteria
+for expanding the world across Greater Melbourne are documented in
+[`docs/greater-melbourne-plan.md`](docs/greater-melbourne-plan.md).
+
 ## How to play
 
 |                | Player 1 (keyboard)        | Gamepad (either player)     |
