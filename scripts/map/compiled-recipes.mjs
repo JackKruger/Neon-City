@@ -33,7 +33,18 @@ export const MATERIALS = [
   { name: 'rail', color: [0.34, 0.36, 0.39], roughness: 0.28, metalness: 0.82 },
   { name: 'concrete', color: [0.42, 0.43, 0.45], roughness: 0.94 },
   { name: 'cycleway', color: [0.34, 0.18, 0.14], roughness: 0.9 },
+  { name: 'roof-tile', color: [0.44, 0.16, 0.12], roughness: 0.85 },
+  { name: 'roof-metal', color: [0.18, 0.2, 0.24], roughness: 0.55, metalness: 0.45 },
+  { name: 'roof-membrane', color: [0.14, 0.13, 0.18], roughness: 0.7, metalness: 0.1 },
 ];
+
+// Pitched roofs get their own material so they read as a distinct surface
+// instead of extending the wall colour up over the ridge.
+function roofMaterialFor(style) {
+  if (style === 'suburban') return 'roof-tile';
+  if (style === 'industrial') return 'roof-metal';
+  return 'roof-membrane';
+}
 
 function hashNumber(cx, cz, salt = 0) {
   let h = (cx * 374761393 + cz * 668265263 + salt * 2246822519) | 0;
@@ -647,7 +658,7 @@ export function compileChunkRecipe(context, kx, kz) {
         cuboids.push({ sourceId: object.sourceId, x: object.x, y: baseY + object.height / 2, z: object.z, hx: object.width / 2, hy: object.height / 2, hz: object.depth / 2, rotation: object.rotation ?? 0 });
       }
       if (roofHeight > 0) {
-        addRoof(bucket, {
+        addRoof(buckets.get(roofMaterialFor(object.style)), {
           x: object.x, z: object.z, rotation: object.rotation ?? 0,
           width: object.width, depth: object.depth,
           eaveY: baseY + wallHeight, ridgeY: baseY + object.height, roof: object.roof,

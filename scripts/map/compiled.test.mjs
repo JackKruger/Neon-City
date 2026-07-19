@@ -149,28 +149,32 @@ test('pitched roofs cap the render mesh at the ridge while collision stays flat'
     width: 12, depth: 6, height: 9, style: 'suburban', roof, baseY: 0,
     outline: [[-6, -3], [6, -3], [6, 3], [-6, 3]],
   });
+  const yLevels = (primitive) => {
+    const ys = [];
+    for (let i = 1; i < primitive.positions.length; i += 3) ys.push(primitive.positions[i]);
+    return ys;
+  };
   const gable = compileChunkRecipe(createCompilerContext({
     ...base,
     objectIndex: { chunks: { '0,0': [building('gable', 'building:gable')] } },
   }), 0, 0);
-  const roofPrimitive = gable.primitives.find((primitive) => primitive.material === 'suburban');
-  const ys = [];
-  for (let i = 1; i < roofPrimitive.positions.length; i += 3) ys.push(roofPrimitive.positions[i]);
-  const maxY = Math.max(...ys);
-  const minY = Math.min(...ys);
-  assert.equal(Math.round(maxY), 9, 'ridge should reach the real building height');
-  assert.equal(Math.round(minY), 0, 'walls should still start at the base');
-  assert.ok(ys.some((y) => Math.abs(y - 6) < 1e-6), 'walls should drop to a distinct eave below the ridge');
+  const walls = yLevels(gable.primitives.find((primitive) => primitive.material === 'suburban'));
+  assert.equal(Math.round(Math.min(...walls)), 0, 'walls should still start at the base');
+  assert.equal(Math.round(Math.max(...walls)), 6, 'walls should stop at the eave below the ridge');
+  // The pitched cap lives in its own style-aware roof material, not the wall bucket.
+  const roof = yLevels(gable.primitives.find((primitive) => primitive.material === 'roof-tile'));
+  assert.equal(Math.round(Math.min(...roof)), 6, 'roof should start at the eave');
+  assert.equal(Math.round(Math.max(...roof)), 9, 'ridge should reach the real building height');
 
   const flat = compileChunkRecipe(createCompilerContext({
     ...base,
     objectIndex: { chunks: { '0,0': [building('flat', 'building:flat')] } },
   }), 0, 0);
-  const flatPrimitive = flat.primitives.find((primitive) => primitive.material === 'suburban');
-  const flatYs = [];
-  for (let i = 1; i < flatPrimitive.positions.length; i += 3) flatYs.push(flatPrimitive.positions[i]);
-  assert.deepEqual([...new Set(flatYs.map((y) => Math.round(y)))].sort((a, b) => a - b), [0, 9],
+  const flatWalls = yLevels(flat.primitives.find((primitive) => primitive.material === 'suburban'));
+  assert.deepEqual([...new Set(flatWalls.map((y) => Math.round(y)))].sort((a, b) => a - b), [0, 9],
     'flat roofs keep the original two-level box and add no ridge geometry');
+  assert.ok(!flat.primitives.some((primitive) => primitive.material.startsWith('roof-')),
+    'flat roofs emit no roof material');
 });
 
 test('committed spawn compilation has valid hashes, GLBs, containers, and navigation', () => {
