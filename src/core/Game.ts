@@ -76,9 +76,10 @@ export class Game {
     this.hud.setPlayerCount(1);
 
     this.setupEnvironment();
-    // The Kenney asphalt is nearly sand-colored; cool it down so streets read.
+    // The Kenney asphalt is nearly sand-colored; darken it well below the
+    // pavement gray so streets read as streets against the sidewalks.
     for (const name of CITY_ASSETS) {
-      if (name.startsWith('roads/road-')) this.assets.tint(name, 0x9fa3b0);
+      if (name.startsWith('roads/road-')) this.assets.tint(name, 0x666c7c);
     }
     this.city = new City(this);
     const spawn = getAuthoredMap()?.spawn ?? { x: 3, z: 24 };

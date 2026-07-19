@@ -88,13 +88,14 @@ const UA = 'neon-bay-map-import/1.0 (hobby game; github.com/JackKruger/Neon-City
 function overpassQuery() {
   const bb = bbox().join(',');
   const roads =
-    '^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street)(_link)?$';
+    '^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian)(_link)?$';
   const green = '^(park|garden|golf_course|nature_reserve)$';
   const greenLanduse = '^(grass|recreation_ground|forest|meadow|cemetery|village_green)$';
   const commercial = '^(commercial|retail|industrial)$';
   return `[out:json][timeout:180];
 (
   way["highway"~"${roads}"](${bb});
+  way["highway"="service"]["service"!~"^(driveway|parking_aisle|drive-through)$"](${bb});
   way["natural"="coastline"](${bb});
   way["natural"="water"](${bb});
   relation["natural"="water"](${bb});

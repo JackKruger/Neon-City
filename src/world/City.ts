@@ -12,9 +12,15 @@ const SUBURBAN = 'abcdefghijklmnopqrstu'.split('').map((c) => `suburban/building
 const INDUSTRIAL = 'abcdefghijklmnopqrst'.split('').map((c) => `industrial/building-${c}`);
 const SMOKESTACK = 'industrial/chimney-medium';
 const TANK = 'industrial/detail-tank';
-const ROADS = ['road-straight', 'road-bend', 'road-intersection', 'road-crossroad', 'road-end', 'road-square'].map(
-  (n) => `roads/${n}`
-);
+const ROADS = [
+  'road-straight',
+  'road-crossing',
+  'road-bend',
+  'road-intersection-line',
+  'road-crossroad-line',
+  'road-end',
+  'road-square',
+].map((n) => `roads/${n}`);
 const TREES = ['suburban/tree-large', 'suburban/tree-small'];
 const STREETLIGHT = 'roads/light-curved';
 const FENCE = 'suburban/fence-3x3';
@@ -49,6 +55,20 @@ function isIndustrialDistrict(cx: number, cz: number): boolean {
 }
 
 /**
+ * True when a road cell is part of a wide-road area (OSM dual carriageways
+ * and big junctions rasterize to 2+ cells wide) rather than a 1-wide street
+ * the tile set can represent. Diagonal staircases of bends stay tiled: each
+ * of their cells has only 2 orthogonal road neighbors.
+ */
+function roadBlob(cx: number, cz: number): boolean {
+  const road = (dx: number, dz: number) => (cellAt(cx + dx, cz + dz) === '#' ? 1 : 0);
+  const n4 = road(0, -1) + road(1, 0) + road(0, 1) + road(-1, 0);
+  if (n4 < 3) return false;
+  const nd = road(-1, -1) + road(1, -1) + road(-1, 1) + road(1, 1);
+  return n4 + nd >= 5;
+}
+
+/**
  * Road tile orientation. Base connection masks (at rotY=0) were verified
  * against the Kenney models; a quarter turn rotY=+PI/2 maps direction
  * S->E, E->N, N->W, W->S.
@@ -62,8 +82,8 @@ function buildRoadTable(): Map<number, { model: string; rot: number }> {
   const bases: [string, number][] = [
     ['roads/road-straight', 5], // runs N-S
     ['roads/road-bend', 6], // connects E+S
-    ['roads/road-intersection', 7], // T: connects N+E+S
-    ['roads/road-crossroad', 15],
+    ['roads/road-intersection-line', 7], // T: connects N+E+S
+    ['roads/road-crossroad-line', 15],
     ['roads/road-end', 4], // connects S
     ['roads/road-square', 0],
   ];
@@ -126,6 +146,7 @@ export class City {
     pavement: new THREE.MeshStandardMaterial({ color: PALETTE.pavement }),
     grass: new THREE.MeshStandardMaterial({ color: PALETTE.grass }),
     sand: new THREE.MeshStandardMaterial({ color: PALETTE.sand }),
+    asphalt: new THREE.MeshStandardMaterial({ color: PALETTE.asphalt }),
     water: new THREE.MeshStandardMaterial({
       color: PALETTE.water,
       roughness: 0.15,
@@ -215,23 +236,50 @@ export class City {
         switch (cell) {
           case '#': {
             const mask = roadMask(cx, cz);
-            const { model, rot } = ROAD_TABLE.get(mask) ?? { model: 'roads/road-square', rot: 0 };
-            const { object } = this.game.assets.getFitted(model, { width: TILE });
-            object.position.set(x, -TILE * 0.02 + 0.002, z);
-            object.rotation.y = rot;
-            this.bake(object, model, buckets);
+            // Asphalt under every road cell: hides seams between tiles and is
+            // the whole surface of wide-road cells.
+            this.groundPlane(x, z, 'asphalt', buckets);
+            // OSM arterials rasterize 2+ cells wide; the tile set can only
+            // express 1-wide networks, so wide-road cells stay flat asphalt
+            // instead of becoming a patchwork of fake intersections.
+            if (!roadBlob(cx, cz)) {
+              let { model, rot } = ROAD_TABLE.get(mask) ?? { model: 'roads/road-square', rot: 0 };
+              // Zebra crossing on straight segments entering an intersection.
+              if (model === 'roads/road-straight' && this.nextToIntersection(cx, cz)) {
+                model = 'roads/road-crossing';
+              }
+              const { object } = this.game.assets.getFitted(model, { width: TILE });
+              object.position.set(x, -TILE * 0.02 + 0.002, z);
+              object.rotation.y = rot;
+              this.bake(object, model, buckets);
+            }
             this.streetlight(cx, cz, x, z, mask, buckets);
             this.maybeParkCar(cx, cz, x, z, mask, vehicles);
             break;
           }
           case 'C':
             this.groundPlane(x, z, 'pavement', buckets);
-            this.building(body, cx, cz, x, z, buckets);
+            if (roadMask(cx, cz) !== 0 || this.roadNear(cx, cz, 2)) {
+              this.building(body, cx, cz, x, z, buckets);
+            } else if (cellHash(cx, cz, 7) < 0.25) {
+              // Deep inside a roadless block: an open plaza, not a building
+              // nobody could ever reach.
+              this.tree(body, x + TILE * 0.2, z - TILE * 0.15, cx, cz, buckets);
+            }
             break;
           case 'S':
             this.groundPlane(x, z, 'grass', buckets);
-            this.building(body, cx, cz, x, z, buckets);
-            if (cellHash(cx, cz, 7) < 0.45) this.tree(body, x + TILE * 0.38, z + TILE * 0.38, cx, cz, buckets);
+            if (roadMask(cx, cz) !== 0) {
+              this.building(body, cx, cz, x, z, buckets);
+              if (cellHash(cx, cz, 7) < 0.45) this.tree(body, x + TILE * 0.38, z + TILE * 0.38, cx, cz, buckets);
+            } else {
+              // Lots with no street frontage are the block's backyards.
+              for (let i = 0, n = 1 + (cellHash(cx, cz, 9) < 0.4 ? 1 : 0); i < n; i++) {
+                const ox = (cellHash(cx, cz, 10 + i) - 0.5) * TILE * 0.7;
+                const oz = (cellHash(cx, cz, 20 + i) - 0.5) * TILE * 0.7;
+                this.tree(body, x + ox, z + oz, cx, cz + i, buckets);
+              }
+            }
             break;
           case 'P':
             this.groundPlane(x, z, 'grass', buckets);
@@ -297,6 +345,29 @@ export class City {
       }
     }
     this.chunks.delete(chunkKey(chunk.kx, chunk.kz));
+  }
+
+  /** True when a 4-neighbor road cell is a genuine (non-blob) T or crossroad. */
+  private nextToIntersection(cx: number, cz: number): boolean {
+    for (const [dx, dz] of [[0, -1], [1, 0], [0, 1], [-1, 0]] as const) {
+      const nx = cx + dx;
+      const nz = cz + dz;
+      if (cellAt(nx, nz) !== '#' || roadBlob(nx, nz)) continue;
+      const m = roadMask(nx, nz);
+      const branches = (m & 1 ? 1 : 0) + (m & 2 ? 1 : 0) + (m & 4 ? 1 : 0) + (m & 8 ? 1 : 0);
+      if (branches >= 3) return true;
+    }
+    return false;
+  }
+
+  /** True when any road cell lies within chebyshev distance r. */
+  private roadNear(cx: number, cz: number, r: number): boolean {
+    for (let dz = -r; dz <= r; dz++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (cellAt(cx + dx, cz + dz) === '#') return true;
+      }
+    }
+    return false;
   }
 
   private maybeParkCar(cx: number, cz: number, x: number, z: number, mask: number, vehicles: Vehicle[]): void {
@@ -541,7 +612,7 @@ export class City {
     }
   }
 
-  private groundPlane(x: number, z: number, kind: 'pavement' | 'grass', buckets: Buckets): void {
+  private groundPlane(x: number, z: number, kind: 'pavement' | 'grass' | 'asphalt', buckets: Buckets): void {
     const geo = new THREE.PlaneGeometry(TILE, TILE);
     geo.applyMatrix4(
       new THREE.Matrix4()
