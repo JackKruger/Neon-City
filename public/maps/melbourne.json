@@ -195,6 +195,7 @@
   "objects": "melbourne.objects.json",
   "sources": "melbourne.sources.json",
   "attribution": "Map data © OpenStreetMap contributors (ODbL); open data © City of Melbourne and Victorian Government (CC BY 4.0); elevation data NASA SRTM via AWS Open Data",
+  "formatVersion": 4,
   "heightGrid": {
     "version": 1,
     "file": "melbourne-height.bin",
@@ -203,7 +204,6 @@
     "width": 721,
     "height": 721
   },
-  "formatVersion": 4,
   "chunkGrid": {
     "version": 1,
     "tiles": 10,

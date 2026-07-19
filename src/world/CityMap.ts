@@ -35,6 +35,7 @@ export const CoverageFlag = {
   Parking: 4,
   Prop: 8,
   Address: 16,
+  BuildingSource: 32,
 } as const;
 
 export type AuthoredObject =

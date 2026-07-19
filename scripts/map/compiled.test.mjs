@@ -11,6 +11,12 @@ import {
   parseGlb,
   sha256,
 } from './compiled-format.mjs';
+import {
+  COVERAGE_BUILDING_SOURCE,
+  MAP_SIZE,
+  compileChunkRecipe,
+  createCompilerContext,
+} from './compiled-recipes.mjs';
 
 function filesBelow(root, prefix = '') {
   const output = [];
@@ -40,6 +46,50 @@ test('NBCH round-trips its versioned section table and rejects corrupt offsets',
   const incompatible = Buffer.from(encoded);
   incompatible.writeUInt16LE(99, 4);
   assert.throws(() => parseChunkContainer(incompatible), /unsupported NBCH version/);
+});
+
+test('authoritative building source coverage suppresses generated fallback buildings', () => {
+  const grid = new Uint8Array(MAP_SIZE ** 2).fill(5);
+  const index = (cx, cz) => cx + MAP_SIZE / 2 + (cz + MAP_SIZE / 2) * MAP_SIZE;
+  grid[index(0, 0)] = 2;
+  grid[index(1, 0)] = 1;
+  const base = {
+    meta: {},
+    grid,
+    heights: new Int16Array((MAP_SIZE + 1) ** 2),
+    coverage: new Uint8Array(MAP_SIZE ** 2),
+    transport: new Uint8Array(MAP_SIZE ** 2),
+    speed: new Uint8Array(MAP_SIZE ** 2),
+  };
+  const withoutSource = compileChunkRecipe(createCompilerContext({
+    ...base,
+    objectIndex: { chunks: {} },
+  }), 0, 0);
+  assert.ok(withoutSource.recipe.generatedSources.includes('generated:building:0:0:0'));
+
+  const sourceCoverage = new Uint8Array(MAP_SIZE ** 2);
+  for (let z = 0; z < 10; z++) {
+    for (let x = 0; x < 10; x++) sourceCoverage[index(x, z)] |= COVERAGE_BUILDING_SOURCE;
+  }
+  const withSource = compileChunkRecipe(createCompilerContext({
+    ...base,
+    coverage: sourceCoverage,
+    objectIndex: { chunks: {} },
+  }), 0, 0);
+  assert.ok(!withSource.recipe.generatedSources.some((source) => source.startsWith('generated:building:')));
+
+  const withLegacyFootprint = compileChunkRecipe(createCompilerContext({
+    ...base,
+    objectIndex: {
+      chunks: {
+        '0,0': [{
+          kind: 'building', sourceId: 'building:legit', x: 48, z: 48,
+          width: 10, depth: 10, height: 12, rotation: 0, style: 'commercial',
+        }],
+      },
+    },
+  }), 0, 0);
+  assert.ok(!withLegacyFootprint.recipe.generatedSources.some((source) => source.startsWith('generated:building:')));
 });
 
 test('committed spawn compilation has valid hashes, GLBs, containers, and navigation', () => {

@@ -4,7 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { MAP_SIZE } from './geo.mjs';
-import { COVERAGE, LAND_USE, TRANSPORT, enrichMelbourneMap } from './open-data.mjs';
+import {
+  COVERAGE,
+  LAND_USE,
+  TRANSPORT,
+  enrichMelbourneMap,
+  markBuildingSourceCoverage,
+} from './open-data.mjs';
 
 const polygon = (name, ring, extra = {}) => ({
   type: 'Feature',
@@ -64,6 +70,8 @@ test('open data enrichment emits all runtime contracts', async () => {
     assert.ok(height.some((value) => value === 28));
     assert.ok(address.some((value) => value > 0));
     assert.ok(coverage.some((value) => (value & COVERAGE.BUILDING) !== 0));
+    assert.ok(coverage.some((value) => (value & COVERAGE.BUILDING_SOURCE) !== 0));
+    assert.ok(result.report.results.buildings.sourceCoverageChunks > 0);
     const authored = Object.values(objects.chunks).flat();
     for (const kind of ['road-surface', 'building', 'tree', 'bollard', 'art', 'parking']) assert.ok(authored.some((item) => item.kind === kind), kind);
     assert.equal(objects.roadSurfaces, true);
@@ -72,4 +80,36 @@ test('open data enrichment emits all runtime contracts', async () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('building source coverage buffers footprint chunks and fills enclosed gaps', () => {
+  const mapSize = 80;
+  const chunkTiles = 10;
+  const coverage = new Uint8Array(mapSize * mapSize);
+  coverage[0] = COVERAGE.TREE;
+  const chunks = {};
+  for (let z = -1; z <= 1; z++) {
+    for (let x = -1; x <= 1; x++) {
+      if (x === 0 && z === 0) continue;
+      chunks[`${x},${z}`] = [{ kind: 'building' }];
+    }
+  }
+  const result = markBuildingSourceCoverage(coverage, chunks, {
+    mapSize,
+    chunkTiles,
+    bufferChunks: 0,
+  });
+  const cell = (gx, gz) => coverage[gx + gz * mapSize];
+  assert.equal(result.seedChunks, 8);
+  assert.equal(result.coveredChunks, 9);
+  assert.ok((cell(45, 45) & COVERAGE.BUILDING_SOURCE) !== 0, 'enclosed empty chunk is not covered');
+  assert.equal(cell(5, 5) & COVERAGE.BUILDING_SOURCE, 0, 'exterior chunk is incorrectly covered');
+  assert.ok((coverage[0] & COVERAGE.TREE) !== 0, 'existing coverage bits were overwritten');
+
+  const buffered = new Uint8Array(mapSize * mapSize);
+  const bufferedResult = markBuildingSourceCoverage(buffered, {
+    '0,0': [{ kind: 'building' }],
+  }, { mapSize, chunkTiles });
+  assert.equal(bufferedResult.coveredChunks, 9);
+  assert.ok((buffered[35 + 35 * mapSize] & COVERAGE.BUILDING_SOURCE) !== 0, 'neighboring chunk buffer is absent');
 });

@@ -12,6 +12,7 @@ export const MAX_CHUNK = 35;
 const COVERAGE_BUILDING = 1;
 const COVERAGE_TREE = 2;
 const COVERAGE_PARKING = 4;
+export const COVERAGE_BUILDING_SOURCE = 32;
 const TRANSPORT_BRIDGE = 2;
 const TRANSPORT_TUNNEL = 4;
 
@@ -279,6 +280,9 @@ export function compileChunkRecipe(context, kx, kz) {
     objectsByKind.get(object.kind).push(object);
     sources.add(object.sourceId);
   }
+  // Retain the object-level guard for older inputs that predate the explicit
+  // source-coverage bit.
+  const authoredBuildingArea = objectsByKind.has('building');
 
   // Terrain recipe: one quantized heightfield shared by render and Rapier.
   const heightBytes = Buffer.alloc((CHUNK_TILES + 1) ** 2 * 2);
@@ -335,7 +339,7 @@ export function compileChunkRecipe(context, kx, kz) {
 
       const coverage = context.coverageAt(cx, cz);
       const mask = roadMask(cx, cz);
-      if ((code === 2 || code === 3) && (coverage & COVERAGE_BUILDING) === 0 && mask !== 0) {
+      if (!authoredBuildingArea && (coverage & COVERAGE_BUILDING_SOURCE) === 0 && (code === 2 || code === 3) && (coverage & COVERAGE_BUILDING) === 0 && mask !== 0) {
         const id = fallbackId('building', cx, cz);
         const width = TILE * (code === 2 ? 0.82 : 0.64);
         const depth = width;

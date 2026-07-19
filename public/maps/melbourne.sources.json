@@ -116,7 +116,8 @@
     "speeds": 0,
     "buildings": {
       "accepted": 11990,
-      "rejected": 15360
+      "rejected": 15360,
+      "sourceCoverageChunks": 1988
     },
     "trees": 41955,
     "canopyFallbackTrees": 5302,

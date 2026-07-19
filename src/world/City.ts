@@ -269,6 +269,10 @@ export class City implements CityStreamer {
     const buckets: Buckets = new Map();
     const vehicles: Vehicle[] = [];
     const polygonRoads = getAuthoredMap()?.roadSurfaces === true;
+    const authoredObjects = authoredObjectsForChunk(kx, kz);
+    // Keep the local object check as a safe fallback if an older map omits the
+    // source mask or the coverage layer fails to load.
+    const authoredBuildingArea = authoredObjects.some((object) => object.kind === 'building');
 
     const c0x = kx * CHUNK_TILES;
     const c0z = kz * CHUNK_TILES;
@@ -328,7 +332,7 @@ export class City implements CityStreamer {
           }
           case 'C':
             this.groundPlane(x, z, 'pavement', buckets);
-            if (!hasCoverage(cx, cz, CoverageFlag.Building) && (roadMask(cx, cz) !== 0 || this.roadNear(cx, cz, 2))) {
+            if (!authoredBuildingArea && !hasCoverage(cx, cz, CoverageFlag.BuildingSource) && !hasCoverage(cx, cz, CoverageFlag.Building) && (roadMask(cx, cz) !== 0 || this.roadNear(cx, cz, 2))) {
               this.building(body, cx, cz, x, z, buckets);
             } else if (!hasCoverage(cx, cz, CoverageFlag.Tree) && !hasCoverage(cx, cz, CoverageFlag.Building) && cellHash(cx, cz, 7) < 0.25) {
               // Deep inside a roadless block: an open plaza, not a building
@@ -338,7 +342,7 @@ export class City implements CityStreamer {
             break;
           case 'S':
             this.groundPlane(x, z, 'grass', buckets);
-            if (!hasCoverage(cx, cz, CoverageFlag.Building) && roadMask(cx, cz) !== 0) {
+            if (!authoredBuildingArea && !hasCoverage(cx, cz, CoverageFlag.BuildingSource) && !hasCoverage(cx, cz, CoverageFlag.Building) && roadMask(cx, cz) !== 0) {
               this.building(body, cx, cz, x, z, buckets);
               if (!hasCoverage(cx, cz, CoverageFlag.Tree) && cellHash(cx, cz, 7) < 0.45) this.tree(body, x + TILE * 0.38, z + TILE * 0.38, cx, cz, buckets);
             } else if (!hasCoverage(cx, cz, CoverageFlag.Tree) && !hasCoverage(cx, cz, CoverageFlag.Building)) {
@@ -368,7 +372,7 @@ export class City implements CityStreamer {
       }
     }
 
-    for (const object of authoredObjectsForChunk(kx, kz)) {
+    for (const object of authoredObjects) {
       this.authoredObject(object, body, buckets, vehicles);
     }
 

@@ -57,7 +57,14 @@ export const LAND_USE = {
   WATER: 9,
 };
 
-export const COVERAGE = { BUILDING: 1, TREE: 2, PARKING: 4, PROP: 8, ADDRESS: 16 };
+export const COVERAGE = {
+  BUILDING: 1,
+  TREE: 2,
+  PARKING: 4,
+  PROP: 8,
+  ADDRESS: 16,
+  BUILDING_SOURCE: 32,
+};
 
 const ODS_ROOT = 'https://data.melbourne.vic.gov.au/api/explore/v2.1/catalog/datasets';
 const SOURCE_DEFINITIONS = {
@@ -433,6 +440,93 @@ function coverageBuilding(coverage) {
   return COVERAGE.BUILDING;
 }
 
+/**
+ * Mark where the footprint dataset is authoritative, independently from cells
+ * occupied by buildings. The source has no boundary polygon, so infer a
+ * conservative chunk mask from its footprint pieces: add a one-chunk seam
+ * buffer and retain enclosed gaps such as parks and large civic lots.
+ */
+export function markBuildingSourceCoverage(
+  coverage,
+  chunks,
+  { mapSize = MAP_SIZE, chunkTiles = CHUNK_TILES, bufferChunks = 1 } = {}
+) {
+  if (coverage.length !== mapSize * mapSize) throw new Error('building source coverage size mismatch');
+  if (mapSize % chunkTiles !== 0 || (mapSize / chunkTiles) % 2 !== 0) {
+    throw new Error('building source coverage requires an even chunk grid');
+  }
+  const chunkWidth = mapSize / chunkTiles;
+  const minChunk = -chunkWidth / 2;
+  const maxChunk = minChunk + chunkWidth - 1;
+  const chunkIndex = (kx, kz) => kx - minChunk + (kz - minChunk) * chunkWidth;
+  const inBounds = (kx, kz) => kx >= minChunk && kx <= maxChunk && kz >= minChunk && kz <= maxChunk;
+  const seeds = new Uint8Array(chunkWidth * chunkWidth);
+  for (const [key, objects] of Object.entries(chunks ?? {})) {
+    if (!objects.some((object) => object.kind === 'building')) continue;
+    const [kx, kz] = key.split(',').map(Number);
+    if (inBounds(kx, kz)) seeds[chunkIndex(kx, kz)] = 1;
+  }
+
+  const covered = seeds.slice();
+  for (let kz = minChunk; kz <= maxChunk; kz++) {
+    for (let kx = minChunk; kx <= maxChunk; kx++) {
+      if (!seeds[chunkIndex(kx, kz)]) continue;
+      for (let dz = -bufferChunks; dz <= bufferChunks; dz++) {
+        for (let dx = -bufferChunks; dx <= bufferChunks; dx++) {
+          if (inBounds(kx + dx, kz + dz)) covered[chunkIndex(kx + dx, kz + dz)] = 1;
+        }
+      }
+    }
+  }
+
+  // Flood from the map edge to distinguish genuinely uncovered exterior from
+  // empty chunks enclosed by authoritative source coverage.
+  const outside = new Uint8Array(covered.length);
+  const queue = new Int32Array(covered.length);
+  let head = 0;
+  let tail = 0;
+  const enqueue = (x, z) => {
+    const index = x + z * chunkWidth;
+    if (covered[index] || outside[index]) return;
+    outside[index] = 1;
+    queue[tail++] = index;
+  };
+  for (let i = 0; i < chunkWidth; i++) {
+    enqueue(i, 0);
+    enqueue(i, chunkWidth - 1);
+    enqueue(0, i);
+    enqueue(chunkWidth - 1, i);
+  }
+  while (head < tail) {
+    const index = queue[head++];
+    const x = index % chunkWidth;
+    const z = Math.floor(index / chunkWidth);
+    if (x > 0) enqueue(x - 1, z);
+    if (x + 1 < chunkWidth) enqueue(x + 1, z);
+    if (z > 0) enqueue(x, z - 1);
+    if (z + 1 < chunkWidth) enqueue(x, z + 1);
+  }
+
+  let seedChunks = 0;
+  let coveredChunks = 0;
+  for (let z = 0; z < chunkWidth; z++) {
+    for (let x = 0; x < chunkWidth; x++) {
+      const index = x + z * chunkWidth;
+      seedChunks += seeds[index];
+      if (!covered[index] && outside[index]) continue;
+      coveredChunks++;
+      const gx0 = x * chunkTiles;
+      const gz0 = z * chunkTiles;
+      for (let gz = gz0; gz < gz0 + chunkTiles; gz++) {
+        for (let gx = gx0; gx < gx0 + chunkTiles; gx++) {
+          coverage[gx + gz * mapSize] |= COVERAGE.BUILDING_SOURCE;
+        }
+      }
+    }
+  }
+  return { seedChunks, coveredChunks, coveredCells: coveredChunks * chunkTiles * chunkTiles };
+}
+
 function treeHeight(properties) {
   return numeric(properties, 'tree_height', 'height', 'height_m', 'height_metre') ?? 6;
 }
@@ -741,7 +835,12 @@ export async function enrichMelbourneMap({ root, grid, roadSurfaces = [], baseSu
   const buildingResult = importBuildings(await loadSource(cacheDir, 'buildings', options, report), chunks, layers.coverage, layers.height, layers.landuse, dsm);
   if (dsm) await finishDsmBuildings(buildingResult.pending, dsm, chunks, layers.coverage, layers.height);
   else for (const item of buildingResult.pending ?? []) addBuilding(item.feature, item.ring, item.bounds, item.landUse, null, chunks, layers.coverage, layers.height, item.sourceId);
-  report.results.buildings = { accepted: buildingResult.accepted, rejected: buildingResult.rejected };
+  const buildingSourceCoverage = markBuildingSourceCoverage(layers.coverage, chunks);
+  report.results.buildings = {
+    accepted: buildingResult.accepted,
+    rejected: buildingResult.rejected,
+    sourceCoverageChunks: buildingSourceCoverage.coveredChunks,
+  };
 
   report.results.trees = importTrees(await loadSource(cacheDir, 'trees', options, report), chunks, layers.coverage);
   const canopy = await loadSource(cacheDir, 'canopy', options, report);
