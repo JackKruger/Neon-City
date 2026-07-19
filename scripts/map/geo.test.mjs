@@ -2,10 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   MAP_SIZE,
+  chunkBounds,
+  clipPolygonToBounds,
   fillPolygon,
   markLine,
   orientedBounds,
   simplifyWorldRing,
+  splitPolygonByChunks,
   toGrid,
   toWorld,
 } from './geo.mjs';
@@ -18,6 +21,26 @@ test('Melbourne projection round-trips the map centre', () => {
     gz: MAP_SIZE / 2,
     index: MAP_SIZE / 2 + (MAP_SIZE / 2) * MAP_SIZE,
   });
+});
+
+test('cross-boundary polygons are clipped into non-overlapping chunk pieces', () => {
+  const polygon = [
+    [108, -10],
+    [120, -10],
+    [120, 10],
+    [108, 10],
+  ];
+  const parts = splitPolygonByChunks(polygon);
+  assert.deepEqual(parts.map((part) => part.key).sort(), ['0,-1', '0,0', '1,-1', '1,0']);
+  for (const part of parts) {
+    const bounds = chunkBounds(part.kx, part.kz);
+    assert.ok(part.polygon.every(([x, z]) =>
+      x >= bounds.minX && x <= bounds.maxX && z >= bounds.minZ && z <= bounds.maxZ));
+  }
+  const left = clipPolygonToBounds(polygon, chunkBounds(0, 0));
+  const right = clipPolygonToBounds(polygon, chunkBounds(1, 0));
+  const width = (points) => Math.max(...points.map(([x]) => x)) - Math.min(...points.map(([x]) => x));
+  assert.equal(width(left) + width(right), 12);
 });
 
 test('line rasterisation stays four-connected', () => {

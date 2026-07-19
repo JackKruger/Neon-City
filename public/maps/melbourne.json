@@ -194,5 +194,28 @@
   ],
   "objects": "melbourne.objects.json",
   "sources": "melbourne.sources.json",
-  "attribution": "Map data © OpenStreetMap contributors (ODbL); open data © City of Melbourne and Victorian Government (CC BY 4.0)"
+  "attribution": "Map data © OpenStreetMap contributors (ODbL); open data © City of Melbourne and Victorian Government (CC BY 4.0); elevation data NASA SRTM via AWS Open Data",
+  "heightGrid": {
+    "version": 1,
+    "file": "melbourne-height.bin",
+    "encoding": "int16le",
+    "scale": 0.1,
+    "width": 721,
+    "height": 721
+  },
+  "formatVersion": 4,
+  "chunkGrid": {
+    "version": 1,
+    "tiles": 10,
+    "size": 120,
+    "coordinates": "local-x-east-z-south",
+    "origin": "map-center",
+    "ownership": "clipped-polygons"
+  },
+  "objectIndex": {
+    "version": 2,
+    "file": "melbourne.objects.json",
+    "chunkTiles": 10,
+    "ownership": "clipped-polygons"
+  }
 }

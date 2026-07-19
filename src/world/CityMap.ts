@@ -38,8 +38,8 @@ export const CoverageFlag = {
 } as const;
 
 export type AuthoredObject =
-  | { kind: 'road-surface'; x: number; z: number; surface: 'asphalt' | 'pavement'; outline: [number, number][] }
-  | { kind: 'building'; x: number; z: number; rotation: number; width: number; depth: number; height: number; style: 'commercial' | 'skyscraper' | 'suburban' | 'industrial'; roof?: string; outline?: [number, number][] }
+  | { kind: 'road-surface'; sourceId?: string; x: number; z: number; surface: 'asphalt' | 'pavement'; outline: [number, number][] }
+  | { kind: 'building'; sourceId?: string; x: number; z: number; rotation: number; width: number; depth: number; height: number; baseY?: number; style: 'commercial' | 'skyscraper' | 'suburban' | 'industrial'; roof?: string; outline?: [number, number][] }
   | { kind: 'tree'; x: number; z: number; height: number; variant: 'small' | 'large' }
   | { kind: 'parking'; x: number; z: number; rotation: number }
   | { kind: 'bollard' | 'bicycle-rail' | 'bin' | 'fountain' | 'seat' | 'planter' | 'barbecue' | 'art'; x: number; z: number; rotation: number };
@@ -52,6 +52,9 @@ export interface AuthoredMap {
   width: number;
   height: number;
   grid: Uint8Array;
+  /** Global (width+1) x (height+1) corner lattice, stored in scaled meters. */
+  heights: Int16Array | null;
+  heightScale: number;
   /** Named locality anchors and a parallel byte grid (255 = no suburb). */
   suburbs?: { name: string; x: number; z: number }[];
   suburbGrid?: Uint8Array;
@@ -66,7 +69,7 @@ export interface AuthoredMap {
 
 let authored: AuthoredMap | null = null;
 
-export function setAuthoredMap(map: AuthoredMap): void {
+export function setAuthoredMap(map: AuthoredMap | null): void {
   authored = map;
 }
 
@@ -76,6 +79,8 @@ export function getAuthoredMap(): AuthoredMap | null {
 
 /** Roads form a grid every BLOCK cells (procedural mode only). */
 export const BLOCK = 5;
+export const SEA_LEVEL = 0;
+export const SEABED = -1.6;
 
 function mod(n: number, m: number): number {
   return ((n % m) + m) % m;
@@ -206,6 +211,66 @@ export function cellHash(cx: number, cz: number, salt = 0): number {
   let h = (cx * 374761393 + cz * 668265263 + salt * 2246822519) | 0;
   h = Math.imul(h ^ (h >>> 13), 1274126177);
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+function smoothstep(t: number): number {
+  return t * t * (3 - 2 * t);
+}
+
+/** Smooth deterministic value noise sampled on a coarse corner lattice. */
+function valueNoise(ix: number, iz: number, period: number, salt: number): number {
+  const x0 = Math.floor(ix / period);
+  const z0 = Math.floor(iz / period);
+  const tx = smoothstep(mod(ix, period) / period);
+  const tz = smoothstep(mod(iz, period) / period);
+  const a = lerp(cellHash(x0, z0, salt), cellHash(x0 + 1, z0, salt), tx);
+  const b = lerp(cellHash(x0, z0 + 1, salt), cellHash(x0 + 1, z0 + 1, salt), tx);
+  return lerp(a, b, tz) * 2 - 1;
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+/** Height at one global cell corner. Corner (ix,iz) is ((ix-.5)TILE,(iz-.5)TILE). */
+export function cornerHeight(ix: number, iz: number): number {
+  if (!authored) {
+    // The periods keep the worst sampled grade around 6%, within the same
+    // drivable envelope enforced by the authored-map baker.
+    return 10 * valueNoise(ix, iz, 80, 200) + 3 * valueNoise(ix, iz, 20, 201);
+  }
+  const gx = ix + authored.width / 2;
+  const gz = iz + authored.height / 2;
+  if (gx < 0 || gz < 0 || gx > authored.width || gz > authored.height) return SEABED;
+  if (!authored.heights) return 0;
+  return authored.heights[gx + gz * (authored.width + 1)] * authored.heightScale;
+}
+
+/** Bilinear terrain height at an arbitrary world-space XZ point. */
+export function heightAt(x: number, z: number): number {
+  const fx = x / TILE + 0.5;
+  const fz = z / TILE + 0.5;
+  const ix = Math.floor(fx);
+  const iz = Math.floor(fz);
+  const tx = fx - ix;
+  const tz = fz - iz;
+  const north = lerp(cornerHeight(ix, iz), cornerHeight(ix + 1, iz), tx);
+  const south = lerp(cornerHeight(ix, iz + 1), cornerHeight(ix + 1, iz + 1), tx);
+  return lerp(north, south, tz);
+}
+
+export function cellCornerHeights(cx: number, cz: number): [number, number, number, number] {
+  return [
+    cornerHeight(cx, cz),
+    cornerHeight(cx + 1, cz),
+    cornerHeight(cx, cz + 1),
+    cornerHeight(cx + 1, cz + 1),
+  ];
+}
+
+/** Stable building-pad height: terrain may overlap the uphill wall base slightly. */
+export function padHeight(cx: number, cz: number): number {
+  return Math.min(...cellCornerHeights(cx, cz));
 }
 
 /** Bitmask of road neighbors: N=1 (z-1), E=2 (x+1), S=4 (z+1), W=8 (x-1). */

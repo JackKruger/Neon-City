@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { Entity, Game } from '../core/Game';
 import { HumanRig, Outfit } from './HumanRig';
+import { heightAt } from '../world/CityMap';
 
 const HEIGHT = 1.8;
 const RADIUS = 0.35;
@@ -55,7 +56,11 @@ export class Character implements Entity {
     game.scene.add(this.root);
 
     this.body = game.world.createRigidBody(
-      RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(x, HEIGHT / 2 + 0.1, z)
+      RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
+        x,
+        heightAt(x, z) + HEIGHT / 2 + 0.1,
+        z
+      )
     );
     this.collider = game.world.createCollider(
       RAPIER.ColliderDesc.capsule(HALF_HEIGHT - RADIUS, RADIUS),
@@ -68,7 +73,7 @@ export class Character implements Entity {
     this.controller.enableSnapToGround(0.45);
     this.controller.setApplyImpulsesToDynamicBodies(true);
 
-    this.lastSafeGround.set(x, 0, z);
+    this.lastSafeGround.set(x, heightAt(x, z), z);
     this.snapToGround(1.25, 8);
 
     this.syncVisuals();

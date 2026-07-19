@@ -9,11 +9,15 @@ import { MapOverlay } from '../ui/MapOverlay';
 import { AudioSys } from './AudioSys';
 import { CIVILIAN_CARS, GRAVITY, PALETTE, STEP } from './const';
 import { CITY_ASSETS, City } from '../world/City';
+import { CompiledCity } from '../world/CompiledCity';
+import type { CityStreamer } from '../world/CityStreamer';
 import {
   cellAt,
   cellToWorld,
   getAuthoredMap,
+  heightAt,
   nearestRoadCell,
+  setAuthoredMap,
   suburbNameAt,
   worldToCell,
 } from '../world/CityMap';
@@ -32,7 +36,9 @@ export interface Entity {
   update(dt: number): void;
 }
 
-const PRELOAD = [...CIVILIAN_CARS, 'cars/police', ...CITY_ASSETS];
+const ACTOR_ASSETS = [...CIVILIAN_CARS, 'cars/police'];
+const LEGACY_ASSETS = [...ACTOR_ASSETS, ...CITY_ASSETS];
+type MapMode = 'procedural' | 'legacy' | 'compiled';
 
 export class Game {
   readonly scene = new THREE.Scene();
@@ -43,7 +49,7 @@ export class Game {
   readonly input = new Input();
   readonly viewports: Viewports;
   readonly hud: Hud;
-  readonly mapOverlay: MapOverlay;
+  readonly mapOverlay: MapOverlay | null;
   readonly entities: Entity[] = [];
 
   private clock = new THREE.Clock();
@@ -59,24 +65,31 @@ export class Game {
   readonly pickups: Pickup[] = [];
   /** Chance a spawned pedestrian fights back when attacked (debug: ?brawlers). */
   pedBraveChance = 0.25;
-  readonly city: City;
+  readonly city: CityStreamer;
   npcs!: Npcs;
   paused = false;
 
   static async create(container: HTMLElement): Promise<Game> {
+    const requestedMode = new URLSearchParams(location.search).get('map');
+    const mode: MapMode = requestedMode === 'procedural' || requestedMode === 'compiled' || requestedMode === 'legacy'
+      ? requestedMode
+      : 'legacy';
+    if (mode === 'procedural') setAuthoredMap(null);
     const [assets] = await Promise.all([
       (async () => {
         const a = new Assets();
-        await a.preload(PRELOAD);
+        await a.preload(mode === 'compiled' ? ACTOR_ASSETS : LEGACY_ASSETS);
         return a;
       })(),
       RAPIER.init(),
-      loadAuthoredMap('melbourne'),
+      mode === 'procedural' ? Promise.resolve(null) : loadAuthoredMap('melbourne', { loadObjects: mode === 'legacy' }),
     ]);
-    return new Game(container, assets);
+    const game = new Game(container, assets, mode);
+    await game.initialize();
+    return game;
   }
 
-  private constructor(container: HTMLElement, assets: Assets) {
+  private constructor(container: HTMLElement, assets: Assets, mode: MapMode) {
     this.assets = assets;
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setSize(container.clientWidth, container.clientHeight);
@@ -95,11 +108,10 @@ export class Game {
     this.viewports.setPlayerCount(1);
     this.hud = new Hud(container);
     const map = getAuthoredMap();
-    if (!map) throw new Error('authored map was not loaded before game construction');
-    const mapCanvas = buildMapCanvas(map);
-    this.hud.setMapCanvas(mapCanvas, map);
+    const mapCanvas = map ? buildMapCanvas(map) : null;
+    if (map && mapCanvas) this.hud.setMapCanvas(mapCanvas, map);
     this.hud.setPlayerCount(1);
-    this.mapOverlay = new MapOverlay(container, map, mapCanvas);
+    this.mapOverlay = map && mapCanvas ? new MapOverlay(container, map, mapCanvas) : null;
 
     this.setupEnvironment();
     // The Kenney asphalt is nearly sand-colored; darken it well below the
@@ -107,14 +119,18 @@ export class Game {
     for (const name of CITY_ASSETS) {
       if (name.startsWith('roads/road-')) this.assets.tint(name, 0x666c7c);
     }
-    this.city = new City(this);
-    const requestedSpawn = map.spawn ?? { x: 3, z: 24 };
+    this.city = mode === 'compiled' ? new CompiledCity(this) : new City(this);
+  }
+
+  private async initialize(): Promise<void> {
+    const map = getAuthoredMap();
+    const requestedSpawn = map?.spawn ?? { x: 0, z: 0 };
     const requestedCell = worldToCell(requestedSpawn.x, requestedSpawn.z);
     const safeSpawnCell = nearestRoadCell(requestedCell.cx, requestedCell.cz);
     const spawn = safeSpawnCell
       ? cellToWorld(safeSpawnCell.cx, safeSpawnCell.cz)
       : requestedSpawn;
-    this.city.prewarm(spawn.x, spawn.z);
+    await this.city.prewarm(spawn.x, spawn.z);
     // Register freshly-created fixed colliders with Rapier's scene queries so
     // the first character can raycast its exact spawn surface immediately.
     this.world.step(this.eventQueue);
@@ -139,6 +155,11 @@ export class Game {
       const c = p.character.position();
       return { x: c.x, z: c.z };
     });
+  }
+
+  /** Terrain query exposed on window.__game for verification tooling. */
+  heightAt(x: number, z: number): number {
+    return heightAt(x, z);
   }
 
   addVehicle(v: Vehicle): void {
@@ -248,7 +269,7 @@ export class Game {
   private frame(): void {
     const dt = Math.min(this.clock.getDelta(), 0.1);
     this.input.poll();
-    this.mapOverlay.setPlayers(
+    this.mapOverlay?.setPlayers(
       this.playerPositions().map((pos, i) => ({ ...pos, heading: this.players[i].getHeading() }))
     );
     if (this.input.p2JoinRequested) {
@@ -258,7 +279,7 @@ export class Game {
     const pausePressed = this.input.consumePause();
     const mapPressed = this.input.consumeMapToggle();
     if (pausePressed) {
-      if (this.mapOverlay.isOpen) {
+      if (this.mapOverlay?.isOpen) {
         this.mapOverlay.close();
       } else {
         this.paused = !this.paused;
@@ -266,12 +287,12 @@ export class Game {
         if (!this.paused) this.input.clearGameplayEdges();
       }
     }
-    if (mapPressed && !pausePressed && !this.paused) {
+    if (mapPressed && !pausePressed && !this.paused && this.mapOverlay) {
       if (this.mapOverlay.isOpen) this.mapOverlay.close();
       else this.mapOverlay.open();
     }
     // Clicks and presses made while browsing the map shouldn't fire weapons.
-    if (this.mapOverlay.isOpen) this.input.clearGameplayEdges();
+    if (this.mapOverlay?.isOpen) this.input.clearGameplayEdges();
     if (!this.paused) {
       this.accumulator += dt;
       while (this.accumulator >= STEP) {
@@ -284,11 +305,11 @@ export class Game {
     if (!this.paused) this.fx.update(dt);
     if (this.paused) this.audio.duck();
     else this.updateAudio(dt);
-    this.mapOverlay.setPlayers(
+    this.mapOverlay?.setPlayers(
       positions.map((pos, i) => ({ ...pos, heading: this.players[i].getHeading() }))
     );
     const pan = this.input.mapPanAxes();
-    this.mapOverlay.update(dt, pan.x, pan.y);
+    this.mapOverlay?.update(dt, pan.x, pan.y);
     for (let i = 0; i < this.players.length; i++) {
       const p = this.players[i];
       const pos = positions[i];
@@ -363,6 +384,7 @@ export class Game {
       if (this.pickups[i].collected) this.pickups.splice(i, 1);
     }
     this.world.step(this.eventQueue);
+    for (const vehicle of this.vehicles) vehicle.afterPhysics();
     this.npcs.afterPhysics();
   }
 }

@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "test:map": "node --test scripts/map/*.test.mjs",
-    "map:build": "node scripts/build-map.mjs --open-data",
+    "map:build": "node scripts/build-map.mjs --open-data && node scripts/compile-map.mjs --scope=all",
+    "map:compile": "node scripts/compile-map.mjs",
+    "map:validate": "node scripts/validate-compiled-map.mjs",
     "map:download": "node scripts/build-map.mjs --download-open-data",
     "preview": "vite preview"
   },
@@ -16,9 +18,13 @@
     "three": "^0.185.1"
   },
   "devDependencies": {
+    "@gltf-transform/core": "^4.4.1",
+    "@gltf-transform/extensions": "^4.4.1",
+    "@gltf-transform/functions": "^4.4.1",
     "@types/three": "^0.185.0",
     "csv-parse": "^7.0.1",
     "geotiff": "^3.0.5",
+    "meshoptimizer": "^1.2.0",
     "proj4": "^2.20.9",
     "shapefile": "^0.6.6",
     "typescript": "^6.0.3",

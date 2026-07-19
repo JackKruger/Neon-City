@@ -3,6 +3,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import type { Entity, Game } from '../core/Game';
 import { VEHICLE_COLLISION_GROUPS } from '../core/const';
 import type { CameraTarget } from '../render/Viewports';
+import { heightAt } from '../world/CityMap';
 
 /** Uniform scale for all Kenney car models (sedan 2.55u -> ~4.4m). */
 const CAR_SCALE = 1.73;
@@ -49,8 +50,10 @@ export class Vehicle implements Entity, CameraTarget {
   private flippedTime = 0;
   private chassisCenter = new THREE.Vector3();
   private chassisHalfSize = new THREE.Vector3();
+  private parkingAnchor: { x: number; z: number; rotation: RAPIER.Rotation } | null = null;
 
-  command: DriveCommand = { steer: 0, throttle: 0, brake: 0, handbrake: false };
+  // Vehicles are parked until a player or AI driver supplies a command.
+  command: DriveCommand = { steer: 0, throttle: 0, brake: 0, handbrake: true };
   /** Current driver (Player or an AI), if any. */
   driver: object | null = null;
   /** Set false to leave the physics parked (traffic converts on impact). */
@@ -96,7 +99,7 @@ export class Vehicle implements Entity, CameraTarget {
     const world = game.world;
     this.body = world.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic()
-        .setTranslation(x, wheelRadius + SUSPENSION_REST + 0.05, z)
+        .setTranslation(x, heightAt(x, z) + wheelRadius + SUSPENSION_REST + 0.05, z)
         .setRotation(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), heading))
         .setLinearDamping(0.08)
         .setAngularDamping(1.2)
@@ -195,6 +198,9 @@ export class Vehicle implements Entity, CameraTarget {
 
   update(dt: number): void {
     const { steer, throttle, brake, handbrake } = this.command;
+    this.pinWhileParked(
+      this.driver === null && handbrake && steer === 0 && throttle === 0 && brake === 0
+    );
     const mass = this.body.mass();
     const speed = this.forwardSpeed();
     const sliding = handbrake && Math.abs(speed) > 2;
@@ -263,7 +269,46 @@ export class Vehicle implements Entity, CameraTarget {
 
     this.updateFlipRecovery(dt);
     this.controller.updateVehicle(dt);
+  }
+
+  /** Apply post-step parking constraints, then render the final physics pose. */
+  afterPhysics(): void {
+    if (this.parkingAnchor) this.restoreParkingAnchor();
     this.syncVisuals();
+  }
+
+  /**
+   * Keep an unoccupied car fixed on a slope without suspending its vertical
+   * settling. Player and AI drivers restore all degrees of freedom at once.
+   */
+  private pinWhileParked(locked: boolean): void {
+    if (!locked) {
+      if (this.parkingAnchor) this.body.wakeUp();
+      this.parkingAnchor = null;
+      return;
+    }
+    const translation = this.body.translation();
+    if (!this.parkingAnchor) {
+      const rotation = this.body.rotation();
+      this.parkingAnchor = {
+        x: translation.x,
+        z: translation.z,
+        rotation: { x: rotation.x, y: rotation.y, z: rotation.z, w: rotation.w },
+      };
+    } else this.restoreParkingAnchor();
+  }
+
+  private restoreParkingAnchor(): void {
+    if (!this.parkingAnchor) return;
+    const translation = this.body.translation();
+    this.body.setTranslation(
+      new RAPIER.Vector3(this.parkingAnchor.x, translation.y, this.parkingAnchor.z),
+      false
+    );
+    this.body.setRotation(this.parkingAnchor.rotation, false);
+    const velocity = this.body.linvel();
+    this.body.setLinvel(new RAPIER.Vector3(0, velocity.y, 0), false);
+    this.body.setAngvel(new RAPIER.Vector3(0, 0, 0), false);
   }
 
   /** Rights the car after it has been stuck on its side/roof for a moment. */

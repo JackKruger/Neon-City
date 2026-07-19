@@ -232,6 +232,81 @@ export function chunkKeyForWorld(x, z) {
   return `${Math.floor(cx / CHUNK_TILES)},${Math.floor(cz / CHUNK_TILES)}`;
 }
 
+export function chunkBounds(kx, kz) {
+  return {
+    minX: (kx * CHUNK_TILES - 0.5) * TILE,
+    maxX: ((kx + 1) * CHUNK_TILES - 0.5) * TILE,
+    minZ: (kz * CHUNK_TILES - 0.5) * TILE,
+    maxZ: ((kz + 1) * CHUNK_TILES - 0.5) * TILE,
+  };
+}
+
+function clipEdge(points, inside, intersect) {
+  const output = [];
+  for (let i = 0; i < points.length; i++) {
+    const current = points[i];
+    const previous = points[(i + points.length - 1) % points.length];
+    const currentInside = inside(current);
+    const previousInside = inside(previous);
+    if (currentInside !== previousInside) output.push(intersect(previous, current));
+    if (currentInside) output.push(current);
+  }
+  return output;
+}
+
+/** Clip an open world-XZ polygon ([x,z] points) against an axis-aligned rectangle. */
+export function clipPolygonToBounds(points, bounds) {
+  let clipped = points.map(([x, z]) => [x, z]);
+  const vertical = (x) => (a, b) => {
+    const t = (x - a[0]) / (b[0] - a[0]);
+    return [x, a[1] + (b[1] - a[1]) * t];
+  };
+  const horizontal = (z) => (a, b) => {
+    const t = (z - a[1]) / (b[1] - a[1]);
+    return [a[0] + (b[0] - a[0]) * t, z];
+  };
+  clipped = clipEdge(clipped, ([x]) => x >= bounds.minX, vertical(bounds.minX));
+  if (clipped.length < 3) return [];
+  clipped = clipEdge(clipped, ([x]) => x <= bounds.maxX, vertical(bounds.maxX));
+  if (clipped.length < 3) return [];
+  clipped = clipEdge(clipped, ([, z]) => z >= bounds.minZ, horizontal(bounds.minZ));
+  if (clipped.length < 3) return [];
+  clipped = clipEdge(clipped, ([, z]) => z <= bounds.maxZ, horizontal(bounds.maxZ));
+  if (clipped.length < 3) return [];
+  const deduped = clipped.filter((point, i) => {
+    const previous = clipped[(i + clipped.length - 1) % clipped.length];
+    return Math.hypot(point[0] - previous[0], point[1] - previous[1]) > 1e-5;
+  });
+  if (deduped.length < 3) return [];
+  let area = 0;
+  for (let i = 0; i < deduped.length; i++) {
+    const a = deduped[i];
+    const b = deduped[(i + 1) % deduped.length];
+    area += a[0] * b[1] - b[0] * a[1];
+  }
+  return Math.abs(area) > 0.01 ? deduped : [];
+}
+
+/** Split a world polygon into non-overlapping pieces owned by intersecting chunks. */
+export function splitPolygonByChunks(points) {
+  if (!Array.isArray(points) || points.length < 3) return [];
+  const xs = points.map(([x]) => x);
+  const zs = points.map(([, z]) => z);
+  const chunkAt = (value) => Math.floor((value / TILE + 0.5) / CHUNK_TILES);
+  const minKx = chunkAt(Math.min(...xs));
+  const maxKx = chunkAt(Math.max(...xs));
+  const minKz = chunkAt(Math.min(...zs));
+  const maxKz = chunkAt(Math.max(...zs));
+  const parts = [];
+  for (let kz = minKz; kz <= maxKz; kz++) {
+    for (let kx = minKx; kx <= maxKx; kx++) {
+      const polygon = clipPolygonToBounds(points, chunkBounds(kx, kz));
+      if (polygon.length >= 3) parts.push({ kx, kz, key: `${kx},${kz}`, polygon });
+    }
+  }
+  return parts;
+}
+
 export function nearestCell(mask, gx, gz, radius = 2) {
   let best = null;
   for (let dz = -radius; dz <= radius; dz++) {

@@ -11,7 +11,7 @@ import { Inventory } from '../gameplay/Inventory';
 import type { CombatTarget } from '../gameplay/Combat';
 import { MeleeDef, PLAYER_HEALTH, WeaponDef, WeaponId } from '../gameplay/Weapons';
 import { buildWeaponMesh } from './WeaponMeshes';
-import { cellToWorld, nearestRoadCell, worldToCell } from '../world/CityMap';
+import { cellToWorld, heightAt, nearestRoadCell, worldToCell } from '../world/CityMap';
 
 const ENTER_RADIUS = 3.5;
 
@@ -301,7 +301,9 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     v.command = { steer: 0, throttle: 0, brake: 0, handbrake: true };
     v.driver = null;
     this.vehicle = null;
-    this.character.teleport(t.x + right.x * 2.4, Math.max(t.y, 0.1), t.z + right.z * 2.4);
+    const ex = t.x + right.x * 2.4;
+    const ez = t.z + right.z * 2.4;
+    this.character.teleport(ex, Math.max(t.y, heightAt(ex, ez) + 0.1), ez);
     this.character.setEnabled(true);
   }
 

@@ -29,6 +29,7 @@ import {
   polygons,
   property,
   simplifyWorldRing,
+  splitPolygonByChunks,
   toGrid,
   toWorld,
 } from './geo.mjs';
@@ -195,8 +196,44 @@ async function loadSource(cacheDir, key, options, report) {
 }
 
 function addObject(chunks, object) {
+  if ((object.kind === 'road-surface' || object.kind === 'building') && object.outline?.length >= 3) {
+    const sourceId = object.sourceId ??
+      `${object.kind}:${object.x}:${object.z}:${object.rotation ?? 0}:${object.width ?? 0}:${object.depth ?? 0}`;
+    const polygon = object.outline.map(([x, z]) => [object.x + x, object.z + z]);
+    for (const part of splitPolygonByChunks(polygon)) {
+      (chunks[part.key] ??= []).push({
+        ...object,
+        sourceId,
+        outline: part.polygon.map(([x, z]) => [round(x - object.x), round(z - object.z)]),
+      });
+    }
+    return;
+  }
   const key = chunkKeyForWorld(object.x, object.z);
   (chunks[key] ??= []).push(object);
+}
+
+/** Rebuild a legacy centroid-owned object index using clipped polygon ownership. */
+export function rechunkObjectIndex(index) {
+  if (index?.version >= 2 && index.ownership === 'clipped-polygons') return index;
+  const chunks = {};
+  const seen = new Set();
+  for (const object of Object.values(index?.chunks ?? {}).flat()) {
+    const signature = JSON.stringify(object);
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    addObject(chunks, object);
+  }
+  for (const values of Object.values(chunks)) {
+    values.sort((a, b) => a.kind.localeCompare(b.kind) || a.x - b.x || a.z - b.z);
+  }
+  return {
+    version: 2,
+    chunkTiles: CHUNK_TILES,
+    ownership: 'clipped-polygons',
+    roadSurfaces: index?.roadSurfaces === true,
+    chunks,
+  };
 }
 
 function featureRing(feature) {
@@ -351,17 +388,18 @@ function importBuildings(features, chunks, coverage, heightLayer, landUseLayer, 
     }
   }
   const pending = [];
-  for (const { feature, ring, bounds } of byStructure.values()) {
+  for (const [id, { feature, ring, bounds }] of byStructure) {
     const grid = toGrid(bounds.x, bounds.z);
     const landUse = grid ? landUseLayer[grid.index] : LAND_USE.UNKNOWN;
     let height = buildingHeight(feature.properties);
-    if (!height && dsm) pending.push({ feature, ring, bounds, landUse });
-    else addBuilding(feature, ring, bounds, landUse, height, chunks, coverage, heightLayer);
+    const sourceId = `building:${id}`;
+    if (!height && dsm) pending.push({ feature, ring, bounds, landUse, sourceId });
+    else addBuilding(feature, ring, bounds, landUse, height, chunks, coverage, heightLayer, sourceId);
   }
   return { accepted: byStructure.size, rejected, pending };
 }
 
-function addBuilding(feature, ring, bounds, landUse, rawHeight, chunks, coverage, heightLayer) {
+function addBuilding(feature, ring, bounds, landUse, rawHeight, chunks, coverage, heightLayer, sourceId) {
   const height = Math.max(3, Math.min(255, Number(rawHeight) || Math.max(5, Math.sqrt(bounds.width * bounds.depth) * 0.7)));
   const style = classifyBuildingStyle(landUse, height);
   const outline = simplifyWorldRing(ring).map((point) => [
@@ -370,6 +408,7 @@ function addBuilding(feature, ring, bounds, landUse, rawHeight, chunks, coverage
   ]);
   addObject(chunks, {
     kind: 'building',
+    sourceId,
     x: round(bounds.x),
     z: round(bounds.z),
     rotation: round(bounds.rotation),
@@ -636,7 +675,7 @@ async function finishDsmBuildings(pending, dsm, chunks, coverage, heightLayer) {
     // Without a DTM, use the footprint's minimum AHD as ground when supplied.
     const ground = numeric(item.feature.properties, 'structure_min_elevation', 'footprint_min_elevation', 'min_elevation');
     const height = roof !== null && ground !== null ? roof - ground : null;
-    addBuilding(item.feature, item.ring, item.bounds, item.landUse, height, chunks, coverage, heightLayer);
+    addBuilding(item.feature, item.ring, item.bounds, item.landUse, height, chunks, coverage, heightLayer, item.sourceId);
   }
 }
 
@@ -701,7 +740,7 @@ export async function enrichMelbourneMap({ root, grid, roadSurfaces = [], baseSu
   report.sources.push({ key: 'dsm', title: 'City of Melbourne Digital Surface Model', status: dsm ? 'loaded' : 'missing', file: basename(dsmPath) });
   const buildingResult = importBuildings(await loadSource(cacheDir, 'buildings', options, report), chunks, layers.coverage, layers.height, layers.landuse, dsm);
   if (dsm) await finishDsmBuildings(buildingResult.pending, dsm, chunks, layers.coverage, layers.height);
-  else for (const item of buildingResult.pending ?? []) addBuilding(item.feature, item.ring, item.bounds, item.landUse, null, chunks, layers.coverage, layers.height);
+  else for (const item of buildingResult.pending ?? []) addBuilding(item.feature, item.ring, item.bounds, item.landUse, null, chunks, layers.coverage, layers.height, item.sourceId);
   report.results.buildings = { accepted: buildingResult.accepted, rejected: buildingResult.rejected };
 
   report.results.trees = importTrees(await loadSource(cacheDir, 'trees', options, report), chunks, layers.coverage);
@@ -724,8 +763,9 @@ export async function enrichMelbourneMap({ root, grid, roadSurfaces = [], baseSu
   for (const [name, layer] of Object.entries(layers)) writeLayer(outputDir, name, layer);
   for (const values of Object.values(chunks)) values.sort((a, b) => a.kind.localeCompare(b.kind) || a.x - b.x || a.z - b.z);
   writeFileSync(join(outputDir, 'melbourne.objects.json'), JSON.stringify({
-    version: 1,
+    version: 2,
     chunkTiles: CHUNK_TILES,
+    ownership: 'clipped-polygons',
     roadSurfaces: roadSurfaces.length > 0,
     chunks,
   }));
@@ -738,6 +778,9 @@ export async function enrichMelbourneMap({ root, grid, roadSurfaces = [], baseSu
     suburbs: boundaries?.suburbs ?? baseSuburbs?.suburbs,
     suburbGrid: boundaries?.grid ?? baseSuburbs?.grid,
     report,
+    layers,
+    objectChunks: chunks,
+    roadSurfaces: roadSurfaces.length > 0,
   };
 }
 

@@ -52,26 +52,32 @@ Current features and fixes are tracked in [TODO.md](TODO.md).
 ```
 src/
   core/       game loop, input (keyboard + gamepads), asset cache, audio
-  world/      city map (authored OSM grid or procedural), chunk streamer
-              (merged static geometry), road graph, NPC manager
+  world/      global map queries, legacy/procedural builder, compiled chunk
+              streamer, road graph, NPC manager
   entities/   Vehicle (raycast car physics), Character, Player, Pedestrian,
               TrafficCar, PoliceCar
   gameplay/   wanted system
   render/     split-screen viewports + chase cameras
   ui/         DOM HUD (speed, stars, prompts, pause)
 scripts/
-  build-map.mjs  OpenStreetMap → cell-grid importer (writes public/maps/)
+  build-map.mjs    source ingestion (writes global data under public/maps/)
+  compile-map.mjs  deterministic GLB/NBCH Melbourne chunk compiler
 ```
 
 ## Rebuilding the map
 
-`public/maps/melbourne.{bin,json,png}` are committed, so this is only
-needed to change the map area or cell rules:
+The global source snapshot and compiled spawn pilot are committed. Source
+ingestion and render/physics/navigation compilation are separate commands:
 
 ```bash
-node scripts/build-map.mjs          # uses cached Overpass data if present
-node scripts/build-map.mjs --fresh  # re-download from Overpass
+npm run map:compile -- --scope=spawn # deterministic 5x5 spawn pilot
+npm run map:compile                  # compile all 72x72 Melbourne chunks
+npm run map:validate                 # validate hashes, formats, bounds and navigation
+npm run map:build                    # source ingest plus full compilation
 ```
+
+Use `node scripts/build-map.mjs --fresh` to refresh Overpass or
+`node scripts/build-map.mjs --heights-only` to rebake cached SRTM terrain.
 
 Authoritative Victorian and City of Melbourne layers can be added through the
 offline enrichment pipeline described in [`docs/open-data.md`](docs/open-data.md).
@@ -84,9 +90,8 @@ Split-screen renders the one shared scene twice per frame with scissored
 viewports; physics steps at a fixed 60 Hz. Audio is fully procedural
 (Web Audio oscillators/noise) — engine, skids, and sirens, no samples.
 
-The city is unbounded: the layout is a pure function of cell coordinates
-(deterministic hashing, no stored map), and a chunk streamer builds
-120 m chunks around each player — merged render meshes plus one fixed
-physics body per chunk — at most one chunk per frame, freeing everything
-more than three chunks behind. Fog distance sits just inside the loaded
-ring so new chunks always appear fully fogged.
+Map modes are explicit: `?map=compiled` streams offline Melbourne GLB/NBCH
+pairs, `?map=legacy` runs the authored browser-side builder, and
+`?map=procedural` keeps the unbounded deterministic sandbox. The default is
+legacy while the committed compiled snapshot is limited to the spawn pilot.
+Both streamers own 120 m chunks and unload resources beyond a hysteresis ring.
