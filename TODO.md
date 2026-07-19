@@ -1,5 +1,14 @@
 # Neon Bay TODO
 
+## Offline compiled Melbourne map
+
+- [ ] Replace runtime city construction with a versioned, offline-compiled chunk pipeline.
+  - Treat OSM, Melbourne open data, SRTM elevation, and semantic layers as source inputs; compile terrain, roads, buildings, static props, physics, and navigation into deterministic per-chunk assets.
+  - Use a manifest to define coordinate space, format versions, chunk bounds, dependencies, and compatibility. Render chunks should ultimately be optimized GLBs, with compact companion files for heightfields, simple colliders, road/navigation graphs, and gameplay metadata.
+  - Correct source data before baking it: flatten complete authored building footprints with blended terrain pads, clip cross-boundary roads and buildings into every affected chunk, retain stable source IDs, and keep parked vehicles stationary on slopes.
+  - Build and verify one representative spawn-area chunk through both the current and compiled paths before compiling all of Melbourne. Keep `?map=procedural` as a lightweight development and regression mode.
+  - Add small synthetic compiler tests for projection, source-tile selection, terrain sampling, shoreline treatment, building pads, road grades, quantization, chunk clipping, and manifest compatibility.
+
 ## Characters and physics
 
 - [x] Fix players and NPCs occasionally spawning or settling halfway into the ground.

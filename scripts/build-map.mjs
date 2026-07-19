@@ -7,15 +7,17 @@
  * TILE meters), and writes:
  *
  *   public/maps/<name>.bin   raw cell grid (one byte per cell, see CODES)
+ *   public/maps/<name>-height.bin  Int16 LE corner heights in decimeters
  *   public/maps/<name>.json  metadata: size, spawn point, attribution
  *   public/maps/<name>.png   preview image (also usable as a minimap)
  *
  * Map data © OpenStreetMap contributors, licensed under ODbL:
  * https://www.openstreetmap.org/copyright
  *
- * Usage: node scripts/build-map.mjs [--fresh] [--roads-only]
- *   --fresh       ignore the cached Overpass response and re-download
- *   --roads-only  update polygon road objects without rebuilding other data
+ * Usage: node scripts/build-map.mjs [--fresh] [--roads-only] [--heights-only]
+ *   --fresh         ignore cached source responses and re-download
+ *   --roads-only    update polygon road objects without rebuilding other data
+ *   --heights-only  rebake terrain against the existing authored cell grid
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -23,15 +25,28 @@ import { deflateSync } from 'node:zlib';
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { enrichMelbourneMap, openDataHelp, openDataInputsPresent } from './map/open-data.mjs';
-import { chunkKeyForWorld } from './map/geo.mjs';
+import {
+  enrichMelbourneMap,
+  openDataHelp,
+  openDataInputsPresent,
+  rechunkObjectIndex,
+} from './map/open-data.mjs';
+import { CHUNK_TILES } from './map/geo.mjs';
 import { roadSurfacesFromOverpass } from './map/roads.mjs';
+import {
+  HEIGHT_SCALE,
+  buildTerrainHeights,
+  loadHgtTiles,
+  writeHeightFile,
+} from './map/terrain.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const TILE = 12; // keep in sync with src/core/const.ts
 
 /** Cell byte codes; keep in sync with src/world/CityMap.ts CODE_TO_CELL. */
 const CODES = { '.': 0, '#': 1, C: 2, S: 3, P: 4, '~': 5 };
+const MAP_FORMAT_VERSION = 4;
+const OBJECT_INDEX_VERSION = 2;
 
 const MAP = {
   name: 'melbourne',
@@ -341,23 +356,59 @@ function writeRoadSurfacesOnly(data) {
   const path = join(ROOT, 'public', 'maps', `${MAP.name}.objects.json`);
   if (!existsSync(path)) throw new Error(`authored object map not found: ${path}`);
   const objects = JSON.parse(readFileSync(path, 'utf8'));
-  if (!objects || objects.version !== 1 || typeof objects.chunks !== 'object') {
+  if (!objects || ![1, 2].includes(objects.version) || typeof objects.chunks !== 'object') {
     throw new Error(`invalid authored object map: ${path}`);
   }
-  for (const [key, values] of Object.entries(objects.chunks)) {
-    objects.chunks[key] = values.filter((object) => object.kind !== 'road-surface');
-  }
   const surfaces = roadSurfacesFromOverpass(data);
-  for (const surface of surfaces) {
-    const key = chunkKeyForWorld(surface.x, surface.z);
-    (objects.chunks[key] ??= []).push(surface);
-  }
-  for (const values of Object.values(objects.chunks)) {
-    values.sort((a, b) => a.kind.localeCompare(b.kind) || a.x - b.x || a.z - b.z);
-  }
-  objects.roadSurfaces = surfaces.length > 0;
-  writeFileSync(path, JSON.stringify(objects));
+  const retained = Object.values(objects.chunks).flat()
+    .filter((object) => object.kind !== 'road-surface');
+  const rebuilt = rechunkObjectIndex({
+    version: 1,
+    roadSurfaces: surfaces.length > 0,
+    chunks: { legacy: [...retained, ...surfaces] },
+  });
+  writeFileSync(path, JSON.stringify(rebuilt));
   console.log(`wrote ${surfaces.length} polygon road surfaces to public/maps/${MAP.name}.objects.json`);
+}
+
+function writeObjectIndex(outDir, chunks, roadSurfaces) {
+  writeFileSync(join(outDir, `${MAP.name}.objects.json`), JSON.stringify({
+    version: OBJECT_INDEX_VERSION,
+    chunkTiles: CHUNK_TILES,
+    ownership: 'clipped-polygons',
+    roadSurfaces,
+    chunks,
+  }));
+}
+
+function installFormatManifest(meta, hasObjects) {
+  meta.formatVersion = MAP_FORMAT_VERSION;
+  meta.heightGrid = {
+    version: 1,
+    file: `${MAP.name}-height.bin`,
+    encoding: 'int16le',
+    scale: HEIGHT_SCALE,
+    width: MAP.size + 1,
+    height: MAP.size + 1,
+  };
+  meta.chunkGrid = {
+    version: 1,
+    tiles: CHUNK_TILES,
+    size: CHUNK_TILES * TILE,
+    coordinates: 'local-x-east-z-south',
+    origin: 'map-center',
+    ownership: 'clipped-polygons',
+  };
+  if (hasObjects) {
+    meta.objectIndex = {
+      version: OBJECT_INDEX_VERSION,
+      file: `${MAP.name}.objects.json`,
+      chunkTiles: CHUNK_TILES,
+      ownership: 'clipped-polygons',
+    };
+    meta.objects = `${MAP.name}.objects.json`;
+  }
+  return meta;
 }
 
 // --- main -------------------------------------------------------------------
@@ -367,6 +418,31 @@ async function main() {
     console.log('Place exported GeoJSON files in .map-cache/open-data using these names:\n');
     console.log(openDataHelp());
     console.log('\nUse --download-open-data to fetch supported City of Melbourne datasets.');
+    return;
+  }
+  if (process.argv.includes('--heights-only')) {
+    const outDir = join(ROOT, 'public', 'maps');
+    const grid = new Uint8Array(readFileSync(join(outDir, `${MAP.name}.bin`)));
+    const objectsPath = join(outDir, `${MAP.name}.objects.json`);
+    const objectIndex = existsSync(objectsPath)
+      ? rechunkObjectIndex(JSON.parse(readFileSync(objectsPath, 'utf8')))
+      : null;
+    const result = buildTerrainHeights(
+      grid,
+      loadHgtTiles(ROOT, process.argv.includes('--fresh')),
+      { objectChunks: objectIndex?.chunks ?? null }
+    );
+    writeHeightFile(join(outDir, `${MAP.name}-height.bin`), result.quantized);
+    if (objectIndex) writeObjectIndex(outDir, objectIndex.chunks, objectIndex.roadSurfaces);
+    const metaPath = join(outDir, `${MAP.name}.json`);
+    const meta = JSON.parse(readFileSync(metaPath, 'utf8'));
+    installFormatManifest(meta, Boolean(objectIndex));
+    if (!String(meta.attribution ?? '').includes('SRTM')) {
+      meta.attribution = `${meta.attribution}; elevation data NASA SRTM via AWS Open Data`;
+    }
+    writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n');
+    console.log(`terrain: ${result.min.toFixed(1)}m..${result.max.toFixed(1)}m, sea datum ${result.seaDatum.toFixed(2)}m, max road grade ${(result.maxGrade * 100).toFixed(2)}%, ${result.buildingPadCount} building pads, max pad spread ${result.maxBuildingSpread.toFixed(2)}m`);
+    console.log(`wrote public/maps/${MAP.name}-height.bin`);
     return;
   }
   const data = fetchOverpass();
@@ -536,8 +612,17 @@ async function main() {
     suburbs = enrichment.suburbs ?? suburbs;
     suburbGrid = enrichment.suburbGrid ?? suburbGrid;
   }
+  const terrain = buildTerrainHeights(
+    grid,
+    loadHgtTiles(ROOT, process.argv.includes('--fresh')),
+    { objectChunks: enrichment?.objectChunks ?? null }
+  );
   writeFileSync(join(outDir, `${MAP.name}.bin`), grid);
   writeFileSync(join(outDir, `${MAP.name}.suburbs.bin`), suburbGrid);
+  writeHeightFile(join(outDir, `${MAP.name}-height.bin`), terrain.quantized);
+  if (enrichment?.objectChunks) {
+    writeObjectIndex(outDir, enrichment.objectChunks, enrichment.roadSurfaces);
+  }
 
   const meta = {
     version: enrichment ? 3 : 2,
@@ -554,9 +639,10 @@ async function main() {
       sources: `${MAP.name}.sources.json`,
     } : {}),
     attribution: enrichment
-      ? 'Map data © OpenStreetMap contributors (ODbL); open data © City of Melbourne and Victorian Government (CC BY 4.0)'
-      : 'Map data © OpenStreetMap contributors (ODbL) — openstreetmap.org/copyright',
+      ? 'Map data © OpenStreetMap contributors (ODbL); open data © City of Melbourne and Victorian Government (CC BY 4.0); elevation data NASA SRTM via AWS Open Data'
+      : 'Map data © OpenStreetMap contributors (ODbL) — openstreetmap.org/copyright; elevation data NASA SRTM via AWS Open Data',
   };
+  installFormatManifest(meta, Boolean(enrichment));
   writeFileSync(join(outDir, `${MAP.name}.json`), JSON.stringify(meta, null, 2) + '\n');
 
   const rgb = Buffer.alloc(N * 3);
@@ -577,7 +663,8 @@ async function main() {
   const covered = keptCounts.reduce((sum, count) => sum + count, 0);
   console.log(`suburbs: ${suburbs.length}, coverage: ${((covered / N) * 100).toFixed(1)}%`);
   console.log(`spawn: world (${spawn.x}, ${spawn.z})`);
-  console.log(`wrote public/maps/${MAP.name}.{bin,suburbs.bin,json,png}`);
+  console.log(`terrain: ${terrain.min.toFixed(1)}m..${terrain.max.toFixed(1)}m, sea datum ${terrain.seaDatum.toFixed(2)}m, max road grade ${(terrain.maxGrade * 100).toFixed(2)}%, ${terrain.buildingPadCount} building pads, max pad spread ${terrain.maxBuildingSpread.toFixed(2)}m`);
+  console.log(`wrote public/maps/${MAP.name}.{bin,suburbs.bin,json,png} and ${MAP.name}-height.bin`);
 }
 
 await main();

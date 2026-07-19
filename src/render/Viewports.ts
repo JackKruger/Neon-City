@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { heightAt } from '../world/CityMap';
 
 export interface CameraTarget {
   /** World position to follow. */
@@ -50,6 +51,8 @@ export class ChaseCamera {
       this.position.lerp(this.tmpIdeal, posK);
       this.focusSmooth.lerp(this.tmpFocus, focusK);
     }
+
+    this.position.y = Math.max(this.position.y, heightAt(this.position.x, this.position.z) + 1.2);
 
     // Widen the FOV with speed for a sense of rush.
     const targetFov = BASE_FOV + Math.min(target.getSpeed() * 0.35, 11);

@@ -71,6 +71,7 @@ needed to change the map area or cell rules:
 ```bash
 node scripts/build-map.mjs          # uses cached Overpass data if present
 node scripts/build-map.mjs --fresh  # re-download from Overpass
+node scripts/build-map.mjs --heights-only # rebake the cached NASA SRTM terrain grid
 ```
 
 Authoritative Victorian and City of Melbourne layers can be added through the

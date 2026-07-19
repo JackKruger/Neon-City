@@ -91,6 +91,15 @@ export function roadSurfacesFromOverpass(data) {
       .map((point) => ({ ...toWorld(point.lat, point.lon), lat: point.lat, lon: point.lon }));
     const width = roadWidth(element.tags);
     const surface = element.tags.highway === 'pedestrian' ? 'pavement' : 'asphalt';
+    let surfacePart = 0;
+    const addSurface = (polygon) => {
+      if (polygon) surfaces.push({
+        kind: 'road-surface',
+        sourceId: `road:${element.id ?? 'anonymous'}:${surfacePart++}`,
+        surface,
+        ...polygon,
+      });
+    };
     const dense = points.length > 0 ? [points[0]] : [];
     for (let i = 0; i + 1 < points.length; i++) {
       const a = points[i];
@@ -110,7 +119,7 @@ export function roadSurfacesFromOverpass(data) {
       if (!segment) continue;
       if (path.length > 1 && pathLength + segment.length > MAX_PATH_LENGTH) {
         const polygon = roadPath(path, width);
-        if (polygon) surfaces.push({ kind: 'road-surface', surface, ...polygon });
+        addSurface(polygon);
         path = [path.at(-1)];
         pathLength = 0;
       }
@@ -118,7 +127,7 @@ export function roadSurfacesFromOverpass(data) {
       pathLength += segment.length;
     }
     const polygon = roadPath(path, width);
-    if (polygon) surfaces.push({ kind: 'road-surface', surface, ...polygon });
+    addSurface(polygon);
   }
   return surfaces;
 }

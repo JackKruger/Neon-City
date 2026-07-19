@@ -12,9 +12,12 @@ import {
   cellAt,
   cellHash,
   cellToWorld,
+  cornerHeight,
   getAuthoredMap,
   hasCoverage,
+  heightAt,
   isRoad,
+  padHeight,
   roadMask,
   transportAt,
   worldToCell,
@@ -185,11 +188,10 @@ export class City {
   };
 
   constructor(private game: Game) {
-    // One flat ground slab covers the whole (unbounded) city; chunks only
-    // add building and tree colliders on top.
+    // Deep tunnelling net. Streamed heightfields are the actual terrain.
     const ground = game.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
     game.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(1e5, 0.5, 1e5).setTranslation(0, -0.5, 0),
+      RAPIER.ColliderDesc.cuboid(1e5, 0.5, 1e5).setTranslation(0, -30.5, 0),
       ground
     );
   }
@@ -260,6 +262,25 @@ export class City {
 
     const c0x = kx * CHUNK_TILES;
     const c0z = kz * CHUNK_TILES;
+    const heights = new Float32Array((CHUNK_TILES + 1) * (CHUNK_TILES + 1));
+    for (let iz = 0; iz <= CHUNK_TILES; iz++) {
+      for (let ix = 0; ix <= CHUNK_TILES; ix++) {
+        // Rapier expects its height matrix in column-major order: X selects
+        // the column and Z the row.
+        heights[iz + ix * (CHUNK_TILES + 1)] = cornerHeight(c0x + ix, c0z + iz);
+      }
+    }
+    const mid = (CHUNK_TILES - 1) / 2;
+    this.game.world.createCollider(
+      RAPIER.ColliderDesc.heightfield(
+        CHUNK_TILES,
+        CHUNK_TILES,
+        heights,
+        { x: CHUNK_SIZE, y: 1, z: CHUNK_SIZE },
+        RAPIER.HeightFieldFlags.FIX_INTERNAL_EDGES
+      ).setTranslation((c0x + mid) * TILE, 0, (c0z + mid) * TILE),
+      body
+    );
     for (let cz = c0z; cz < c0z + CHUNK_TILES; cz++) {
       for (let cx = c0x; cx < c0x + CHUNK_TILES; cx++) {
         const cell = cellAt(cx, cz);
@@ -288,7 +309,7 @@ export class City {
                 const { object } = this.game.assets.getFitted(model, { width: TILE });
                 object.position.set(x, -TILE * 0.02 + 0.002, z);
                 object.rotation.y = rot;
-                this.bake(object, model, buckets);
+                this.bake(object, model, buckets, true);
               }
             }
             this.streetlight(cx, cz, x, z, mask, buckets);
@@ -342,13 +363,13 @@ export class City {
     }
 
     // Sand base under the whole chunk (shows through at road seams).
-    const mid = (CHUNK_TILES - 1) / 2;
-    const base = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE);
+    const base = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE, CHUNK_TILES, CHUNK_TILES);
     base.applyMatrix4(
       new THREE.Matrix4()
         .makeRotationX(-Math.PI / 2)
         .setPosition((c0x + mid) * TILE, -0.02, (c0z + mid) * TILE)
     );
+    this.displaceTerrain(base);
     this.bucket(this.groundMats.sand, base, buckets);
 
     const meshes: THREE.Mesh[] = [];
@@ -461,9 +482,12 @@ export class City {
       else shape.lineTo(x, -z);
     }
     shape.closePath();
-    const geometry = new THREE.ShapeGeometry(shape);
-    geometry.rotateX(-Math.PI / 2);
-    geometry.translate(feature.x, 0.018, feature.z);
+    const coarse = new THREE.ShapeGeometry(shape);
+    coarse.rotateX(-Math.PI / 2);
+    coarse.translate(feature.x, 0.018, feature.z);
+    const geometry = this.subdivideForTerrain(coarse);
+    coarse.dispose();
+    this.displaceTerrain(geometry);
     this.bucket(this.groundMats[feature.surface], geometry, buckets);
   }
 
@@ -491,18 +515,19 @@ export class City {
           : COMMERCIAL;
     const model = models[Math.floor(cellHash(cx, cz, 91) * models.length)];
     const size = this.game.assets.size(model);
+    const baseY = this.authoredBuildingBase(feature);
     const object = this.game.assets.get(model);
     object.scale.set(
       Math.max(0.1, feature.width / size.x),
       Math.max(0.1, feature.height / size.y),
       Math.max(0.1, feature.depth / size.z)
     );
-    object.position.set(feature.x, 0, feature.z);
+    object.position.set(feature.x, baseY, feature.z);
     object.rotation.y = feature.rotation;
     this.bake(object, model, buckets);
     this.game.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(feature.width / 2, feature.height / 2, feature.depth / 2)
-        .setTranslation(feature.x, feature.height / 2, feature.z)
+      RAPIER.ColliderDesc.cuboid(feature.width / 2, feature.height / 2 + 0.25, feature.depth / 2)
+        .setTranslation(feature.x, baseY + feature.height / 2 - 0.25, feature.z)
         .setRotation({ x: 0, y: Math.sin(feature.rotation / 2), z: 0, w: Math.cos(feature.rotation / 2) }),
       body
     );
@@ -515,6 +540,7 @@ export class City {
     buckets: Buckets
   ): void {
     const outline = feature.outline!;
+    const baseY = this.authoredBuildingBase(feature);
     const shape = new THREE.Shape();
     for (let i = 0; i < outline.length; i++) {
       const [x, z] = outline[i];
@@ -529,7 +555,7 @@ export class City {
       curveSegments: 1,
     });
     geometry.rotateX(-Math.PI / 2);
-    geometry.translate(feature.x, 0, feature.z);
+    geometry.translate(feature.x, baseY, feature.z);
     geometry.computeVertexNormals();
 
     const position = geometry.getAttribute('position');
@@ -552,13 +578,14 @@ export class City {
     buckets: Buckets
   ): void {
     const model = feature.variant === 'small' ? TREES[1] : TREES[0];
+    const baseY = heightAt(feature.x, feature.z);
     const { object, scale } = this.game.assets.getFitted(model, { height: feature.height });
-    object.position.set(feature.x, 0, feature.z);
+    object.position.set(feature.x, baseY, feature.z);
     object.rotation.y = cellHash(Math.round(feature.x), Math.round(feature.z), 92) * Math.PI * 2;
     this.bake(object, model, buckets);
     const height = this.game.assets.size(model).y * scale;
     this.game.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(0.22, height / 2, 0.22).setTranslation(feature.x, height / 2, feature.z),
+      RAPIER.ColliderDesc.cuboid(0.22, height / 2, 0.22).setTranslation(feature.x, baseY + height / 2, feature.z),
       body
     );
   }
@@ -582,6 +609,31 @@ export class City {
     const vehicle = new Vehicle(this.game, model, x, z, feature.rotation + (side < 0 ? Math.PI : 0));
     this.game.addVehicle(vehicle);
     vehicles.push(vehicle);
+  }
+
+  /** Lowest terrain sample under an authored footprint, used as its level pad. */
+  private authoredBuildingBase(
+    feature: Extract<AuthoredObject, { kind: 'building' }>
+  ): number {
+    if (Number.isFinite(feature.baseY)) return feature.baseY as number;
+    if (feature.outline && feature.outline.length >= 3) {
+      return Math.min(
+        heightAt(feature.x, feature.z),
+        ...feature.outline.map(([x, z]) => heightAt(feature.x + x, feature.z + z))
+      );
+    }
+    const c = Math.cos(feature.rotation);
+    const s = Math.sin(feature.rotation);
+    let base = heightAt(feature.x, feature.z);
+    for (const lx of [-feature.width / 2, feature.width / 2]) {
+      for (const lz of [-feature.depth / 2, feature.depth / 2]) {
+        base = Math.min(
+          base,
+          heightAt(feature.x + lx * c + lz * s, feature.z - lx * s + lz * c)
+        );
+      }
+    }
+    return base;
   }
 
   /** True when an authored building's box intrudes into a road spawn lane. */
@@ -618,6 +670,7 @@ export class City {
     body: RAPIER.RigidBody,
     buckets: Buckets
   ): void {
+    const baseY = heightAt(feature.x, feature.z);
     let geometry: THREE.BufferGeometry;
     let material: THREE.Material = this.propMats.metal;
     let collider: { hx: number; hy: number; hz: number } | null = null;
@@ -663,13 +716,13 @@ export class City {
         break;
     }
     geometry.applyMatrix4(
-      new THREE.Matrix4().makeRotationY(feature.rotation).setPosition(feature.x, 0, feature.z)
+      new THREE.Matrix4().makeRotationY(feature.rotation).setPosition(feature.x, baseY, feature.z)
     );
     this.bucket(material, geometry, buckets);
     if (collider) {
       this.game.world.createCollider(
         RAPIER.ColliderDesc.cuboid(collider.hx, collider.hy, collider.hz)
-          .setTranslation(feature.x, collider.hy, feature.z),
+          .setTranslation(feature.x, baseY + collider.hy, feature.z),
         body
       );
     }
@@ -722,7 +775,8 @@ export class City {
     const setback = cell === 'S' ? Math.max(0, Math.min(TILE * 0.08, TILE * 0.46 - frontHalf)) : 0;
     const bx = x - fdx * setback;
     const bz = z - fdz * setback;
-    object.position.set(bx, 0, bz);
+    const baseY = padHeight(cx, cz);
+    object.position.set(bx, baseY, bz);
     object.rotation.y = rot;
     this.bake(object, model, buckets);
 
@@ -731,7 +785,7 @@ export class City {
     const hz = ((quarterTurns ? size.x : size.z) * scale) / 2;
     const hy = (size.y * scale) / 2;
     this.game.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(hx, hy, hz).setTranslation(bx, hy, bz),
+      RAPIER.ColliderDesc.cuboid(hx, hy + 0.25, hz).setTranslation(bx, baseY + hy - 0.25, bz),
       body
     );
 
@@ -773,24 +827,28 @@ export class City {
       // Paths run up the middle to the door; driveways offset toward a garage.
       const off = walk ? 0 : side * sideHalf * 0.45;
       const d = TILE / 2 - len / 2; // anchored at the sidewalk edge
+      const px = x + fdx * d + sdx * off;
+      const pz = z + fdz * d + sdz * off;
       const { object } = this.game.assets.getFitted(model, { length: len });
-      object.position.set(x + fdx * d + sdx * off, 0.012, z + fdz * d + sdz * off);
+      object.position.set(px, 0.012, pz);
       object.rotation.y = rot;
-      this.bake(object, model, buckets);
+      this.bake(object, model, buckets, true);
       if (walk) {
         const planter = this.game.assets.get(PLANTER);
         planter.scale.setScalar(houseScale);
+        const planterX = x + fdx * (TILE / 2 - gap + 0.4) + sdx * side * sideHalf * 0.6;
+        const planterZ = z + fdz * (TILE / 2 - gap + 0.4) + sdz * side * sideHalf * 0.6;
         planter.position.set(
-          x + fdx * (TILE / 2 - gap + 0.4) + sdx * side * sideHalf * 0.6,
-          0,
-          z + fdz * (TILE / 2 - gap + 0.4) + sdz * side * sideHalf * 0.6
+          planterX,
+          heightAt(planterX, planterZ),
+          planterZ
         );
         planter.rotation.y = rot;
         this.bake(planter, PLANTER, buckets);
       }
     } else if (yard >= 0.55 && yard < 0.75) {
       const { object } = this.game.assets.getFitted(FENCE, { width: TILE * 0.88 });
-      object.position.set(x, 0, z);
+      object.position.set(x, heightAt(x, z), z);
       object.rotation.y = rot;
       this.bake(object, FENCE, buckets);
     }
@@ -818,18 +876,19 @@ export class City {
     const off = side * Math.min(sideHalf * 0.55, TILE * 0.3);
     const px = x - fdx * d + fdz * off;
     const pz = z - fdz * d - fdx * off;
+    const baseY = heightAt(px, pz);
     if (r < 0.2) {
       const height = 8 + cellHash(cx, cz, 64) * 4;
       const { object } = this.game.assets.getFitted(SMOKESTACK, { height });
-      object.position.set(px, 0, pz);
+      object.position.set(px, baseY, pz);
       this.bake(object, SMOKESTACK, buckets);
       this.game.world.createCollider(
-        RAPIER.ColliderDesc.cuboid(1.1, height / 2, 1.1).setTranslation(px, height / 2, pz),
+        RAPIER.ColliderDesc.cuboid(1.1, height / 2, 1.1).setTranslation(px, baseY + height / 2, pz),
         body
       );
     } else {
       const { object } = this.game.assets.getFitted(TANK, { height: 2.6 });
-      object.position.set(px, 0, pz);
+      object.position.set(px, baseY, pz);
       object.rotation.y = rot;
       this.bake(object, TANK, buckets);
     }
@@ -854,7 +913,9 @@ export class City {
     for (const [dx, dz] of edges) {
       const { object } = this.game.assets.getFitted(STREETLIGHT, { height: 6 });
       // Stand on the sidewalk edge, arm pointing over the road.
-      object.position.set(x + dx * TILE * 0.46, 0, z + dz * TILE * 0.46);
+      const px = x + dx * TILE * 0.46;
+      const pz = z + dz * TILE * 0.46;
+      object.position.set(px, heightAt(px, pz), pz);
       object.rotation.y = dx !== 0 ? (dx > 0 ? Math.PI / 2 : -Math.PI / 2) : dz > 0 ? 0 : Math.PI;
       this.bake(object, STREETLIGHT, buckets);
     }
@@ -865,12 +926,13 @@ export class City {
     const { object, scale } = this.game.assets.getFitted(model, {
       height: 5.5 + cellHash(hx, hz, 31) * 3,
     });
-    object.position.set(x, 0, z);
+    const baseY = heightAt(x, z);
+    object.position.set(x, baseY, z);
     object.rotation.y = cellHash(hx, hz, 32) * Math.PI * 2;
     this.bake(object, model, buckets);
     const height = this.game.assets.size(model).y * scale;
     this.game.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(0.25, height / 2, 0.25).setTranslation(x, height / 2, z),
+      RAPIER.ColliderDesc.cuboid(0.25, height / 2, 0.25).setTranslation(x, baseY + height / 2, z),
       body
     );
   }
@@ -913,23 +975,93 @@ export class City {
         .makeRotationX(-Math.PI / 2)
         .setPosition(x, kind === 'grass' ? -0.008 : -0.005, z)
     );
+    this.displaceTerrain(geo);
     this.bucket(this.groundMats[kind], geo, buckets);
   }
 
   /** Bake an object's meshes (with world transforms) into merge buckets. */
-  private bake(object: THREE.Object3D, modelName: string, buckets: Buckets): void {
+  private bake(object: THREE.Object3D, modelName: string, buckets: Buckets, drape = false): void {
     const pack = modelName.split('/')[0];
     object.updateMatrixWorld(true);
     object.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
       const geo = child.geometry.clone() as THREE.BufferGeometry;
       geo.applyMatrix4(child.matrixWorld);
+      if (drape) this.displaceTerrain(geo);
       for (const attr of Object.keys(geo.attributes)) {
         if (!['position', 'normal', 'uv'].includes(attr)) geo.deleteAttribute(attr);
       }
       const raw = (Array.isArray(child.material) ? child.material[0] : child.material) as THREE.MeshStandardMaterial;
       this.bucket(this.canonical(pack, raw), geo, buckets);
     });
+  }
+
+  /** Add the shared terrain lattice height to world-space geometry vertices. */
+  private displaceTerrain(geometry: THREE.BufferGeometry): void {
+    const position = geometry.getAttribute('position');
+    for (let i = 0; i < position.count; i++) {
+      position.setY(i, position.getY(i) + heightAt(position.getX(i), position.getZ(i)));
+    }
+    position.needsUpdate = true;
+  }
+
+  /** Split long authored polygon triangles until terrain curvature is sampled per tile. */
+  private subdivideForTerrain(geometry: THREE.BufferGeometry): THREE.BufferGeometry {
+    type Vertex = { p: THREE.Vector3; n: THREE.Vector3; uv: THREE.Vector2 };
+    const positions = geometry.getAttribute('position');
+    const normals = geometry.getAttribute('normal');
+    const uvs = geometry.getAttribute('uv');
+    const indices = geometry.index?.array;
+    const outP: number[] = [];
+    const outN: number[] = [];
+    const outUv: number[] = [];
+    const vertex = (i: number): Vertex => ({
+      p: new THREE.Vector3(positions.getX(i), positions.getY(i), positions.getZ(i)),
+      n: new THREE.Vector3(normals.getX(i), normals.getY(i), normals.getZ(i)),
+      uv: new THREE.Vector2(uvs.getX(i), uvs.getY(i)),
+    });
+    const midpoint = (a: Vertex, b: Vertex): Vertex => ({
+      p: a.p.clone().add(b.p).multiplyScalar(0.5),
+      n: a.n.clone().add(b.n).normalize(),
+      uv: a.uv.clone().add(b.uv).multiplyScalar(0.5),
+    });
+    const emit = (a: Vertex, b: Vertex, c: Vertex, depth = 0): void => {
+      const longest = Math.max(
+        a.p.distanceToSquared(b.p),
+        b.p.distanceToSquared(c.p),
+        c.p.distanceToSquared(a.p)
+      );
+      if (longest > TILE * TILE && depth < 8) {
+        const ab = midpoint(a, b);
+        const bc = midpoint(b, c);
+        const ca = midpoint(c, a);
+        emit(a, ab, ca, depth + 1);
+        emit(ab, b, bc, depth + 1);
+        emit(ca, bc, c, depth + 1);
+        emit(ab, bc, ca, depth + 1);
+        return;
+      }
+      for (const v of [a, b, c]) {
+        outP.push(v.p.x, v.p.y, v.p.z);
+        outN.push(v.n.x, v.n.y, v.n.z);
+        outUv.push(v.uv.x, v.uv.y);
+      }
+    };
+    const triangleCount = indices ? indices.length / 3 : positions.count / 3;
+    for (let i = 0; i < triangleCount; i++) {
+      const a = indices ? Number(indices[i * 3]) : i * 3;
+      const b = indices ? Number(indices[i * 3 + 1]) : i * 3 + 1;
+      const c = indices ? Number(indices[i * 3 + 2]) : i * 3 + 2;
+      emit(vertex(a), vertex(b), vertex(c));
+    }
+    const result = new THREE.BufferGeometry();
+    result.setAttribute('position', new THREE.Float32BufferAttribute(outP, 3));
+    result.setAttribute('normal', new THREE.Float32BufferAttribute(outN, 3));
+    result.setAttribute('uv', new THREE.Float32BufferAttribute(outUv, 2));
+    // Ground planes in the same material buckets are indexed; keep the
+    // representation compatible so BufferGeometryUtils can batch them.
+    result.setIndex(Array.from({ length: outP.length / 3 }, (_, i) => i));
+    return result;
   }
 
   private canonical(pack: string, mat: THREE.MeshStandardMaterial): THREE.Material {

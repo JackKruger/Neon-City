@@ -13,7 +13,9 @@ import {
   cellAt,
   cellToWorld,
   getAuthoredMap,
+  heightAt,
   nearestRoadCell,
+  setAuthoredMap,
   suburbNameAt,
   worldToCell,
 } from '../world/CityMap';
@@ -38,7 +40,7 @@ export class Game {
   readonly input = new Input();
   readonly viewports: Viewports;
   readonly hud: Hud;
-  readonly mapOverlay: MapOverlay;
+  readonly mapOverlay: MapOverlay | null;
   readonly entities: Entity[] = [];
 
   private clock = new THREE.Clock();
@@ -54,6 +56,8 @@ export class Game {
   paused = false;
 
   static async create(container: HTMLElement): Promise<Game> {
+    const procedural = new URLSearchParams(location.search).get('map') === 'procedural';
+    if (procedural) setAuthoredMap(null);
     const [assets] = await Promise.all([
       (async () => {
         const a = new Assets();
@@ -61,7 +65,7 @@ export class Game {
         return a;
       })(),
       RAPIER.init(),
-      loadAuthoredMap('melbourne'),
+      procedural ? Promise.resolve(null) : loadAuthoredMap('melbourne'),
     ]);
     return new Game(container, assets);
   }
@@ -85,11 +89,10 @@ export class Game {
     this.viewports.setPlayerCount(1);
     this.hud = new Hud(container);
     const map = getAuthoredMap();
-    if (!map) throw new Error('authored map was not loaded before game construction');
-    const mapCanvas = buildMapCanvas(map);
-    this.hud.setMapCanvas(mapCanvas, map);
+    const mapCanvas = map ? buildMapCanvas(map) : null;
+    if (map && mapCanvas) this.hud.setMapCanvas(mapCanvas, map);
     this.hud.setPlayerCount(1);
-    this.mapOverlay = new MapOverlay(container, map, mapCanvas);
+    this.mapOverlay = map && mapCanvas ? new MapOverlay(container, map, mapCanvas) : null;
 
     this.setupEnvironment();
     // The Kenney asphalt is nearly sand-colored; darken it well below the
@@ -98,7 +101,7 @@ export class Game {
       if (name.startsWith('roads/road-')) this.assets.tint(name, 0x666c7c);
     }
     this.city = new City(this);
-    const requestedSpawn = map.spawn ?? { x: 3, z: 24 };
+    const requestedSpawn = map?.spawn ?? { x: 0, z: 0 };
     const requestedCell = worldToCell(requestedSpawn.x, requestedSpawn.z);
     const safeSpawnCell = nearestRoadCell(requestedCell.cx, requestedCell.cz);
     const spawn = safeSpawnCell
@@ -128,6 +131,11 @@ export class Game {
       const c = p.character.position();
       return { x: c.x, z: c.z };
     });
+  }
+
+  /** Terrain query exposed on window.__game for verification tooling. */
+  heightAt(x: number, z: number): number {
+    return heightAt(x, z);
   }
 
   addVehicle(v: Vehicle): void {
@@ -213,7 +221,7 @@ export class Game {
   private frame(): void {
     const dt = Math.min(this.clock.getDelta(), 0.1);
     this.input.poll();
-    this.mapOverlay.setPlayers(
+    this.mapOverlay?.setPlayers(
       this.playerPositions().map((pos, i) => ({ ...pos, heading: this.players[i].getHeading() }))
     );
     if (this.input.p2JoinRequested) {
@@ -223,7 +231,7 @@ export class Game {
     const pausePressed = this.input.consumePause();
     const mapPressed = this.input.consumeMapToggle();
     if (pausePressed) {
-      if (this.mapOverlay.isOpen) {
+      if (this.mapOverlay?.isOpen) {
         this.mapOverlay.close();
       } else {
         this.paused = !this.paused;
@@ -231,7 +239,7 @@ export class Game {
         if (!this.paused) this.input.clearGameplayEdges();
       }
     }
-    if (mapPressed && !pausePressed && !this.paused) {
+    if (mapPressed && !pausePressed && !this.paused && this.mapOverlay) {
       if (this.mapOverlay.isOpen) this.mapOverlay.close();
       else this.mapOverlay.open();
     }
@@ -246,11 +254,11 @@ export class Game {
     this.city.update(positions);
     if (this.paused) this.audio.duck();
     else this.updateAudio(dt);
-    this.mapOverlay.setPlayers(
+    this.mapOverlay?.setPlayers(
       positions.map((pos, i) => ({ ...pos, heading: this.players[i].getHeading() }))
     );
     const pan = this.input.mapPanAxes();
-    this.mapOverlay.update(dt, pan.x, pan.y);
+    this.mapOverlay?.update(dt, pan.x, pan.y);
     for (let i = 0; i < this.players.length; i++) {
       const p = this.players[i];
       const pos = positions[i];
@@ -314,6 +322,7 @@ export class Game {
     this.npcs.update(STEP);
     for (const e of this.entities) e.update(STEP);
     this.world.step(this.eventQueue);
+    for (const vehicle of this.vehicles) vehicle.afterPhysics();
     this.npcs.afterPhysics();
   }
 }

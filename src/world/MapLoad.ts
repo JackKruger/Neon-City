@@ -14,6 +14,9 @@ export async function loadAuthoredMap(name: string): Promise<AuthoredMap> {
     throw new Error(`failed to load map "${name}": ${metaRes.status}/${binRes.status}`);
   }
   const meta = await metaRes.json();
+  if (meta.formatVersion !== undefined && meta.formatVersion !== 4) {
+    throw new Error(`map "${name}" uses unsupported format version ${meta.formatVersion}`);
+  }
   const grid = new Uint8Array(await binRes.arrayBuffer());
   if (grid.length !== meta.width * meta.height) {
     throw new Error(`map "${name}" grid size mismatch`);
@@ -23,9 +26,29 @@ export async function loadAuthoredMap(name: string): Promise<AuthoredMap> {
     width: meta.width,
     height: meta.height,
     grid,
+    heights: null,
+    heightScale: 0.1,
     spawn: meta.spawn,
     attribution: meta.attribution ?? '',
   };
+  if (meta.heightGrid && typeof meta.heightGrid.file === 'string') {
+    try {
+      const response = await fetch(`/maps/${meta.heightGrid.file}`);
+      if (!response.ok) throw new Error(`${response.status}`);
+      const buffer = await response.arrayBuffer();
+      const expected = (meta.width + 1) * (meta.height + 1);
+      if (buffer.byteLength !== expected * Int16Array.BYTES_PER_ELEMENT) {
+        throw new Error(`size mismatch: expected ${expected * 2} bytes, got ${buffer.byteLength}`);
+      }
+      const view = new DataView(buffer);
+      const heights = new Int16Array(expected);
+      for (let i = 0; i < expected; i++) heights[i] = view.getInt16(i * 2, true);
+      map.heights = heights;
+      map.heightScale = Number(meta.heightGrid.scale) || 0.1;
+    } catch (error) {
+      console.warn(`[map] ${name}: terrain heights unavailable (${error}); using flat ground`);
+    }
+  }
   if (Array.isArray(meta.suburbs) && suburbRes?.ok) {
     const suburbGrid = new Uint8Array(await suburbRes.arrayBuffer());
     if (suburbGrid.length === meta.width * meta.height) {
@@ -61,7 +84,11 @@ export async function loadAuthoredMap(name: string): Promise<AuthoredMap> {
       const response = await fetch(`/maps/${meta.objects}`);
       if (!response.ok) throw new Error(`${response.status}`);
       const objects = await response.json();
-      if (!objects || objects.version !== 1 || typeof objects.chunks !== 'object') throw new Error('invalid object index');
+      if (!objects || ![1, 2].includes(objects.version) || typeof objects.chunks !== 'object') throw new Error('invalid object index');
+      if (objects.version === 2 &&
+          (objects.chunkTiles !== 10 || objects.ownership !== 'clipped-polygons')) {
+        throw new Error('incompatible object index');
+      }
       map.objectChunks = objects.chunks;
       map.roadSurfaces = objects.roadSurfaces === true;
     } catch (error) {

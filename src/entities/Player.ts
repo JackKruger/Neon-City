@@ -6,6 +6,7 @@ import { Character } from './Character';
 import type { Outfit } from './HumanRig';
 import { Vehicle } from './Vehicle';
 import { Wanted } from '../gameplay/Wanted';
+import { heightAt } from '../world/CityMap';
 
 const ENTER_RADIUS = 3.5;
 
@@ -145,7 +146,9 @@ export class Player implements Entity, CameraTarget {
     v.command = { steer: 0, throttle: 0, brake: 0, handbrake: true };
     v.driver = null;
     this.vehicle = null;
-    this.character.teleport(t.x + right.x * 2.4, Math.max(t.y, 0.1), t.z + right.z * 2.4);
+    const ex = t.x + right.x * 2.4;
+    const ez = t.z + right.z * 2.4;
+    this.character.teleport(ex, Math.max(t.y, heightAt(ex, ez) + 0.1), ez);
     this.character.setEnabled(true);
   }
 

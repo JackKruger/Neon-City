@@ -12,7 +12,7 @@ Run `node scripts/build-map.mjs --list-open-data` for the complete filename list
 
 `npm run map:download` downloads the supported City of Melbourne GeoJSON exports for buildings, trees, canopy, street furniture, public art, and parking. Add `--refresh-open-data` to replace those cached exports. The 12 GB DSM and statewide Vicmap products are intentionally never downloaded automatically.
 
-`npm run map:build` consumes cached inputs and writes the base grid, binary layers, sparse object index, address street index, ABS/locality area index, source report, attribution metadata, and preview under `public/maps`. Missing or invalid sources are recorded in `melbourne.sources.json` and fall back to OSM/procedural behaviour.
+`npm run map:build` consumes cached inputs and writes the base grid, SRTM corner-height grid, binary layers, sparse object index, address street index, ABS/locality area index, source report, attribution metadata, and preview under `public/maps`. Missing or invalid sources are recorded in `melbourne.sources.json` and fall back to OSM/procedural behaviour. Use `node scripts/build-map.mjs --heights-only` to rebake terrain without rebuilding the other map sources.
 
 Before committing regenerated assets, run:
 
