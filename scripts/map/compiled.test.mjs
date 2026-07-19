@@ -135,6 +135,44 @@ test('compiled road polygons are subdivided and stay clear of curved terrain', (
   }
 });
 
+test('pitched roofs cap the render mesh at the ridge while collision stays flat', () => {
+  const base = {
+    meta: {},
+    grid: new Uint8Array(MAP_SIZE ** 2),
+    heights: new Int16Array((MAP_SIZE + 1) ** 2),
+    coverage: new Uint8Array(MAP_SIZE ** 2),
+    transport: new Uint8Array(MAP_SIZE ** 2),
+    speed: new Uint8Array(MAP_SIZE ** 2),
+  };
+  const building = (roof, sourceId) => ({
+    kind: 'building', sourceId, x: 48, z: 48, rotation: 0,
+    width: 12, depth: 6, height: 9, style: 'suburban', roof, baseY: 0,
+    outline: [[-6, -3], [6, -3], [6, 3], [-6, 3]],
+  });
+  const gable = compileChunkRecipe(createCompilerContext({
+    ...base,
+    objectIndex: { chunks: { '0,0': [building('gable', 'building:gable')] } },
+  }), 0, 0);
+  const roofPrimitive = gable.primitives.find((primitive) => primitive.material === 'suburban');
+  const ys = [];
+  for (let i = 1; i < roofPrimitive.positions.length; i += 3) ys.push(roofPrimitive.positions[i]);
+  const maxY = Math.max(...ys);
+  const minY = Math.min(...ys);
+  assert.equal(Math.round(maxY), 9, 'ridge should reach the real building height');
+  assert.equal(Math.round(minY), 0, 'walls should still start at the base');
+  assert.ok(ys.some((y) => Math.abs(y - 6) < 1e-6), 'walls should drop to a distinct eave below the ridge');
+
+  const flat = compileChunkRecipe(createCompilerContext({
+    ...base,
+    objectIndex: { chunks: { '0,0': [building('flat', 'building:flat')] } },
+  }), 0, 0);
+  const flatPrimitive = flat.primitives.find((primitive) => primitive.material === 'suburban');
+  const flatYs = [];
+  for (let i = 1; i < flatPrimitive.positions.length; i += 3) flatYs.push(flatPrimitive.positions[i]);
+  assert.deepEqual([...new Set(flatYs.map((y) => Math.round(y)))].sort((a, b) => a - b), [0, 9],
+    'flat roofs keep the original two-level box and add no ridge geometry');
+});
+
 test('committed spawn compilation has valid hashes, GLBs, containers, and navigation', () => {
   const root = join(import.meta.dirname, '..', '..', 'public', 'maps');
   const result = validateCompiledMap(root);

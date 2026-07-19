@@ -218,6 +218,86 @@ function addPrism(bucket, points, baseY, height) {
   return triangles;
 }
 
+// Roof types that get a pitched cap; everything else stays flat-topped.
+const PITCHED_ROOFS = new Set(['gable', 'hip', 'pyramid', 'shed']);
+
+/**
+ * Height of the pitched cap for a building, derived from its short footprint
+ * axis so the pitch reads at a natural ~25-30 deg. Returns 0 (flat) when the
+ * roof type is flat/unknown or the building is too tall for a pitch to look
+ * right (towers keep flat/parapet tops). The cap is carved out of the total
+ * height so the ridge sits at the building's real height and walls drop to the
+ * eave, leaving collision (a full-height flat prism) untouched.
+ */
+function roofCapHeight(roof, width, depth, height) {
+  if (!PITCHED_ROOFS.has(roof) || height > 25) return 0;
+  const shortHalf = Math.min(width, depth) / 2;
+  const rise = roof === 'pyramid' ? Math.min(width, depth) / 2 : shortHalf;
+  return Math.max(1, Math.min(rise, 6, height * 0.6));
+}
+
+/**
+ * Emit a pitched roof (gable/hip/pyramid/shed) into the render bucket, built in
+ * the footprint's oriented frame from the same width/depth/rotation the walls
+ * use. The ridge runs along the longer axis. Vertices use the addBox local
+ * transform so the roof lines up with the walls exactly for rectangular
+ * footprints (the overwhelming majority); non-rectangular footprints get a
+ * close oriented-box cap. Purely visual — collision is generated separately.
+ */
+function addRoof(bucket, { x, z, rotation, width, depth, eaveY, ridgeY, roof }) {
+  // Keep the ridge on the longer axis by swapping to a 90-deg-rotated frame.
+  let hw = width / 2;
+  let hd = depth / 2;
+  let rot = rotation;
+  if (hd > hw) {
+    [hw, hd] = [hd, hw];
+    rot += Math.PI / 2;
+  }
+  const cos = Math.cos(rot);
+  const sin = Math.sin(rot);
+  const P = (lx, ly, lz) => [x + lx * cos + lz * sin, ly, z - lx * sin + lz * cos];
+  const tri = (a, b, c) => addTriangle(bucket, a, b, c);
+  const quad = (a, b, c, d) => addQuad(bucket, a, b, c, d);
+  // Eave corners, walking the footprint counter-clockwise when seen from above.
+  const A = P(-hw, eaveY, -hd);
+  const B = P(hw, eaveY, -hd);
+  const C = P(hw, eaveY, hd);
+  const D = P(-hw, eaveY, hd);
+
+  if (roof === 'pyramid') {
+    const apex = P(0, ridgeY, 0);
+    tri(A, B, apex);
+    tri(B, C, apex);
+    tri(C, D, apex);
+    tri(D, A, apex);
+    return;
+  }
+  if (roof === 'shed') {
+    // Mono-pitch: low eave along -depth, high edge along +depth.
+    const highD = P(-hw, ridgeY, hd);
+    const highC = P(hw, ridgeY, hd);
+    quad(A, B, highC, highD); // sloped face
+    quad(D, C, highC, highD); // raised gable wall on the high side
+    tri(A, highD, D); // left triangle
+    tri(B, C, highC); // right triangle
+    return;
+  }
+  // gable / hip: ridge spans the full length for a gable, insets by the short
+  // half-depth for a hip (giving sloped ends instead of vertical gables).
+  const ridgeHalf = roof === 'hip' ? Math.max(0, hw - hd) : hw;
+  const ridgeNeg = P(-ridgeHalf, ridgeY, 0);
+  const ridgePos = P(ridgeHalf, ridgeY, 0);
+  quad(A, B, ridgePos, ridgeNeg); // -depth slope
+  quad(C, D, ridgeNeg, ridgePos); // +depth slope
+  if (roof === 'hip' && ridgeHalf < hw) {
+    tri(B, C, ridgePos); // +length hip end
+    tri(D, A, ridgeNeg); // -length hip end
+  } else {
+    tri(B, ridgePos, C); // +length gable wall
+    tri(D, ridgeNeg, A); // -length gable wall
+  }
+}
+
 function bufferWriter() {
   const chunks = [];
   return {
@@ -552,13 +632,26 @@ export function compileChunkRecipe(context, kx, kz) {
       }
     } else if (object.kind === 'building') {
       const baseY = Number.isFinite(object.baseY) ? object.baseY : context.heightAt(object.x, object.z);
+      const bucket = buckets.get(object.style ?? 'commercial');
+      // Carve a pitched cap out of the top; walls drop to the eave and the roof
+      // fills up to the real ridge height. Collision stays a full-height flat
+      // prism/box, so gameplay volumes are unchanged.
+      const roofHeight = roofCapHeight(object.roof, object.width, object.depth, object.height);
+      const wallHeight = object.height - roofHeight;
       if (Array.isArray(object.outline) && object.outline.length >= 3) {
         const points = object.outline.map(([x, z]) => [object.x + x, object.z + z]);
-        const triangles = addPrism(buckets.get(object.style ?? 'commercial'), points, baseY, object.height);
-        collisionMeshes.push({ sourceId: object.sourceId, ...triangles });
+        addPrism(bucket, points, baseY, wallHeight);
+        collisionMeshes.push({ sourceId: object.sourceId, ...prismTriangles(points, baseY, object.height) });
       } else {
-        addBox(buckets.get(object.style ?? 'commercial'), object.x, baseY + object.height / 2, object.z, object.width / 2, object.height / 2, object.depth / 2, object.rotation ?? 0);
+        addBox(bucket, object.x, baseY + wallHeight / 2, object.z, object.width / 2, wallHeight / 2, object.depth / 2, object.rotation ?? 0);
         cuboids.push({ sourceId: object.sourceId, x: object.x, y: baseY + object.height / 2, z: object.z, hx: object.width / 2, hy: object.height / 2, hz: object.depth / 2, rotation: object.rotation ?? 0 });
+      }
+      if (roofHeight > 0) {
+        addRoof(bucket, {
+          x: object.x, z: object.z, rotation: object.rotation ?? 0,
+          width: object.width, depth: object.depth,
+          eaveY: baseY + wallHeight, ridgeY: baseY + object.height, roof: object.roof,
+        });
       }
     } else if (object.kind === 'tree') {
       const base = context.heightAt(object.x, object.z);
