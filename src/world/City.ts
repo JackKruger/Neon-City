@@ -149,6 +149,82 @@ export function chunkOfWorld(x: number, z: number): { kx: number; kz: number } {
   return { kx: Math.floor(cx / CHUNK_TILES), kz: Math.floor(cz / CHUNK_TILES) };
 }
 
+type BuildingFeature = Extract<AuthoredObject, { kind: 'building' }>;
+
+/**
+ * Height of a building's pitched roof cap, carved out of its total height so
+ * the ridge sits at the real height and walls drop to the eave. Mirrors the
+ * compiled renderer so both modes agree. Flat/unknown roofs and tall buildings
+ * (towers) return 0 and keep their flat tops.
+ */
+function roofCapHeight(roof: string | undefined, width: number, depth: number, height: number): number {
+  if (roof !== 'gable' && roof !== 'hip' && roof !== 'pyramid' && roof !== 'shed') return 0;
+  if (height > 25) return 0;
+  const shortHalf = Math.min(width, depth) / 2;
+  const rise = roof === 'pyramid' ? Math.min(width, depth) / 2 : shortHalf;
+  return Math.max(1, Math.min(rise, 6, height * 0.6));
+}
+
+function roofMaterialFor(style: string): 'roof-tile' | 'roof-metal' | 'roof-membrane' {
+  if (style === 'suburban') return 'roof-tile';
+  if (style === 'industrial') return 'roof-metal';
+  return 'roof-membrane';
+}
+
+/**
+ * Pitched roof geometry (gable/hip/pyramid/shed) built in the footprint's
+ * oriented frame, matching the compiled renderer's addRoof so both modes emit
+ * the same shape. Returns a non-indexed, flat-shaded BufferGeometry in world
+ * space.
+ */
+function buildRoofGeometry(feature: BuildingFeature, eaveY: number, ridgeY: number): THREE.BufferGeometry {
+  let hw = feature.width / 2;
+  let hd = feature.depth / 2;
+  let rot = feature.rotation;
+  if (hd > hw) {
+    [hw, hd] = [hd, hw];
+    rot += Math.PI / 2;
+  }
+  const cos = Math.cos(rot);
+  const sin = Math.sin(rot);
+  const P = (lx: number, ly: number, lz: number): [number, number, number] =>
+    [feature.x + lx * cos + lz * sin, ly, feature.z - lx * sin + lz * cos];
+  const pos: number[] = [];
+  const tri = (a: number[], b: number[], c: number[]) => pos.push(...a, ...b, ...c);
+  const quad = (a: number[], b: number[], c: number[], d: number[]) => { tri(a, b, c); tri(a, c, d); };
+  const A = P(-hw, eaveY, -hd);
+  const B = P(hw, eaveY, -hd);
+  const C = P(hw, eaveY, hd);
+  const D = P(-hw, eaveY, hd);
+  const roof = feature.roof;
+  if (roof === 'pyramid') {
+    const apex = P(0, ridgeY, 0);
+    tri(A, B, apex); tri(B, C, apex); tri(C, D, apex); tri(D, A, apex);
+  } else if (roof === 'shed') {
+    const highD = P(-hw, ridgeY, hd);
+    const highC = P(hw, ridgeY, hd);
+    quad(A, B, highC, highD);
+    quad(D, C, highC, highD);
+    tri(A, highD, D);
+    tri(B, C, highC);
+  } else {
+    const ridgeHalf = roof === 'hip' ? Math.max(0, hw - hd) : hw;
+    const ridgeNeg = P(-ridgeHalf, ridgeY, 0);
+    const ridgePos = P(ridgeHalf, ridgeY, 0);
+    quad(A, B, ridgePos, ridgeNeg);
+    quad(C, D, ridgeNeg, ridgePos);
+    if (roof === 'hip' && ridgeHalf < hw) {
+      tri(B, C, ridgePos); tri(D, A, ridgeNeg);
+    } else {
+      tri(B, ridgePos, C); tri(D, ridgeNeg, A);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
 /**
  * Streams city chunks in around the players and frees them behind. Each chunk
  * is self-contained: merged render meshes plus one fixed rigid body carrying
@@ -191,6 +267,13 @@ export class City implements CityStreamer {
     skyscraper: new THREE.MeshStandardMaterial({ color: 0x718caf, roughness: 0.5, metalness: 0.18 }),
     suburban: new THREE.MeshStandardMaterial({ color: 0xd9b38c, roughness: 0.88 }),
     industrial: new THREE.MeshStandardMaterial({ color: 0x899096, roughness: 0.82, metalness: 0.12 }),
+  };
+  // Style-aware roof materials, kept in linear RGB so they match the compiled
+  // renderer's baked glTF roof colours exactly.
+  private authoredRoofMats = {
+    'roof-tile': new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(0.44, 0.16, 0.12, THREE.LinearSRGBColorSpace), roughness: 0.85 }),
+    'roof-metal': new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(0.18, 0.2, 0.24, THREE.LinearSRGBColorSpace), roughness: 0.55, metalness: 0.45 }),
+    'roof-membrane': new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(0.14, 0.13, 0.18, THREE.LinearSRGBColorSpace), roughness: 0.7, metalness: 0.1 }),
   };
   private safetyBody: RAPIER.RigidBody;
 
@@ -561,35 +644,51 @@ export class City implements CityStreamer {
   ): void {
     const outline = feature.outline!;
     const baseY = this.authoredBuildingBase(feature);
-    const shape = new THREE.Shape();
-    for (let i = 0; i < outline.length; i++) {
-      const [x, z] = outline[i];
-      if (i === 0) shape.moveTo(x, -z);
-      else shape.lineTo(x, -z);
-    }
-    shape.closePath();
-    const geometry = new THREE.ExtrudeGeometry(shape, {
-      depth: feature.height,
-      bevelEnabled: false,
-      steps: 1,
-      curveSegments: 1,
-    });
-    geometry.rotateX(-Math.PI / 2);
-    geometry.translate(feature.x, baseY, feature.z);
-    geometry.computeVertexNormals();
+    const roofHeight = roofCapHeight(feature.roof, feature.width, feature.depth, feature.height);
+    const wallHeight = feature.height - roofHeight;
+    const extrude = (depth: number): THREE.BufferGeometry => {
+      const shape = new THREE.Shape();
+      for (let i = 0; i < outline.length; i++) {
+        const [x, z] = outline[i];
+        if (i === 0) shape.moveTo(x, -z);
+        else shape.lineTo(x, -z);
+      }
+      shape.closePath();
+      const geometry = new THREE.ExtrudeGeometry(shape, {
+        depth,
+        bevelEnabled: false,
+        steps: 1,
+        curveSegments: 1,
+      });
+      geometry.rotateX(-Math.PI / 2);
+      geometry.translate(feature.x, baseY, feature.z);
+      geometry.computeVertexNormals();
+      return geometry;
+    };
 
-    const position = geometry.getAttribute('position');
+    // Collision stays a full-height extrusion trimesh so gameplay volumes are
+    // unchanged whether or not the building gets a pitched cap.
+    const collision = extrude(feature.height);
+    const position = collision.getAttribute('position');
     const vertices = new Float32Array(position.count * 3);
     for (let i = 0; i < position.count; i++) {
       vertices[i * 3] = position.getX(i);
       vertices[i * 3 + 1] = position.getY(i);
       vertices[i * 3 + 2] = position.getZ(i);
     }
-    const indices = geometry.index
-      ? Uint32Array.from(geometry.index.array)
+    const indices = collision.index
+      ? Uint32Array.from(collision.index.array)
       : Uint32Array.from({ length: position.count }, (_, i) => i);
     this.game.world.createCollider(RAPIER.ColliderDesc.trimesh(vertices, indices), body);
-    this.bucket(this.authoredBuildingMats[feature.style], geometry, buckets);
+
+    if (roofHeight > 0) {
+      collision.dispose();
+      this.bucket(this.authoredBuildingMats[feature.style], extrude(wallHeight), buckets);
+      const roof = buildRoofGeometry(feature, baseY + wallHeight, baseY + feature.height);
+      this.bucket(this.authoredRoofMats[roofMaterialFor(feature.style)], roof, buckets);
+    } else {
+      this.bucket(this.authoredBuildingMats[feature.style], collision, buckets);
+    }
   }
 
   private authoredTree(
