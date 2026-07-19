@@ -548,22 +548,29 @@ export class City {
     }
   }
 
-  /** A curved streetlight on alternating sides of straight road segments. */
+  /**
+   * Curved streetlights, every third cell: on alternating sides of 1-wide
+   * straight segments, and on every sidewalk edge of wide-road cells (which
+   * have no straight mask, so the old rule left arterials unlit).
+   */
   private streetlight(cx: number, cz: number, x: number, z: number, mask: number, buckets: Buckets): void {
-    if (mask !== 5 && mask !== 10) return;
     if (((cx + cz) % 3 + 3) % 3 !== 0) return;
-    const side = ((cx + cz) / 3) % 2 === 0 ? 1 : -1;
-    const off = TILE * 0.46 * side;
-    const { object } = this.game.assets.getFitted(STREETLIGHT, { height: 6 });
-    if (mask === 5) {
-      // N-S road: light on east/west sidewalk, arm pointing at the road.
-      object.position.set(x + off, 0, z);
-      object.rotation.y = side > 0 ? Math.PI / 2 : -Math.PI / 2;
-    } else {
-      object.position.set(x, 0, z + off);
-      object.rotation.y = side > 0 ? 0 : Math.PI;
+    const edges: [number, number][] = [];
+    if (roadBlob(cx, cz)) {
+      for (const [dx, dz] of [[0, -1], [1, 0], [0, 1], [-1, 0]] as const) {
+        if (cellAt(cx + dx, cz + dz) !== '#') edges.push([dx, dz]);
+      }
+    } else if (mask === 5 || mask === 10) {
+      const side = ((cx + cz) / 3) % 2 === 0 ? 1 : -1;
+      edges.push(mask === 5 ? [side, 0] : [0, side]);
     }
-    this.bake(object, STREETLIGHT, buckets);
+    for (const [dx, dz] of edges) {
+      const { object } = this.game.assets.getFitted(STREETLIGHT, { height: 6 });
+      // Stand on the sidewalk edge, arm pointing over the road.
+      object.position.set(x + dx * TILE * 0.46, 0, z + dz * TILE * 0.46);
+      object.rotation.y = dx !== 0 ? (dx > 0 ? Math.PI / 2 : -Math.PI / 2) : dz > 0 ? 0 : Math.PI;
+      this.bake(object, STREETLIGHT, buckets);
+    }
   }
 
   private tree(body: RAPIER.RigidBody, x: number, z: number, hx: number, hz: number, buckets: Buckets): void {
