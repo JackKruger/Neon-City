@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { Entity, Game } from '../core/Game';
 import { Vehicle } from './Vehicle';
-import { CellRef, lanePoint, nextRoadCell } from '../world/RoadGraph';
+import { CellRef, lanePoint, nextRoadCell, pointWorld } from '../world/RoadGraph';
 import { speedLimitAt, worldToCell } from '../world/CityMap';
 
 const TURN_SPEED = 4;
@@ -27,9 +27,19 @@ export class TrafficCar implements Entity {
     this.from = from;
     this.to = to;
     this.waypoint = lanePoint(from, to, 0.18);
-    const start = lanePoint(from, to, 0.18);
-    const startPos = { x: start.x + (from.cx - to.cx) * 6, z: start.z + (from.cz - to.cz) * 6 };
-    const heading = Math.atan2(to.cx - from.cx, to.cz - from.cz);
+    // Spawn behind the first waypoint, facing along the real lane segment.
+    // Adjacent compiled lane nodes routinely fall in the same tile, so cell
+    // indices collapse to (0,0); derive heading and setback from exact world
+    // positions so cars enter aligned with the lane instead of facing south.
+    const a = pointWorld(from);
+    const b = pointWorld(to);
+    const dir = { x: b.x - a.x, z: b.z - a.z };
+    const length = Math.hypot(dir.x, dir.z) || 1;
+    const startPos = {
+      x: this.waypoint.x - (dir.x / length) * 6,
+      z: this.waypoint.z - (dir.z / length) * 6,
+    };
+    const heading = Math.atan2(dir.x, dir.z);
     this.vehicle = new Vehicle(game, model, startPos.x, startPos.z, heading);
     this.vehicle.driver = this;
     game.addVehicle(this.vehicle);
