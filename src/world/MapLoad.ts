@@ -1,4 +1,4 @@
-import { AuthoredMap, setAuthoredMap } from './CityMap';
+import { AuthoredMap, MapLayerName, setAuthoredMap } from './CityMap';
 
 /**
  * Fetch an authored map (produced by scripts/build-map.mjs) from /public/maps
@@ -36,6 +36,36 @@ export async function loadAuthoredMap(name: string): Promise<AuthoredMap> {
     }
   } else {
     console.warn(`[map] ${name}: suburb data unavailable; locality labels disabled`);
+  }
+  const layerNames = Array.isArray(meta.layers) ? meta.layers as MapLayerName[] : [];
+  if (layerNames.length > 0) {
+    const loaded = await Promise.all(layerNames.map(async (layerName) => {
+      try {
+        const response = await fetch(`/maps/${name}.${layerName}.bin`);
+        if (!response.ok) throw new Error(`${response.status}`);
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (bytes.length !== meta.width * meta.height) throw new Error('size mismatch');
+        return [layerName, bytes] as const;
+      } catch (error) {
+        console.warn(`[map] ${name}: ${layerName} layer unavailable (${error})`);
+        return null;
+      }
+    }));
+    map.layers = {};
+    for (const entry of loaded) {
+      if (entry) map.layers[entry[0]] = entry[1];
+    }
+  }
+  if (typeof meta.objects === 'string') {
+    try {
+      const response = await fetch(`/maps/${meta.objects}`);
+      if (!response.ok) throw new Error(`${response.status}`);
+      const objects = await response.json();
+      if (!objects || objects.version !== 1 || typeof objects.chunks !== 'object') throw new Error('invalid object index');
+      map.objectChunks = objects.chunks;
+    } catch (error) {
+      console.warn(`[map] ${name}: authored objects unavailable (${error})`);
+    }
   }
   setAuthoredMap(map);
   if (map.attribution) console.info(`[map] ${map.name}: ${map.attribution}`);

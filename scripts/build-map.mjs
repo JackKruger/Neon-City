@@ -22,6 +22,7 @@ import { deflateSync } from 'node:zlib';
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { enrichMelbourneMap, openDataHelp, openDataInputsPresent } from './map/open-data.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const TILE = 12; // keep in sync with src/core/const.ts
@@ -335,7 +336,13 @@ const PREVIEW_COLORS = {
 
 // --- main -------------------------------------------------------------------
 
-function main() {
+async function main() {
+  if (process.argv.includes('--list-open-data')) {
+    console.log('Place exported GeoJSON files in .map-cache/open-data using these names:\n');
+    console.log(openDataHelp());
+    console.log('\nUse --download-open-data to fetch supported City of Melbourne datasets.');
+    return;
+  }
   const data = fetchOverpass();
   const N = MAP.size * MAP.size;
   const roads = new Uint8Array(N);
@@ -453,7 +460,7 @@ function main() {
     oldToNew[oldIndex] = keptRelations.length;
     keptRelations.push(suburbRelations[oldIndex]);
   }
-  const suburbGrid = new Uint8Array(N).fill(255);
+  let suburbGrid = new Uint8Array(N).fill(255);
   const sumsX = new Float64Array(keptRelations.length);
   const sumsZ = new Float64Array(keptRelations.length);
   const keptCounts = new Uint32Array(keptRelations.length);
@@ -468,7 +475,7 @@ function main() {
     sumsZ[newIndex] += (gz - MAP.size / 2) * TILE;
     keptCounts[newIndex]++;
   }
-  const suburbs = keptRelations.map((relation, i) => ({
+  let suburbs = keptRelations.map((relation, i) => ({
     name: relation.tags.name,
     x: Math.round(sumsX[i] / keptCounts[i]),
     z: Math.round(sumsZ[i] / keptCounts[i]),
@@ -476,11 +483,29 @@ function main() {
 
   const outDir = join(ROOT, 'public', 'maps');
   mkdirSync(outDir, { recursive: true });
+  const enrich =
+    process.argv.includes('--open-data') ||
+    process.argv.includes('--download-open-data') ||
+    openDataInputsPresent(ROOT);
+  let enrichment = null;
+  if (enrich) {
+    enrichment = await enrichMelbourneMap({
+      root: ROOT,
+      grid,
+      baseSuburbs: { grid: suburbGrid, suburbs },
+      options: {
+        download: process.argv.includes('--download-open-data'),
+        refresh: process.argv.includes('--refresh-open-data'),
+      },
+    });
+    suburbs = enrichment.suburbs ?? suburbs;
+    suburbGrid = enrichment.suburbGrid ?? suburbGrid;
+  }
   writeFileSync(join(outDir, `${MAP.name}.bin`), grid);
   writeFileSync(join(outDir, `${MAP.name}.suburbs.bin`), suburbGrid);
 
   const meta = {
-    version: 2,
+    version: enrichment ? 3 : 2,
     name: MAP.name,
     width: MAP.size,
     height: MAP.size,
@@ -488,7 +513,14 @@ function main() {
     spawn,
     center: MAP.center,
     suburbs,
-    attribution: 'Map data © OpenStreetMap contributors (ODbL) — openstreetmap.org/copyright',
+    ...(enrichment ? {
+      layers: ['transport', 'speed', 'landuse', 'height', 'address', 'coverage'],
+      objects: `${MAP.name}.objects.json`,
+      sources: `${MAP.name}.sources.json`,
+    } : {}),
+    attribution: enrichment
+      ? 'Map data © OpenStreetMap contributors (ODbL); open data © City of Melbourne and Victorian Government (CC BY 4.0)'
+      : 'Map data © OpenStreetMap contributors (ODbL) — openstreetmap.org/copyright',
   };
   writeFileSync(join(outDir, `${MAP.name}.json`), JSON.stringify(meta, null, 2) + '\n');
 
@@ -513,4 +545,4 @@ function main() {
   console.log(`wrote public/maps/${MAP.name}.{bin,suburbs.bin,json,png}`);
 }
 
-main();
+await main();

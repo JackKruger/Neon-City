@@ -1,0 +1,62 @@
+import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import { MAP_SIZE } from './geo.mjs';
+import { COVERAGE, LAND_USE, TRANSPORT, enrichMelbourneMap } from './open-data.mjs';
+
+const polygon = (name, ring, extra = {}) => ({
+  type: 'Feature',
+  properties: { name, ...extra },
+  geometry: { type: 'Polygon', coordinates: [ring] },
+});
+const point = (properties, coordinates) => ({ type: 'Feature', properties, geometry: { type: 'Point', coordinates } });
+const line = (properties, coordinates) => ({ type: 'Feature', properties, geometry: { type: 'LineString', coordinates } });
+
+test('open data enrichment emits all runtime contracts', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'neon-city-map-'));
+  try {
+    const cache = join(root, '.map-cache', 'open-data');
+    mkdirSync(cache, { recursive: true });
+    const writeGeo = (name, features) => writeFileSync(join(cache, name), JSON.stringify({ type: 'FeatureCollection', features }));
+    const block = [[144.9596, -37.8346], [144.9604, -37.8346], [144.9604, -37.8354], [144.9596, -37.8354], [144.9596, -37.8346]];
+    const building = [[144.9599, -37.8349], [144.9601, -37.8349], [144.9601, -37.8351], [144.9599, -37.8351], [144.9599, -37.8349]];
+    const road = [[144.9595, -37.835], [144.9605, -37.835]];
+
+    writeGeo('vicmap-planning.geojson', [polygon('Commercial 1 Zone', block)]);
+    writeGeo('vicmap-transport.geojson', [line({ feature_type: 'Road Bridge' }, road)]);
+    writeGeo('speed-zones.geojson', [line({ speed_zone: 40 }, road)]);
+    writeGeo('building-footprints.geojson', [polygon('building', building, { structure_id: 'A', structure_extrusion: 28, roof_type: 'Flat' })]);
+    writeGeo('urban-forest-trees.geojson', [point({ common_name: 'Elm', tree_height: 9 }, [144.96025, -37.8348])]);
+    writeGeo('street-furniture.geojson', [point({ asset_type: 'Bollard' }, [144.9603, -37.8349])]);
+    writeGeo('public-art.geojson', [point({ asset_type: 'Monument' }, [144.96035, -37.8349])]);
+    writeGeo('parking-bays.geojson', Array.from({ length: 4 }, (_, i) => point({ bay_id: i }, [144.9597 + i * 0.0001, -37.835])));
+    writeFileSync(join(cache, 'vicmap-address.csv'), 'LATITUDE,LONGITUDE,ROAD_NAME\n-37.83505,144.96005,Swanston Street\n');
+    writeGeo('geoscape-localities.geojson', [polygon('Melbourne', block, { locality_name: 'Melbourne' })]);
+
+    const grid = new Uint8Array(MAP_SIZE * MAP_SIZE).fill(3);
+    const result = await enrichMelbourneMap({ root, grid, baseSuburbs: null });
+    const output = join(root, 'public', 'maps');
+    const transport = new Uint8Array(readFileSync(join(output, 'melbourne.transport.bin')));
+    const speed = new Uint8Array(readFileSync(join(output, 'melbourne.speed.bin')));
+    const landUse = new Uint8Array(readFileSync(join(output, 'melbourne.landuse.bin')));
+    const height = new Uint8Array(readFileSync(join(output, 'melbourne.height.bin')));
+    const address = new Uint8Array(readFileSync(join(output, 'melbourne.address.bin')));
+    const coverage = new Uint8Array(readFileSync(join(output, 'melbourne.coverage.bin')));
+    const objects = JSON.parse(readFileSync(join(output, 'melbourne.objects.json'), 'utf8'));
+
+    for (const layer of [transport, speed, landUse, height, address, coverage]) assert.equal(layer.length, MAP_SIZE * MAP_SIZE);
+    assert.ok(transport.some((value) => (value & (TRANSPORT.ROAD | TRANSPORT.BRIDGE)) !== 0));
+    assert.ok(speed.some((value) => value === 2));
+    assert.ok(landUse.some((value) => value === LAND_USE.COMMERCIAL));
+    assert.ok(height.some((value) => value === 28));
+    assert.ok(address.some((value) => value > 0));
+    assert.ok(coverage.some((value) => (value & COVERAGE.BUILDING) !== 0));
+    const authored = Object.values(objects.chunks).flat();
+    for (const kind of ['building', 'tree', 'bollard', 'art', 'parking']) assert.ok(authored.some((item) => item.kind === kind), kind);
+    assert.equal(result.suburbs?.[0]?.name, 'Melbourne');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

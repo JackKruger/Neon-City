@@ -19,6 +19,32 @@ export type Cell = '#' | 'C' | 'S' | 'P' | '.' | '~';
 /** Byte codes used by authored .bin map files; index = code. */
 export const CODE_TO_CELL: readonly Cell[] = ['.', '#', 'C', 'S', 'P', '~'];
 
+export const TransportFlag = {
+  Road: 1,
+  Bridge: 2,
+  Tunnel: 4,
+  Rail: 8,
+  Tram: 16,
+  Footpath: 32,
+  Roundabout: 64,
+} as const;
+
+export const CoverageFlag = {
+  Building: 1,
+  Tree: 2,
+  Parking: 4,
+  Prop: 8,
+  Address: 16,
+} as const;
+
+export type AuthoredObject =
+  | { kind: 'building'; x: number; z: number; rotation: number; width: number; depth: number; height: number; style: 'commercial' | 'skyscraper' | 'suburban' | 'industrial'; roof?: string }
+  | { kind: 'tree'; x: number; z: number; height: number; variant: 'small' | 'large' }
+  | { kind: 'parking'; x: number; z: number; rotation: number }
+  | { kind: 'bollard' | 'bicycle-rail' | 'bin' | 'fountain' | 'seat' | 'planter' | 'barbecue' | 'art'; x: number; z: number; rotation: number };
+
+export type MapLayerName = 'transport' | 'speed' | 'landuse' | 'height' | 'address' | 'coverage';
+
 export interface AuthoredMap {
   name: string;
   /** Grid dimensions in cells; cell (0,0) sits at the grid center. */
@@ -28,6 +54,8 @@ export interface AuthoredMap {
   /** Named locality anchors and a parallel byte grid (255 = no suburb). */
   suburbs?: { name: string; x: number; z: number }[];
   suburbGrid?: Uint8Array;
+  layers?: Partial<Record<MapLayerName, Uint8Array>>;
+  objectChunks?: Record<string, AuthoredObject[]>;
   /** Suggested player spawn (world meters, on a road cell). */
   spawn: { x: number; z: number };
   attribution: string;
@@ -72,6 +100,47 @@ export function cellAt(cx: number, cz: number): Cell {
   if (zone < 0.4) return r < 0.75 ? 'C' : r < 0.9 ? '.' : 'P'; // downtown
   if (zone < 0.75) return r < 0.7 ? 'S' : r < 0.85 ? 'P' : 'C'; // suburbs
   return r < 0.5 ? 'P' : r < 0.9 ? 'S' : '.'; // green belt
+}
+
+function authoredIndex(cx: number, cz: number): number | null {
+  if (!authored) return null;
+  const gx = cx + authored.width / 2;
+  const gz = cz + authored.height / 2;
+  if (gx < 0 || gz < 0 || gx >= authored.width || gz >= authored.height) return null;
+  return gx + gz * authored.width;
+}
+
+function layerAt(name: MapLayerName, cx: number, cz: number): number {
+  const index = authoredIndex(cx, cz);
+  return index === null ? 0 : authored?.layers?.[name]?.[index] ?? 0;
+}
+
+export function transportAt(cx: number, cz: number): number {
+  return layerAt('transport', cx, cz);
+}
+
+export function speedLimitAt(cx: number, cz: number): number {
+  return [50, 30, 40, 50, 60, 70][layerAt('speed', cx, cz)] ?? 50;
+}
+
+export function landUseAt(cx: number, cz: number): number {
+  return layerAt('landuse', cx, cz);
+}
+
+export function buildingHeightAt(cx: number, cz: number): number {
+  return layerAt('height', cx, cz);
+}
+
+export function addressDensityAt(cx: number, cz: number): number {
+  return layerAt('address', cx, cz);
+}
+
+export function hasCoverage(cx: number, cz: number, flag: number): boolean {
+  return (layerAt('coverage', cx, cz) & flag) !== 0;
+}
+
+export function authoredObjectsForChunk(kx: number, kz: number): readonly AuthoredObject[] {
+  return authored?.objectChunks?.[`${kx},${kz}`] ?? [];
 }
 
 /** Center of a cell in world coordinates (cell centers sit on TILE multiples). */

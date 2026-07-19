@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "key": "planning",
+      "title": "Vicmap Planning",
+      "status": "missing",
+      "file": "vicmap-planning.geojson"
+    },
+    {
+      "key": "clue",
+      "title": "City of Melbourne CLUE Floor Space",
+      "status": "missing",
+      "file": "clue-floor-space.geojson"
+    },
+    {
+      "key": "transport",
+      "title": "Vicmap Transport",
+      "status": "missing",
+      "file": "vicmap-transport.geojson"
+    },
+    {
+      "key": "speeds",
+      "title": "Victorian Speed Zones",
+      "status": "missing",
+      "file": "speed-zones.geojson"
+    },
+    {
+      "key": "dsm",
+      "title": "City of Melbourne Digital Surface Model",
+      "status": "missing",
+      "file": "melbourne-dsm.tif"
+    },
+    {
+      "key": "buildings",
+      "title": "City of Melbourne 2023 Building Footprints",
+      "license": "CC BY 4.0",
+      "status": "loaded",
+      "file": "building-footprints.geojson",
+      "records": 41701,
+      "retrievedAt": "2026-07-19T01:12:41.866Z"
+    },
+    {
+      "key": "trees",
+      "title": "City of Melbourne Urban Forest Trees",
+      "license": "CC BY 4.0",
+      "status": "loaded",
+      "file": "urban-forest-trees.geojson",
+      "records": 82064,
+      "retrievedAt": "2026-07-19T01:13:05.417Z"
+    },
+    {
+      "key": "canopy",
+      "title": "City of Melbourne Tree Canopies 2021",
+      "license": "CC BY 4.0",
+      "status": "loaded",
+      "file": "tree-canopies.geojson",
+      "records": 57980,
+      "retrievedAt": "2026-07-19T01:13:47.346Z"
+    },
+    {
+      "key": "furniture",
+      "title": "City of Melbourne Street Furniture",
+      "license": "CC BY 4.0",
+      "status": "loaded",
+      "file": "street-furniture.geojson",
+      "records": 23426,
+      "retrievedAt": "2026-07-19T01:13:54.128Z"
+    },
+    {
+      "key": "art",
+      "title": "City of Melbourne Public Artworks, Fountains and Monuments",
+      "license": "CC BY 4.0",
+      "status": "loaded",
+      "file": "public-art.geojson",
+      "records": 261,
+      "retrievedAt": "2026-07-19T01:13:54.491Z"
+    },
+    {
+      "key": "parking",
+      "title": "City of Melbourne On-street Parking Bays",
+      "license": "CC BY 4.0",
+      "status": "loaded",
+      "file": "parking-bays.geojson",
+      "records": 29053,
+      "retrievedAt": "2026-07-19T01:13:58.052Z"
+    },
+    {
+      "key": "addresses",
+      "title": "Vicmap Address",
+      "status": "missing",
+      "file": "vicmap-address.geojson"
+    },
+    {
+      "key": "gnaf",
+      "title": "G-NAF",
+      "status": "missing",
+      "file": "gnaf-address.geojson"
+    },
+    {
+      "key": "geoscape",
+      "title": "Geoscape Localities",
+      "status": "missing",
+      "file": "geoscape-localities.geojson"
+    },
+    {
+      "key": "abs",
+      "title": "ABS ASGS Boundaries",
+      "status": "missing",
+      "file": "abs-localities.geojson"
+    }
+  ],
+  "results": {
+    "landuse": 0,
+    "transport": 0,
+    "speeds": 0,
+    "buildings": {
+      "accepted": 11990,
+      "rejected": 15360
+    },
+    "trees": 41955,
+    "canopyFallbackTrees": 5302,
+    "furniture": 16167,
+    "art": 239,
+    "parking": 5539,
+    "addresses": 0,
+    "thinnedObjects": {
+      "tree": 1272
+    }
+  }
+}

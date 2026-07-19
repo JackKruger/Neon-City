@@ -4,7 +4,19 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CIVILIAN_CARS, PALETTE, TILE } from '../core/const';
 import { Vehicle } from '../entities/Vehicle';
 import type { Game } from '../core/Game';
-import { cellAt, cellHash, cellToWorld, roadMask, worldToCell } from './CityMap';
+import {
+  AuthoredObject,
+  CoverageFlag,
+  TransportFlag,
+  authoredObjectsForChunk,
+  cellAt,
+  cellHash,
+  cellToWorld,
+  hasCoverage,
+  roadMask,
+  transportAt,
+  worldToCell,
+} from './CityMap';
 
 const COMMERCIAL = 'abcdefghijklmn'.split('').map((c) => `commercial/building-${c}`);
 const SKYSCRAPERS = 'abcde'.split('').map((c) => `commercial/building-skyscraper-${c}`);
@@ -20,6 +32,7 @@ const ROADS = [
   'road-crossroad-line',
   'road-end',
   'road-square',
+  'road-bridge',
 ].map((n) => `roads/${n}`);
 const TREES = ['suburban/tree-large', 'suburban/tree-small'];
 const STREETLIGHT = 'roads/light-curved';
@@ -153,6 +166,12 @@ export class City {
       metalness: 0.1,
     }),
   };
+  private propMats = {
+    metal: new THREE.MeshStandardMaterial({ color: 0x56616a, roughness: 0.65, metalness: 0.35 }),
+    timber: new THREE.MeshStandardMaterial({ color: 0x8b6245, roughness: 0.85 }),
+    civic: new THREE.MeshStandardMaterial({ color: 0x489fb5, roughness: 0.55 }),
+    art: new THREE.MeshStandardMaterial({ color: 0xe85d75, roughness: 0.35, metalness: 0.2 }),
+  };
 
   constructor(private game: Game) {
     // One flat ground slab covers the whole (unbounded) city; chunks only
@@ -244,6 +263,10 @@ export class City {
             // instead of becoming a patchwork of fake intersections.
             if (!roadBlob(cx, cz)) {
               let { model, rot } = ROAD_TABLE.get(mask) ?? { model: 'roads/road-square', rot: 0 };
+              if ((transportAt(cx, cz) & TransportFlag.Bridge) && (mask === 5 || mask === 10)) {
+                model = 'roads/road-bridge';
+                rot = mask === 10 ? Math.PI / 2 : 0;
+              }
               // Zebra crossing on straight segments entering an intersection.
               if (model === 'roads/road-straight' && this.nextToIntersection(cx, cz)) {
                 model = 'roads/road-crossing';
@@ -254,14 +277,14 @@ export class City {
               this.bake(object, model, buckets);
             }
             this.streetlight(cx, cz, x, z, mask, buckets);
-            this.maybeParkCar(cx, cz, x, z, mask, vehicles);
+            if (!hasCoverage(cx, cz, CoverageFlag.Parking)) this.maybeParkCar(cx, cz, x, z, mask, vehicles);
             break;
           }
           case 'C':
             this.groundPlane(x, z, 'pavement', buckets);
-            if (roadMask(cx, cz) !== 0 || this.roadNear(cx, cz, 2)) {
+            if (!hasCoverage(cx, cz, CoverageFlag.Building) && (roadMask(cx, cz) !== 0 || this.roadNear(cx, cz, 2))) {
               this.building(body, cx, cz, x, z, buckets);
-            } else if (cellHash(cx, cz, 7) < 0.25) {
+            } else if (!hasCoverage(cx, cz, CoverageFlag.Tree) && !hasCoverage(cx, cz, CoverageFlag.Building) && cellHash(cx, cz, 7) < 0.25) {
               // Deep inside a roadless block: an open plaza, not a building
               // nobody could ever reach.
               this.tree(body, x + TILE * 0.2, z - TILE * 0.15, cx, cz, buckets);
@@ -269,10 +292,10 @@ export class City {
             break;
           case 'S':
             this.groundPlane(x, z, 'grass', buckets);
-            if (roadMask(cx, cz) !== 0) {
+            if (!hasCoverage(cx, cz, CoverageFlag.Building) && roadMask(cx, cz) !== 0) {
               this.building(body, cx, cz, x, z, buckets);
-              if (cellHash(cx, cz, 7) < 0.45) this.tree(body, x + TILE * 0.38, z + TILE * 0.38, cx, cz, buckets);
-            } else {
+              if (!hasCoverage(cx, cz, CoverageFlag.Tree) && cellHash(cx, cz, 7) < 0.45) this.tree(body, x + TILE * 0.38, z + TILE * 0.38, cx, cz, buckets);
+            } else if (!hasCoverage(cx, cz, CoverageFlag.Tree) && !hasCoverage(cx, cz, CoverageFlag.Building)) {
               // Lots with no street frontage are the block's backyards.
               for (let i = 0, n = 1 + (cellHash(cx, cz, 9) < 0.4 ? 1 : 0); i < n; i++) {
                 const ox = (cellHash(cx, cz, 10 + i) - 0.5) * TILE * 0.7;
@@ -283,7 +306,7 @@ export class City {
             break;
           case 'P':
             this.groundPlane(x, z, 'grass', buckets);
-            for (let i = 0; i < 3; i++) {
+            for (let i = 0; i < (hasCoverage(cx, cz, CoverageFlag.Tree) ? 0 : 3); i++) {
               const ox = (cellHash(cx, cz, 10 + i) - 0.5) * TILE * 0.8;
               const oz = (cellHash(cx, cz, 20 + i) - 0.5) * TILE * 0.8;
               this.tree(body, x + ox, z + oz, cx, cz + i, buckets);
@@ -297,6 +320,10 @@ export class City {
             break;
         }
       }
+    }
+
+    for (const object of authoredObjectsForChunk(kx, kz)) {
+      this.authoredObject(object, body, buckets, vehicles);
     }
 
     // Sand base under the whole chunk (shows through at road seams).
@@ -386,6 +413,149 @@ export class City {
     );
     this.game.addVehicle(v);
     vehicles.push(v);
+  }
+
+  private authoredObject(
+    feature: AuthoredObject,
+    body: RAPIER.RigidBody,
+    buckets: Buckets,
+    vehicles: Vehicle[]
+  ): void {
+    if (feature.kind === 'building') {
+      this.authoredBuilding(feature, body, buckets);
+    } else if (feature.kind === 'tree') {
+      this.authoredTree(feature, body, buckets);
+    } else if (feature.kind === 'parking') {
+      this.authoredParkedCar(feature, vehicles);
+    } else {
+      this.authoredProp(feature, body, buckets);
+    }
+  }
+
+  private authoredBuilding(
+    feature: Extract<AuthoredObject, { kind: 'building' }>,
+    body: RAPIER.RigidBody,
+    buckets: Buckets
+  ): void {
+    const { cx, cz } = worldToCell(feature.x, feature.z);
+    const models = feature.style === 'industrial'
+      ? INDUSTRIAL
+      : feature.style === 'suburban'
+        ? SUBURBAN
+        : feature.style === 'skyscraper'
+          ? SKYSCRAPERS
+          : COMMERCIAL;
+    const model = models[Math.floor(cellHash(cx, cz, 91) * models.length)];
+    const size = this.game.assets.size(model);
+    const object = this.game.assets.get(model);
+    object.scale.set(
+      Math.max(0.1, feature.width / size.x),
+      Math.max(0.1, feature.height / size.y),
+      Math.max(0.1, feature.depth / size.z)
+    );
+    object.position.set(feature.x, 0, feature.z);
+    object.rotation.y = feature.rotation;
+    this.bake(object, model, buckets);
+    this.game.world.createCollider(
+      RAPIER.ColliderDesc.cuboid(feature.width / 2, feature.height / 2, feature.depth / 2)
+        .setTranslation(feature.x, feature.height / 2, feature.z)
+        .setRotation({ x: 0, y: Math.sin(feature.rotation / 2), z: 0, w: Math.cos(feature.rotation / 2) }),
+      body
+    );
+  }
+
+  private authoredTree(
+    feature: Extract<AuthoredObject, { kind: 'tree' }>,
+    body: RAPIER.RigidBody,
+    buckets: Buckets
+  ): void {
+    const model = feature.variant === 'small' ? TREES[1] : TREES[0];
+    const { object, scale } = this.game.assets.getFitted(model, { height: feature.height });
+    object.position.set(feature.x, 0, feature.z);
+    object.rotation.y = cellHash(Math.round(feature.x), Math.round(feature.z), 92) * Math.PI * 2;
+    this.bake(object, model, buckets);
+    const height = this.game.assets.size(model).y * scale;
+    this.game.world.createCollider(
+      RAPIER.ColliderDesc.cuboid(0.22, height / 2, 0.22).setTranslation(feature.x, height / 2, feature.z),
+      body
+    );
+  }
+
+  private authoredParkedCar(
+    feature: Extract<AuthoredObject, { kind: 'parking' }>,
+    vehicles: Vehicle[]
+  ): void {
+    const { cx, cz } = worldToCell(feature.x, feature.z);
+    const side = cellHash(cx, cz, 93) < 0.5 ? -1 : 1;
+    const offset = TILE * 0.3 * side;
+    const x = feature.x + Math.cos(feature.rotation) * offset;
+    const z = feature.z - Math.sin(feature.rotation) * offset;
+    const model = CIVILIAN_CARS[Math.floor(cellHash(cx, cz, 94) * CIVILIAN_CARS.length)];
+    const vehicle = new Vehicle(this.game, model, x, z, feature.rotation + (side < 0 ? Math.PI : 0));
+    this.game.addVehicle(vehicle);
+    vehicles.push(vehicle);
+  }
+
+  private authoredProp(
+    feature: Exclude<AuthoredObject, { kind: 'building' | 'tree' | 'parking' }>,
+    body: RAPIER.RigidBody,
+    buckets: Buckets
+  ): void {
+    let geometry: THREE.BufferGeometry;
+    let material: THREE.Material = this.propMats.metal;
+    let collider: { hx: number; hy: number; hz: number } | null = null;
+    switch (feature.kind) {
+      case 'bollard':
+        geometry = new THREE.CylinderGeometry(0.14, 0.18, 1.05, 8);
+        geometry.translate(0, 0.525, 0);
+        break;
+      case 'bicycle-rail':
+        geometry = new THREE.BoxGeometry(1.1, 0.75, 0.08);
+        geometry.translate(0, 0.45, 0);
+        break;
+      case 'bin':
+        geometry = new THREE.BoxGeometry(0.55, 0.9, 0.55);
+        geometry.translate(0, 0.45, 0);
+        break;
+      case 'seat':
+        geometry = new THREE.BoxGeometry(1.7, 0.25, 0.55);
+        geometry.translate(0, 0.55, 0);
+        material = this.propMats.timber;
+        break;
+      case 'planter':
+        geometry = new THREE.CylinderGeometry(0.55, 0.48, 0.7, 10);
+        geometry.translate(0, 0.35, 0);
+        material = this.propMats.civic;
+        break;
+      case 'fountain':
+        geometry = new THREE.CylinderGeometry(1.4, 1.6, 0.8, 16);
+        geometry.translate(0, 0.4, 0);
+        material = this.propMats.civic;
+        collider = { hx: 1.5, hy: 0.4, hz: 1.5 };
+        break;
+      case 'barbecue':
+        geometry = new THREE.BoxGeometry(1.1, 1.1, 0.8);
+        geometry.translate(0, 0.55, 0);
+        collider = { hx: 0.55, hy: 0.55, hz: 0.4 };
+        break;
+      case 'art':
+        geometry = new THREE.IcosahedronGeometry(1.2, 0);
+        geometry.translate(0, 1.25, 0);
+        material = this.propMats.art;
+        collider = { hx: 1.1, hy: 1.2, hz: 1.1 };
+        break;
+    }
+    geometry.applyMatrix4(
+      new THREE.Matrix4().makeRotationY(feature.rotation).setPosition(feature.x, 0, feature.z)
+    );
+    this.bucket(material, geometry, buckets);
+    if (collider) {
+      this.game.world.createCollider(
+        RAPIER.ColliderDesc.cuboid(collider.hx, collider.hy, collider.hz)
+          .setTranslation(feature.x, collider.hy, feature.z),
+        body
+      );
+    }
   }
 
   private building(body: RAPIER.RigidBody, cx: number, cz: number, x: number, z: number, buckets: Buckets): void {

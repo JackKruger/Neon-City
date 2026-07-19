@@ -2,9 +2,8 @@ import * as THREE from 'three';
 import type { Entity, Game } from '../core/Game';
 import { Vehicle } from './Vehicle';
 import { CellRef, lanePoint, nextRoadCell } from '../world/RoadGraph';
-import { worldToCell } from '../world/CityMap';
+import { speedLimitAt, worldToCell } from '../world/CityMap';
 
-const CRUISE_SPEED = 8;
 const TURN_SPEED = 4;
 
 /** AI driver that follows the road lane grid using the physics Vehicle. */
@@ -68,7 +67,10 @@ export class TrafficCar implements Entity {
     const steer = -THREE.MathUtils.clamp(angle / 0.45, -1, 1);
 
     const turning = Math.abs(angle) > 0.25;
-    let target = turning ? TURN_SPEED : CRUISE_SPEED;
+    // Preserve the existing 8 m/s feel for a 50 km/h street while allowing
+    // authored limits to slow shopping strips and speed up arterials.
+    const roadLimit = Math.min(12, speedLimitAt(this.to.cx, this.to.cz) * 0.16);
+    let target = turning ? Math.min(TURN_SPEED, roadLimit) : roadLimit;
     if (this.blockedAhead()) target = 0;
 
     const speed = v.forwardSpeed();

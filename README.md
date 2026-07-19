@@ -73,6 +73,9 @@ node scripts/build-map.mjs          # uses cached Overpass data if present
 node scripts/build-map.mjs --fresh  # re-download from Overpass
 ```
 
+Authoritative Victorian and City of Melbourne layers can be added through the
+offline enrichment pipeline described in [`docs/open-data.md`](docs/open-data.md).
+
 The `.png` is a preview of the generated grid (roads, water, parks,
 commercial/suburban lots); tweak the `MAP` constants at the top of the
 script to move the bounding box or spawn point.

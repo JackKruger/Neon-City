@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "name": "melbourne",
   "width": 720,
   "height": 720,
@@ -184,5 +184,15 @@
       "z": 2177
     }
   ],
-  "attribution": "Map data © OpenStreetMap contributors (ODbL) — openstreetmap.org/copyright"
+  "layers": [
+    "transport",
+    "speed",
+    "landuse",
+    "height",
+    "address",
+    "coverage"
+  ],
+  "objects": "melbourne.objects.json",
+  "sources": "melbourne.sources.json",
+  "attribution": "Map data © OpenStreetMap contributors (ODbL); open data © City of Melbourne and Victorian Government (CC BY 4.0)"
 }
