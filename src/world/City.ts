@@ -4,6 +4,8 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CIVILIAN_CARS, PALETTE, TILE } from '../core/const';
 import { Vehicle } from '../entities/Vehicle';
 import type { Game } from '../core/Game';
+import type { CityStreamer } from './CityStreamer';
+import { setRoadNetwork } from './RoadGraph';
 import {
   AuthoredObject,
   CoverageFlag,
@@ -152,7 +154,7 @@ export function chunkOfWorld(x: number, z: number): { kx: number; kz: number } {
  * is self-contained: merged render meshes plus one fixed rigid body carrying
  * all of its colliders, so unloading is one removeRigidBody call.
  */
-export class City {
+export class City implements CityStreamer {
   private chunks = new Map<string, Chunk>();
   private queue: { kx: number; kz: number }[] = [];
   private queued = new Set<string>();
@@ -186,13 +188,15 @@ export class City {
     suburban: new THREE.MeshStandardMaterial({ color: 0xd9b38c, roughness: 0.88 }),
     industrial: new THREE.MeshStandardMaterial({ color: 0x899096, roughness: 0.82, metalness: 0.12 }),
   };
+  private safetyBody: RAPIER.RigidBody;
 
   constructor(private game: Game) {
+    setRoadNetwork(null);
     // Deep tunnelling net. Streamed heightfields are the actual terrain.
-    const ground = game.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    this.safetyBody = game.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
     game.world.createCollider(
       RAPIER.ColliderDesc.cuboid(1e5, 0.5, 1e5).setTranslation(0, -30.5, 0),
-      ground
+      this.safetyBody
     );
   }
 
@@ -201,11 +205,17 @@ export class City {
   }
 
   /** Build the 3x3 chunks around a spawn point synchronously (boot only). */
-  prewarm(x: number, z: number): void {
+  async prewarm(x: number, z: number): Promise<void> {
     const { kx, kz } = chunkOfWorld(x, z);
     for (let dz = -1; dz <= 1; dz++) {
       for (let dx = -1; dx <= 1; dx++) this.buildChunk(kx + dx, kz + dz);
     }
+  }
+
+  dispose(): void {
+    for (const chunk of [...this.chunks.values()]) this.unloadChunk(chunk);
+    this.game.world.removeRigidBody(this.safetyBody);
+    setRoadNetwork(null);
   }
 
   /**

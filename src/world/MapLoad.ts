@@ -4,7 +4,10 @@ import { AuthoredMap, MapLayerName, setAuthoredMap } from './CityMap';
  * Fetch an authored map (produced by scripts/build-map.mjs) from /public/maps
  * and install it as the world's map source. Call before building any chunks.
  */
-export async function loadAuthoredMap(name: string): Promise<AuthoredMap> {
+export async function loadAuthoredMap(
+  name: string,
+  options: { loadObjects?: boolean } = {}
+): Promise<AuthoredMap> {
   const [metaRes, binRes, suburbRes] = await Promise.all([
     fetch(`/maps/${name}.json`),
     fetch(`/maps/${name}.bin`),
@@ -79,7 +82,7 @@ export async function loadAuthoredMap(name: string): Promise<AuthoredMap> {
       if (entry) map.layers[entry[0]] = entry[1];
     }
   }
-  if (typeof meta.objects === 'string') {
+  if (options.loadObjects !== false && typeof meta.objects === 'string') {
     try {
       const response = await fetch(`/maps/${meta.objects}`);
       if (!response.ok) throw new Error(`${response.status}`);

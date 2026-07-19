@@ -9,6 +9,8 @@ import { MapOverlay } from '../ui/MapOverlay';
 import { AudioSys } from './AudioSys';
 import { CIVILIAN_CARS, GRAVITY, PALETTE, STEP } from './const';
 import { CITY_ASSETS, City } from '../world/City';
+import { CompiledCity } from '../world/CompiledCity';
+import type { CityStreamer } from '../world/CityStreamer';
 import {
   cellAt,
   cellToWorld,
@@ -29,7 +31,9 @@ export interface Entity {
   update(dt: number): void;
 }
 
-const PRELOAD = [...CIVILIAN_CARS, 'cars/police', ...CITY_ASSETS];
+const ACTOR_ASSETS = [...CIVILIAN_CARS, 'cars/police'];
+const LEGACY_ASSETS = [...ACTOR_ASSETS, ...CITY_ASSETS];
+type MapMode = 'procedural' | 'legacy' | 'compiled';
 
 export class Game {
   readonly scene = new THREE.Scene();
@@ -51,26 +55,31 @@ export class Game {
   readonly vehicles: Vehicle[] = [];
   readonly players: Player[] = [];
   readonly audio = new AudioSys();
-  readonly city: City;
+  readonly city: CityStreamer;
   npcs!: Npcs;
   paused = false;
 
   static async create(container: HTMLElement): Promise<Game> {
-    const procedural = new URLSearchParams(location.search).get('map') === 'procedural';
-    if (procedural) setAuthoredMap(null);
+    const requestedMode = new URLSearchParams(location.search).get('map');
+    const mode: MapMode = requestedMode === 'procedural' || requestedMode === 'compiled' || requestedMode === 'legacy'
+      ? requestedMode
+      : 'legacy';
+    if (mode === 'procedural') setAuthoredMap(null);
     const [assets] = await Promise.all([
       (async () => {
         const a = new Assets();
-        await a.preload(PRELOAD);
+        await a.preload(mode === 'compiled' ? ACTOR_ASSETS : LEGACY_ASSETS);
         return a;
       })(),
       RAPIER.init(),
-      procedural ? Promise.resolve(null) : loadAuthoredMap('melbourne'),
+      mode === 'procedural' ? Promise.resolve(null) : loadAuthoredMap('melbourne', { loadObjects: mode === 'legacy' }),
     ]);
-    return new Game(container, assets);
+    const game = new Game(container, assets, mode);
+    await game.initialize();
+    return game;
   }
 
-  private constructor(container: HTMLElement, assets: Assets) {
+  private constructor(container: HTMLElement, assets: Assets, mode: MapMode) {
     this.assets = assets;
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setSize(container.clientWidth, container.clientHeight);
@@ -100,14 +109,18 @@ export class Game {
     for (const name of CITY_ASSETS) {
       if (name.startsWith('roads/road-')) this.assets.tint(name, 0x666c7c);
     }
-    this.city = new City(this);
+    this.city = mode === 'compiled' ? new CompiledCity(this) : new City(this);
+  }
+
+  private async initialize(): Promise<void> {
+    const map = getAuthoredMap();
     const requestedSpawn = map?.spawn ?? { x: 0, z: 0 };
     const requestedCell = worldToCell(requestedSpawn.x, requestedSpawn.z);
     const safeSpawnCell = nearestRoadCell(requestedCell.cx, requestedCell.cz);
     const spawn = safeSpawnCell
       ? cellToWorld(safeSpawnCell.cx, safeSpawnCell.cz)
       : requestedSpawn;
-    this.city.prewarm(spawn.x, spawn.z);
+    await this.city.prewarm(spawn.x, spawn.z);
     // Register freshly-created fixed colliders with Rapier's scene queries so
     // the first character can raycast its exact spawn surface immediately.
     this.world.step(this.eventQueue);

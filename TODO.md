@@ -2,11 +2,11 @@
 
 ## Offline compiled Melbourne map
 
-- [ ] Replace runtime city construction with a versioned, offline-compiled chunk pipeline.
+- [ ] Complete the full-city rollout of the versioned, offline-compiled chunk pipeline (the 5×5 spawn pilot and runtime cutover are implemented).
   - Treat OSM, Melbourne open data, SRTM elevation, and semantic layers as source inputs; compile terrain, roads, buildings, static props, physics, and navigation into deterministic per-chunk assets.
   - Use a manifest to define coordinate space, format versions, chunk bounds, dependencies, and compatibility. Render chunks should ultimately be optimized GLBs, with compact companion files for heightfields, simple colliders, road/navigation graphs, and gameplay metadata.
   - Correct source data before baking it: flatten complete authored building footprints with blended terrain pads, clip cross-boundary roads and buildings into every affected chunk, retain stable source IDs, and keep parked vehicles stationary on slopes.
-  - Build and verify one representative spawn-area chunk through both the current and compiled paths before compiling all of Melbourne. Keep `?map=procedural` as a lightweight development and regression mode.
+  - The spawn-area pilot is committed and verified through both paths. Compile and exercise all of Melbourne before changing the default from `?map=legacy`; keep `?map=procedural` as the lightweight regression mode.
   - Add small synthetic compiler tests for projection, source-tile selection, terrain sampling, shoreline treatment, building pads, road grades, quantization, chunk clipping, and manifest compatibility.
 
 ## Characters and physics

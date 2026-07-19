@@ -1,5 +1,6 @@
 import { TILE } from '../core/const';
 import { cellToWorld, isRoad, nearestRoadCell, worldToCell } from './CityMap';
+import type { CompiledNavEdge, CompiledNavNode } from './CompiledFormat';
 
 export interface CellRef {
   cx: number;
@@ -13,14 +14,100 @@ const DIRS: CellRef[] = [
   { cx: -1, cz: 0 }, // W
 ];
 
+export interface RoadNetwork {
+  neighbors(cell: CellRef): CellRef[];
+  nearest(cell: CellRef): CellRef | null;
+}
+
+class CellRoadNetwork implements RoadNetwork {
+  neighbors(cell: CellRef): CellRef[] {
+    const output: CellRef[] = [];
+    for (const direction of DIRS) {
+      const neighbor = { cx: cell.cx + direction.cx, cz: cell.cz + direction.cz };
+      if (isRoad(neighbor.cx, neighbor.cz)) output.push(neighbor);
+    }
+    return output;
+  }
+
+  nearest(cell: CellRef): CellRef | null {
+    return nearestRoadCell(cell.cx, cell.cz);
+  }
+}
+
+const cellKey = (cell: CellRef): string => `${cell.cx},${cell.cz}`;
+
+/** Navigation graph populated and removed with compiled chunks. */
+export class CompiledRoadNetwork implements RoadNetwork {
+  private chunks = new Map<string, { nodes: CompiledNavNode[]; edges: CompiledNavEdge[] }>();
+  private nodes = new Set<string>();
+  private adjacency = new Map<string, CellRef[]>();
+
+  registerChunk(key: string, nodes: CompiledNavNode[], edges: CompiledNavEdge[]): void {
+    this.chunks.set(key, { nodes, edges });
+    this.rebuild();
+  }
+
+  unregisterChunk(key: string): void {
+    this.chunks.delete(key);
+    this.rebuild();
+  }
+
+  neighbors(cell: CellRef): CellRef[] {
+    return this.adjacency.get(cellKey(cell)) ?? [];
+  }
+
+  nearest(cell: CellRef): CellRef | null {
+    if (this.nodes.has(cellKey(cell))) return cell;
+    for (let radius = 1; radius <= 24; radius++) {
+      for (let offset = -radius; offset <= radius; offset++) {
+        for (const candidate of [
+          { cx: cell.cx + offset, cz: cell.cz - radius },
+          { cx: cell.cx + offset, cz: cell.cz + radius },
+          { cx: cell.cx - radius, cz: cell.cz + offset },
+          { cx: cell.cx + radius, cz: cell.cz + offset },
+        ]) if (this.nodes.has(cellKey(candidate))) return candidate;
+      }
+    }
+    return null;
+  }
+
+  clear(): void {
+    this.chunks.clear();
+    this.nodes.clear();
+    this.adjacency.clear();
+  }
+
+  private rebuild(): void {
+    this.nodes.clear();
+    this.adjacency.clear();
+    for (const chunk of this.chunks.values()) {
+      for (const node of chunk.nodes) this.nodes.add(cellKey(node));
+    }
+    for (const chunk of this.chunks.values()) {
+      for (const edge of chunk.edges) {
+        const from = { cx: edge.fromCx, cz: edge.fromCz };
+        const to = { cx: edge.toCx, cz: edge.toCz };
+        if (!this.nodes.has(cellKey(from)) || !this.nodes.has(cellKey(to))) continue;
+        const key = cellKey(from);
+        const neighbors = this.adjacency.get(key) ?? [];
+        if (!neighbors.some((neighbor) => neighbor.cx === to.cx && neighbor.cz === to.cz)) neighbors.push(to);
+        this.adjacency.set(key, neighbors);
+      }
+    }
+    for (const neighbors of this.adjacency.values()) neighbors.sort((a, b) => a.cz - b.cz || a.cx - b.cx);
+  }
+}
+
+const cellRoadNetwork = new CellRoadNetwork();
+let activeRoadNetwork: RoadNetwork = cellRoadNetwork;
+
+export function setRoadNetwork(network: RoadNetwork | null): void {
+  activeRoadNetwork = network ?? cellRoadNetwork;
+}
+
 /** Road neighbors of a road cell. */
 export function roadNeighbors(c: CellRef): CellRef[] {
-  const out: CellRef[] = [];
-  for (const d of DIRS) {
-    const n = { cx: c.cx + d.cx, cz: c.cz + d.cz };
-    if (isRoad(n.cx, n.cz)) out.push(n);
-  }
-  return out;
+  return activeRoadNetwork.neighbors(c);
 }
 
 /**
@@ -72,7 +159,7 @@ export function randomRoadCellNear(
   const ang = Math.random() * Math.PI * 2;
   const r = minDist + Math.random() * (maxDist - minDist);
   const raw = worldToCell(x + Math.sin(ang) * r, z + Math.cos(ang) * r);
-  const cell = nearestRoadCell(raw.cx, raw.cz);
+  const cell = activeRoadNetwork.nearest(raw);
   if (!cell) return null; // sample landed in open water / off-map
   const w = cellToWorld(cell.cx, cell.cz);
   const d = Math.hypot(w.x - x, w.z - z);
