@@ -141,6 +141,53 @@ function blur(values, frozen, width, passes) {
   }
 }
 
+/**
+ * Remove narrow positive SRTM surface features such as towers and tree canopy.
+ * A greyscale morphological opening retains broad hills while estimating the
+ * local ground envelope below features narrower than roughly 2*radius cells.
+ */
+export function removeUrbanSurfaceSpikes(values, width, { radius = 4, clearance = 2 } = {}) {
+  if (values.length !== width * width) throw new Error('surface-spike filter size mismatch');
+  const eroded = new Float64Array(values.length);
+  const opened = new Float64Array(values.length);
+  for (let z = 0; z < width; z++) {
+    for (let x = 0; x < width; x++) {
+      let minimum = Infinity;
+      for (let dz = -radius; dz <= radius; dz++) {
+        const sz = Math.max(0, Math.min(width - 1, z + dz));
+        for (let dx = -radius; dx <= radius; dx++) {
+          const sx = Math.max(0, Math.min(width - 1, x + dx));
+          minimum = Math.min(minimum, values[sx + sz * width]);
+        }
+      }
+      eroded[x + z * width] = minimum;
+    }
+  }
+  for (let z = 0; z < width; z++) {
+    for (let x = 0; x < width; x++) {
+      let maximum = -Infinity;
+      for (let dz = -radius; dz <= radius; dz++) {
+        const sz = Math.max(0, Math.min(width - 1, z + dz));
+        for (let dx = -radius; dx <= radius; dx++) {
+          const sx = Math.max(0, Math.min(width - 1, x + dx));
+          maximum = Math.max(maximum, eroded[sx + sz * width]);
+        }
+      }
+      opened[x + z * width] = maximum;
+    }
+  }
+  let count = 0;
+  let maxReduction = 0;
+  for (let i = 0; i < values.length; i++) {
+    const cap = opened[i] + clearance;
+    if (values[i] <= cap) continue;
+    maxReduction = Math.max(maxReduction, values[i] - cap);
+    values[i] = cap;
+    count++;
+  }
+  return { count, maxReduction };
+}
+
 function constrainPair(heights, frozen, a, b, limit) {
   const delta = heights[b] - heights[a];
   if (Math.abs(delta) <= limit) return;
@@ -377,6 +424,7 @@ export function buildTerrainHeights(grid, tiles, { objectChunks = null } = {}) {
   }
   const seaDatum = seaCount > 0 ? seaSum / seaCount : 0;
   for (let i = 0; i < heights.length; i++) heights[i] -= seaDatum;
+  const spikeFilter = removeUrbanSurfaceSpikes(heights, width);
   blur(heights, null, width, 2);
 
   const frozen = new Uint8Array(heights.length);
@@ -463,6 +511,8 @@ export function buildTerrainHeights(grid, tiles, { objectChunks = null } = {}) {
     maxBuildingSpread,
     buildingPadCount: buildingPads.length,
     seaDatum,
+    surfaceSpikeCount: spikeFilter.count,
+    maxSurfaceSpikeReduction: spikeFilter.maxReduction,
   };
 }
 

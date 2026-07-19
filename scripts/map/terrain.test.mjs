@@ -8,6 +8,7 @@ import {
   flattenBuildingPads,
   hgtTileNamesForBounds,
   maxRoadGrade,
+  removeUrbanSurfaceSpikes,
 } from './terrain.mjs';
 
 function readHeights() {
@@ -23,6 +24,7 @@ test('baked Melbourne terrain pins water and keeps roads drivable', () => {
   const grid = new Uint8Array(readFileSync(new URL('../../public/maps/melbourne.bin', import.meta.url)));
   const heights = readHeights();
   const width = MAP_SIZE + 1;
+  let maxDryHeight = -Infinity;
   const cell = (x, z) => x < 0 || z < 0 || x >= MAP_SIZE || z >= MAP_SIZE
     ? 5
     : grid[x + z * MAP_SIZE];
@@ -32,10 +34,14 @@ test('baked Melbourne terrain pins water and keeps roads drivable', () => {
       const water = cell(x - 1, z - 1) === 5 && cell(x, z - 1) === 5 &&
         cell(x - 1, z) === 5 && cell(x, z) === 5;
       if (water) assert.equal(value, -1.6);
-      else assert.ok(value >= 0.3, `dry corner ${x},${z} is below the water plane: ${value}`);
+      else {
+        assert.ok(value >= 0.3, `dry corner ${x},${z} is below the water plane: ${value}`);
+        maxDryHeight = Math.max(maxDryHeight, value);
+      }
     }
   }
   assert.ok(maxRoadGrade(heights, grid) <= MAX_GRADE, 'road grade exceeds terrain contract');
+  assert.ok(maxDryHeight <= 65, `urban surface spike remains in terrain: ${maxDryHeight}m`);
 });
 
 test('HGT source selection includes every crossed one-degree tile', () => {
@@ -55,6 +61,22 @@ test('HGT source selection includes every crossed one-degree tile', () => {
     west: 144,
     east: 145,
   }), ['S38E144']);
+});
+
+test('urban surface filter removes narrow towers without flattening broad terrain', () => {
+  const width = 15;
+  const broad = Float64Array.from({ length: width * width }, (_, index) => {
+    const x = index % width;
+    return x * 0.5;
+  });
+  const tower = 7 + 7 * width;
+  broad[tower] += 70;
+  const result = removeUrbanSurfaceSpikes(broad, width, { radius: 3, clearance: 2 });
+  assert.ok(result.count > 0);
+  assert.ok(result.maxReduction > 60);
+  assert.ok(broad[tower] < 8, `tower remains too high: ${broad[tower]}`);
+  assert.equal(broad[2 + 7 * width], 1);
+  assert.equal(broad[12 + 7 * width], 6);
 });
 
 test('authored footprint pads flatten every covered terrain cell', () => {

@@ -102,11 +102,39 @@ function triangulate(points) {
   return ShapeUtils.triangulateShape(vectors, []);
 }
 
+function subdivideTerrainFace(a, b, c, emit, shouldRefine = null, depth = 0) {
+  const distanceSq = (left, right) => (left[0] - right[0]) ** 2 + (left[1] - right[1]) ** 2;
+  const abLength = distanceSq(a, b);
+  const bcLength = distanceSq(b, c);
+  const caLength = distanceSq(c, a);
+  const longest = Math.max(abLength, bcLength, caLength);
+  if ((longest > TILE ** 2 || shouldRefine?.(a, b, c)) && depth < 8) {
+    const midpoint = (left, right) => [(left[0] + right[0]) / 2, (left[1] + right[1]) / 2];
+    if (longest === abLength) {
+      const ab = midpoint(a, b);
+      subdivideTerrainFace(a, ab, c, emit, shouldRefine, depth + 1);
+      subdivideTerrainFace(ab, b, c, emit, shouldRefine, depth + 1);
+    } else if (longest === bcLength) {
+      const bc = midpoint(b, c);
+      subdivideTerrainFace(a, b, bc, emit, shouldRefine, depth + 1);
+      subdivideTerrainFace(a, bc, c, emit, shouldRefine, depth + 1);
+    } else {
+      const ca = midpoint(c, a);
+      subdivideTerrainFace(a, b, ca, emit, shouldRefine, depth + 1);
+      subdivideTerrainFace(ca, b, c, emit, shouldRefine, depth + 1);
+    }
+    return;
+  }
+  emit(a, b, c);
+}
+
 function addPolygonTop(bucket, points, yForPoint) {
-  for (const face of triangulate(points)) {
-    const a = points[face[0]];
-    const b = points[face[1]];
-    const c = points[face[2]];
+  const shouldRefine = (a, b, c) => {
+    const center = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3];
+    const planeHeight = (yForPoint(a) + yForPoint(b) + yForPoint(c)) / 3;
+    return Math.abs(yForPoint(center) - planeHeight) > 0.02;
+  };
+  const addFace = (a, b, c) => {
     const av = [a[0], yForPoint(a), a[1]];
     const bv = [b[0], yForPoint(b), b[1]];
     const cv = [c[0], yForPoint(c), c[1]];
@@ -114,6 +142,9 @@ function addPolygonTop(bucket, points, yForPoint) {
     const crossY = (bv[2] - av[2]) * (cv[0] - av[0]) - (bv[0] - av[0]) * (cv[2] - av[2]);
     if (crossY >= 0) addTriangle(bucket, av, bv, cv);
     else addTriangle(bucket, av, cv, bv);
+  };
+  for (const face of triangulate(points)) {
+    subdivideTerrainFace(points[face[0]], points[face[1]], points[face[2]], addFace, shouldRefine);
   }
 }
 
@@ -126,14 +157,21 @@ function addRaisedPolygon(bucket, points, heightAt, elevation) {
     positions.push(...a, ...b, ...c);
     indices.push(index, index + 1, index + 2);
   };
-  for (const face of triangulate(points)) {
-    const source = face.map((index) => {
-      const point = points[index];
+  const addTopFace = (a, b, c) => {
+    const source = [a, b, c].map((point) => {
       return [point[0], heightAt(point[0], point[1]) + elevation, point[1]];
     });
-    const [a, b, c] = source;
-    const crossY = (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]);
-    if (crossY >= 0) emit(a, b, c); else emit(a, c, b);
+    const [av, bv, cv] = source;
+    const crossY = (bv[2] - av[2]) * (cv[0] - av[0]) - (bv[0] - av[0]) * (cv[2] - av[2]);
+    if (crossY >= 0) emit(av, bv, cv); else emit(av, cv, bv);
+  };
+  const shouldRefine = (a, b, c) => {
+    const center = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3];
+    const planeHeight = (heightAt(a[0], a[1]) + heightAt(b[0], b[1]) + heightAt(c[0], c[1])) / 3;
+    return Math.abs(heightAt(center[0], center[1]) - planeHeight) > 0.02;
+  };
+  for (const face of triangulate(points)) {
+    subdivideTerrainFace(points[face[0]], points[face[1]], points[face[2]], addTopFace, shouldRefine);
   }
   for (let i = 0; i < points.length; i++) {
     const a = points[i];
@@ -287,7 +325,11 @@ export function createCompilerContext({ meta, grid, heights, coverage, transport
     const b = cornerRaw(ix + 1, iz) * 0.1;
     const c = cornerRaw(ix, iz + 1) * 0.1;
     const d = cornerRaw(ix + 1, iz + 1) * 0.1;
-    return (a + (b - a) * tx) + ((c + (d - c) * tx) - (a + (b - a) * tx)) * tz;
+    // Match addQuad's a-c-d / a-d-b diagonal exactly. Bilinear sampling can
+    // fall below either rendered terrain triangle on a twisted height cell.
+    return tz >= tx
+      ? a + tx * (d - c) + tz * (c - a)
+      : a + tx * (b - a) + tz * (d - b);
   };
   return { meta, grid, heights, coverage, transport, speed, objectIndex, index, codeAt, coverageAt, transportAt, isRoad, cornerRaw, heightAt };
 }
