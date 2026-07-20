@@ -35,9 +35,14 @@ export const MATERIALS = [
   { name: 'grass', color: [0.209, 0.578, 0.078], roughness: 1 },
   { name: 'water', color: [0.027, 0.542, 0.431], roughness: 0.18, metalness: 0.08 },
   { name: 'commercial', color: [0.485, 0.235, 0.624], roughness: 0.76 },
+  { name: 'commercial-rose', color: [0.52, 0.26, 0.39], roughness: 0.8 },
+  { name: 'commercial-stone', color: [0.43, 0.38, 0.45], roughness: 0.86 },
   { name: 'skyscraper', color: [0.165, 0.263, 0.431], roughness: 0.46, metalness: 0.18 },
+  { name: 'skyscraper-slate', color: [0.25, 0.31, 0.38], roughness: 0.5, metalness: 0.14 },
+  { name: 'skyscraper-teal', color: [0.12, 0.32, 0.35], roughness: 0.44, metalness: 0.2 },
   { name: 'suburban', color: [0.694, 0.449, 0.265], roughness: 0.88 },
   { name: 'industrial', color: [0.251, 0.278, 0.304], roughness: 0.82, metalness: 0.12 },
+  { name: 'window', color: [0.035, 0.105, 0.16], roughness: 0.24, metalness: 0.38 },
   { name: 'vegetation', color: [0.08, 0.38, 0.11], roughness: 1 },
   { name: 'prop', color: [0.14, 0.18, 0.22], roughness: 0.7, metalness: 0.25 },
   { name: 'art', color: [0.807, 0.107, 0.263], roughness: 0.35, metalness: 0.2 },
@@ -56,6 +61,24 @@ function roofMaterialFor(style) {
   if (style === 'suburban') return 'roof-tile';
   if (style === 'industrial') return 'roof-metal';
   return 'roof-membrane';
+}
+
+function textHash(value) {
+  let hash = 2166136261;
+  for (const character of String(value)) {
+    hash ^= character.codePointAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function buildingWallMaterialFor(object) {
+  const variants = object.style === 'commercial'
+    ? ['commercial', 'commercial-rose', 'commercial-stone']
+    : object.style === 'skyscraper'
+      ? ['skyscraper', 'skyscraper-slate', 'skyscraper-teal']
+      : [object.style ?? 'commercial'];
+  return variants[textHash(object.structureId ?? object.sourceId) % variants.length];
 }
 
 function hashNumber(cx, cz, salt = 0) {
@@ -125,26 +148,26 @@ function triangulate(points) {
   return ShapeUtils.triangulateShape(vectors, []);
 }
 
-function subdivideTerrainFace(a, b, c, emit, shouldRefine = null, depth = 0) {
+function subdivideTerrainFace(a, b, c, emit, shouldRefine = null, depth = 0, maxDepth = 8) {
   const distanceSq = (left, right) => (left[0] - right[0]) ** 2 + (left[1] - right[1]) ** 2;
   const abLength = distanceSq(a, b);
   const bcLength = distanceSq(b, c);
   const caLength = distanceSq(c, a);
   const longest = Math.max(abLength, bcLength, caLength);
-  if ((longest > TILE ** 2 || shouldRefine?.(a, b, c)) && depth < 8) {
+  if ((longest > TILE ** 2 || shouldRefine?.(a, b, c)) && depth < maxDepth) {
     const midpoint = (left, right) => [(left[0] + right[0]) / 2, (left[1] + right[1]) / 2];
     if (longest === abLength) {
       const ab = midpoint(a, b);
-      subdivideTerrainFace(a, ab, c, emit, shouldRefine, depth + 1);
-      subdivideTerrainFace(ab, b, c, emit, shouldRefine, depth + 1);
+      subdivideTerrainFace(a, ab, c, emit, shouldRefine, depth + 1, maxDepth);
+      subdivideTerrainFace(ab, b, c, emit, shouldRefine, depth + 1, maxDepth);
     } else if (longest === bcLength) {
       const bc = midpoint(b, c);
-      subdivideTerrainFace(a, b, bc, emit, shouldRefine, depth + 1);
-      subdivideTerrainFace(a, bc, c, emit, shouldRefine, depth + 1);
+      subdivideTerrainFace(a, b, bc, emit, shouldRefine, depth + 1, maxDepth);
+      subdivideTerrainFace(a, bc, c, emit, shouldRefine, depth + 1, maxDepth);
     } else {
       const ca = midpoint(c, a);
-      subdivideTerrainFace(a, b, ca, emit, shouldRefine, depth + 1);
-      subdivideTerrainFace(ca, b, c, emit, shouldRefine, depth + 1);
+      subdivideTerrainFace(a, b, ca, emit, shouldRefine, depth + 1, maxDepth);
+      subdivideTerrainFace(ca, b, c, emit, shouldRefine, depth + 1, maxDepth);
     }
     return;
   }
@@ -244,6 +267,67 @@ function addPrism(bucket, points, baseY, height) {
     addTriangle(bucket, triangles.positions.slice(i, i + 3), triangles.positions.slice(i + 3, i + 6), triangles.positions.slice(i + 6, i + 9));
   }
   return triangles;
+}
+
+/** Render only the exposed perimeter of a building mass. Horizontal caps use
+ * the roof material instead of reading as stray wall-coloured slabs. */
+function polygonTwiceArea(points) {
+  let result = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    result += a[0] * b[1] - b[0] * a[1];
+  }
+  return result;
+}
+
+function edgeOnBuildingSeam(a, b, seams) {
+  if (!seams) return false;
+  const near = (left, right) => Number.isFinite(right) && Math.abs(left - right) < 0.02;
+  return (near(a[0], seams.minX) && near(b[0], seams.minX)) ||
+    (near(a[0], seams.maxX) && near(b[0], seams.maxX)) ||
+    (near(a[1], seams.minZ) && near(b[1], seams.minZ)) ||
+    (near(a[1], seams.maxZ) && near(b[1], seams.maxZ));
+}
+
+function addBuildingWalls(bucket, windowBucket, points, baseY, topY, seams = null) {
+  const clockwise = polygonTwiceArea(points) < 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    if (edgeOnBuildingSeam(a, b, seams)) continue;
+    const bottomA = [a[0], baseY, a[1]];
+    const bottomB = [b[0], baseY, b[1]];
+    const topA = [a[0], topY, a[1]];
+    const topB = [b[0], topY, b[1]];
+    if (clockwise) addQuad(bucket, bottomA, bottomB, topB, topA);
+    else addQuad(bucket, bottomB, bottomA, topA, topB);
+
+    const edgeX = b[0] - a[0];
+    const edgeZ = b[1] - a[1];
+    const edgeLength = Math.hypot(edgeX, edgeZ);
+    const wallHeight = topY - baseY;
+    if (!windowBucket || edgeLength < 3.2 || wallHeight < 4.2) continue;
+    const outwardX = (clockwise ? -edgeZ : edgeZ) / edgeLength;
+    const outwardZ = (clockwise ? edgeX : -edgeX) / edgeLength;
+    const inset = Math.min(0.65, edgeLength * 0.16);
+    const ax = a[0] + edgeX * inset / edgeLength + outwardX * 0.045;
+    const az = a[1] + edgeZ * inset / edgeLength + outwardZ * 0.045;
+    const bx = b[0] - edgeX * inset / edgeLength + outwardX * 0.045;
+    const bz = b[1] - edgeZ * inset / edgeLength + outwardZ * 0.045;
+    const floors = Math.max(1, Math.floor((wallHeight - 1.4) / 3));
+    const stride = Math.max(1, Math.ceil(floors / 14));
+    for (let floor = 0; floor < floors; floor += stride) {
+      const centerY = baseY + 1.85 + floor * 3;
+      if (centerY + 0.48 >= topY) break;
+      const lowA = [ax, centerY - 0.48, az];
+      const lowB = [bx, centerY - 0.48, bz];
+      const highA = [ax, centerY + 0.48, az];
+      const highB = [bx, centerY + 0.48, bz];
+      if (clockwise) addQuad(windowBucket, lowA, lowB, highB, highA);
+      else addQuad(windowBucket, lowB, lowA, highA, highB);
+    }
+  }
 }
 
 function pointInOutline(x, z, object) {
@@ -372,6 +456,7 @@ function addProfiledSlab(bucket, points, topAt, thickness) {
 
 // Roof types that get a pitched cap; everything else stays flat-topped.
 const PITCHED_ROOFS = new Set(['gable', 'hip', 'pyramid', 'shed']);
+const ROOF_OVERHANG = 0.35;
 
 /**
  * Height of the pitched cap for a building, derived from its short footprint
@@ -388,18 +473,49 @@ function roofCapHeight(roof, width, depth, height) {
   return Math.max(1, Math.min(rise, 6, height * 0.6));
 }
 
-/**
- * Emit a pitched roof (gable/hip/pyramid/shed) into the render bucket, built in
- * the footprint's oriented frame from the same width/depth/rotation the walls
- * use. The ridge runs along the longer axis. Vertices use the addBox local
- * transform so the roof lines up with the walls exactly for rectangular
- * footprints (the overwhelming majority); non-rectangular footprints get a
- * close oriented-box cap. Purely visual — collision is generated separately.
- */
-function addRoof(bucket, { x, z, rotation, width, depth, eaveY, ridgeY, roof }) {
-  // Keep the ridge on the longer axis by swapping to a 90-deg-rotated frame.
-  let hw = width / 2;
-  let hd = depth / 2;
+/** A small mitered polygon offset gives roofs a readable eave without turning
+ * concave surveyed footprints into oversized oriented boxes. */
+function offsetPolygon(points, distance, seams = null) {
+  const twiceArea = polygonTwiceArea(points);
+  const side = twiceArea >= 0 ? 1 : -1;
+  const outwardNormal = (a, b) => {
+    if (edgeOnBuildingSeam(a, b, seams)) return [0, 0];
+    const dx = b[0] - a[0];
+    const dz = b[1] - a[1];
+    const length = Math.hypot(dx, dz) || 1;
+    return [side * dz / length, -side * dx / length];
+  };
+  return points.map((point, index) => {
+    const previous = points[(index + points.length - 1) % points.length];
+    const next = points[(index + 1) % points.length];
+    const a = outwardNormal(previous, point);
+    const b = outwardNormal(point, next);
+    const denominator = Math.max(0.35, 1 + a[0] * b[0] + a[1] * b[1]);
+    let ox = distance * (a[0] + b[0]) / denominator;
+    let oz = distance * (a[1] + b[1]) / denominator;
+    const length = Math.hypot(ox, oz);
+    const limit = distance * 2.5;
+    if (length > limit) {
+      ox *= limit / length;
+      oz *= limit / length;
+    }
+    const offset = [point[0] + ox, point[1] + oz];
+    if (Number.isFinite(seams?.minX) && Math.abs(point[0] - seams.minX) < 0.02) offset[0] = seams.minX;
+    if (Number.isFinite(seams?.maxX) && Math.abs(point[0] - seams.maxX) < 0.02) offset[0] = seams.maxX;
+    if (Number.isFinite(seams?.minZ) && Math.abs(point[1] - seams.minZ) < 0.02) offset[1] = seams.minZ;
+    if (Number.isFinite(seams?.maxZ) && Math.abs(point[1] - seams.maxZ) < 0.02) offset[1] = seams.maxZ;
+    return offset;
+  });
+}
+
+/** Emit a footprint-matched roof. Its height profile is evaluated in the
+ * original oriented frame, so clipped pieces meet continuously at chunk seams
+ * while each chunk emits only its own roof polygon. */
+function addRoof(bucket, { points, x, z, rotation, width, depth, eaveY, ridgeY, roof, seams = null }) {
+  const roofPoints = offsetPolygon(points, ROOF_OVERHANG, seams);
+  const clockwise = polygonTwiceArea(roofPoints) < 0;
+  let hw = width / 2 + ROOF_OVERHANG;
+  let hd = depth / 2 + ROOF_OVERHANG;
   let rot = rotation;
   if (hd > hw) {
     [hw, hd] = [hd, hw];
@@ -407,46 +523,55 @@ function addRoof(bucket, { x, z, rotation, width, depth, eaveY, ridgeY, roof }) 
   }
   const cos = Math.cos(rot);
   const sin = Math.sin(rot);
-  const P = (lx, ly, lz) => [x + lx * cos + lz * sin, ly, z - lx * sin + lz * cos];
-  const tri = (a, b, c) => addTriangle(bucket, a, b, c);
-  const quad = (a, b, c, d) => addQuad(bucket, a, b, c, d);
-  // Eave corners, walking the footprint counter-clockwise when seen from above.
-  const A = P(-hw, eaveY, -hd);
-  const B = P(hw, eaveY, -hd);
-  const C = P(hw, eaveY, hd);
-  const D = P(-hw, eaveY, hd);
-
-  if (roof === 'pyramid') {
-    const apex = P(0, ridgeY, 0);
-    tri(A, B, apex);
-    tri(B, C, apex);
-    tri(C, D, apex);
-    tri(D, A, apex);
-    return;
+  const rise = Math.max(0, ridgeY - eaveY);
+  const heightAt = ([px, pz]) => {
+    if (rise <= 0 || !PITCHED_ROOFS.has(roof)) return ridgeY + 0.035;
+    const dx = px - x;
+    const dz = pz - z;
+    const along = dx * cos - dz * sin;
+    const across = dx * sin + dz * cos;
+    let factor;
+    if (roof === 'shed') factor = (across + hd) / (hd * 2);
+    else if (roof === 'pyramid') factor = Math.min(1 - Math.abs(along) / hw, 1 - Math.abs(across) / hd);
+    else if (roof === 'hip') factor = Math.min(1 - Math.abs(across) / hd, (hw - Math.abs(along)) / hd);
+    else factor = 1 - Math.abs(across) / hd;
+    return eaveY + rise * Math.max(0, Math.min(1, factor));
+  };
+  const shouldRefine = (a, b, c) => {
+    const center = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3];
+    const planeHeight = (heightAt(a) + heightAt(b) + heightAt(c)) / 3;
+    return Math.abs(heightAt(center) - planeHeight) > 0.12;
+  };
+  const addFace = (a, b, c) => {
+    const vertices = [a, b, c].map((point) => [point[0], heightAt(point), point[1]]);
+    const crossY = (vertices[1][2] - vertices[0][2]) * (vertices[2][0] - vertices[0][0]) -
+      (vertices[1][0] - vertices[0][0]) * (vertices[2][2] - vertices[0][2]);
+    if (crossY >= 0) addTriangle(bucket, ...vertices);
+    else addTriangle(bucket, vertices[0], vertices[2], vertices[1]);
+  };
+  const roofSubdivisionDepth = rise > 0 ? 2 : 0;
+  for (const face of triangulate(roofPoints)) {
+    subdivideTerrainFace(
+      roofPoints[face[0]], roofPoints[face[1]], roofPoints[face[2]],
+      addFace, shouldRefine, 0, roofSubdivisionDepth
+    );
   }
-  if (roof === 'shed') {
-    // Mono-pitch: low eave along -depth, high edge along +depth.
-    const highD = P(-hw, ridgeY, hd);
-    const highC = P(hw, ridgeY, hd);
-    quad(A, B, highC, highD); // sloped face
-    quad(D, C, highC, highD); // raised gable wall on the high side
-    tri(A, highD, D); // left triangle
-    tri(B, C, highC); // right triangle
-    return;
-  }
-  // gable / hip: ridge spans the full length for a gable, insets by the short
-  // half-depth for a hip (giving sloped ends instead of vertical gables).
-  const ridgeHalf = roof === 'hip' ? Math.max(0, hw - hd) : hw;
-  const ridgeNeg = P(-ridgeHalf, ridgeY, 0);
-  const ridgePos = P(ridgeHalf, ridgeY, 0);
-  quad(A, B, ridgePos, ridgeNeg); // -depth slope
-  quad(C, D, ridgeNeg, ridgePos); // +depth slope
-  if (roof === 'hip' && ridgeHalf < hw) {
-    tri(B, C, ridgePos); // +length hip end
-    tri(D, A, ridgeNeg); // -length hip end
-  } else {
-    tri(B, ridgePos, C); // +length gable wall
-    tri(D, ridgeNeg, A); // -length gable wall
+  // Close gable ends and the thin outer eave so no sky shows between the wall
+  // footprint and its slightly larger roof.
+  for (let i = 0; i < roofPoints.length; i++) {
+    const a = roofPoints[i];
+    const b = roofPoints[(i + 1) % roofPoints.length];
+    if (edgeOnBuildingSeam(a, b, seams)) continue;
+    const topA = heightAt(a);
+    const topB = heightAt(b);
+    const bottomA = Math.min(eaveY - 0.12, topA - 0.12);
+    const bottomB = Math.min(eaveY - 0.12, topB - 0.12);
+    const lowA = [a[0], bottomA, a[1]];
+    const lowB = [b[0], bottomB, b[1]];
+    const highA = [a[0], topA, a[1]];
+    const highB = [b[0], topB, b[1]];
+    if (clockwise) addQuad(bucket, lowA, lowB, highB, highA);
+    else addQuad(bucket, lowB, lowA, highA, highB);
   }
 }
 
@@ -594,6 +719,21 @@ function normalizeObjects(context, kx, kz) {
     .filter((object) => Number.isFinite(object.x) && Number.isFinite(object.z) && object.x >= min && object.x <= max && object.z >= min && object.z <= max)
     .map((object) => ({ ...object, sourceId: sourceId(object) }))
     .sort((a, b) => a.kind.localeCompare(b.kind) || a.sourceId.localeCompare(b.sourceId) || a.x - b.x || a.z - b.z);
+}
+
+function buildingChunkSeams(context, object, kx, kz) {
+  const hasCopy = (x, z) => (context.objectIndex.chunks[`${x},${z}`] ?? [])
+    .some((candidate) => candidate.kind === 'building' && sourceId(candidate) === object.sourceId);
+  const minX = (kx * CHUNK_TILES - 0.5) * TILE;
+  const maxX = ((kx + 1) * CHUNK_TILES - 0.5) * TILE;
+  const minZ = (kz * CHUNK_TILES - 0.5) * TILE;
+  const maxZ = ((kz + 1) * CHUNK_TILES - 0.5) * TILE;
+  return {
+    minX: hasCopy(kx - 1, kz) ? minX : null,
+    maxX: hasCopy(kx + 1, kz) ? maxX : null,
+    minZ: hasCopy(kx, kz - 1) ? minZ : null,
+    maxZ: hasCopy(kx, kz + 1) ? maxZ : null,
+  };
 }
 
 const NAV_VEHICLE = 1;
@@ -769,7 +909,17 @@ export function compileChunkRecipe(context, kx, kz) {
         const base = Math.min(context.cornerRaw(cx, cz), context.cornerRaw(cx + 1, cz), context.cornerRaw(cx, cz + 1), context.cornerRaw(cx + 1, cz + 1)) * 0.1;
         const material = code === 2 ? (height > 24 ? 'skyscraper' : 'commercial') : 'suburban';
         sources.add(id);
-        addBox(buckets.get(material), cx * TILE, base + height / 2, cz * TILE, width / 2, height / 2, depth / 2);
+        const points = [
+          [cx * TILE - width / 2, cz * TILE - depth / 2],
+          [cx * TILE + width / 2, cz * TILE - depth / 2],
+          [cx * TILE + width / 2, cz * TILE + depth / 2],
+          [cx * TILE - width / 2, cz * TILE + depth / 2],
+        ];
+        addBuildingWalls(buckets.get(material), buckets.get('window'), points, base, base + height);
+        addRoof(buckets.get(roofMaterialFor(material)), {
+          points, x: cx * TILE, z: cz * TILE, rotation: 0, width, depth,
+          eaveY: base + height, ridgeY: base + height, roof: 'flat',
+        });
         cuboids.push({ sourceId: id, x: cx * TILE, y: base + height / 2, z: cz * TILE, hx: width / 2, hy: height / 2, hz: depth / 2, rotation: 0 });
       } else if ((code === 3 || code === 4) && (coverage & (COVERAGE_TREE | COVERAGE_BUILDING)) === 0 && hashNumber(cx, cz, 7) < 0.48) {
         const id = fallbackId('tree', cx, cz);
@@ -861,27 +1011,36 @@ export function compileChunkRecipe(context, kx, kz) {
       }
     } else if (object.kind === 'building') {
       const baseY = Number.isFinite(object.baseY) ? object.baseY : context.heightAt(object.x, object.z);
-      const bucket = buckets.get(object.style ?? 'commercial');
+      const bucket = buckets.get(buildingWallMaterialFor(object));
+      const seams = buildingChunkSeams(context, object, kx, kz);
       // Carve a pitched cap out of the top; walls drop to the eave and the roof
       // fills up to the real ridge height. Collision stays a full-height flat
       // prism/box, so gameplay volumes are unchanged.
       const roofHeight = roofCapHeight(object.roof, object.width, object.depth, object.height);
       const wallHeight = object.height - roofHeight;
+      let points;
       if (Array.isArray(object.outline) && object.outline.length >= 3) {
-        const points = object.outline.map(([x, z]) => [object.x + x, object.z + z]);
-        addPrism(bucket, points, baseY, wallHeight);
+        points = object.outline.map(([x, z]) => [object.x + x, object.z + z]);
+        addBuildingWalls(bucket, buckets.get('window'), points, baseY, baseY + wallHeight, seams);
         collisionMeshes.push({ sourceId: object.sourceId, ...prismTriangles(points, baseY, object.height) });
       } else {
-        addBox(bucket, object.x, baseY + wallHeight / 2, object.z, object.width / 2, wallHeight / 2, object.depth / 2, object.rotation ?? 0);
+        const cos = Math.cos(object.rotation ?? 0);
+        const sin = Math.sin(object.rotation ?? 0);
+        points = [
+          [-object.width / 2, -object.depth / 2],
+          [object.width / 2, -object.depth / 2],
+          [object.width / 2, object.depth / 2],
+          [-object.width / 2, object.depth / 2],
+        ].map(([x, z]) => [object.x + x * cos + z * sin, object.z - x * sin + z * cos]);
+        addBuildingWalls(bucket, buckets.get('window'), points, baseY, baseY + wallHeight, seams);
         cuboids.push({ sourceId: object.sourceId, x: object.x, y: baseY + object.height / 2, z: object.z, hx: object.width / 2, hy: object.height / 2, hz: object.depth / 2, rotation: object.rotation ?? 0 });
       }
-      if (roofHeight > 0) {
-        addRoof(buckets.get(roofMaterialFor(object.style)), {
-          x: object.x, z: object.z, rotation: object.rotation ?? 0,
-          width: object.width, depth: object.depth,
-          eaveY: baseY + wallHeight, ridgeY: baseY + object.height, roof: object.roof,
-        });
-      }
+      addRoof(buckets.get(roofMaterialFor(object.style)), {
+        points, x: object.x, z: object.z, rotation: object.rotation ?? 0,
+        width: object.width, depth: object.depth,
+        eaveY: baseY + wallHeight, ridgeY: baseY + object.height, roof: object.roof,
+        seams,
+      });
     } else if (object.kind === 'tree') {
       const base = context.heightAt(object.x, object.z);
       addBox(buckets.get('vegetation'), object.x, base + object.height / 2, object.z, 0.24, object.height / 2, 0.24);

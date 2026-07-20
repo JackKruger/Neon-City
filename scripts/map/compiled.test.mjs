@@ -214,7 +214,7 @@ test('negative boundary navigation ownership follows encoded centimetres', () =>
   );
 });
 
-test('pitched roofs cap the render mesh at the ridge while collision stays flat', () => {
+test('building roofs cover their real footprint while collision stays flat', () => {
   const base = {
     meta: {},
     grid: new Uint8Array(MAP_SIZE ** 2),
@@ -251,9 +251,63 @@ test('pitched roofs cap the render mesh at the ridge while collision stays flat'
   }), 0, 0);
   const flatWalls = yLevels(flat.primitives.find((primitive) => primitive.material === 'suburban'));
   assert.deepEqual([...new Set(flatWalls.map((y) => Math.round(y)))].sort((a, b) => a - b), [0, 9],
-    'flat roofs keep the original two-level box and add no ridge geometry');
-  assert.ok(!flat.primitives.some((primitive) => primitive.material.startsWith('roof-')),
-    'flat roofs emit no roof material');
+    'flat walls should retain the full surveyed height');
+  const flatRoof = flat.primitives.find((primitive) => primitive.material === 'roof-tile');
+  assert.ok(flatRoof, 'flat buildings should have a distinct roof surface');
+  assert.ok(yLevels(flatRoof).every((y) => y >= 8.87 && y <= 9.04),
+    'flat roof and fascia should stay tight to the wall top');
+  assert.ok(flat.primitives.some((primitive) => primitive.material === 'window'),
+    'building walls should include a distinct facade treatment');
+
+  const concave = {
+    ...building('gable', 'building:concave'),
+    width: 12,
+    depth: 12,
+    outline: [[-6, -6], [6, -6], [6, -2], [-2, -2], [-2, 6], [-6, 6]],
+  };
+  const shaped = compileChunkRecipe(createCompilerContext({
+    ...base,
+    objectIndex: { chunks: { '0,0': [concave] } },
+  }), 0, 0);
+  const shapedRoof = shaped.primitives.find((primitive) => primitive.material === 'roof-tile');
+  for (let i = 0; i < shapedRoof.positions.length; i += 9) {
+    const centerX = (shapedRoof.positions[i] + shapedRoof.positions[i + 3] + shapedRoof.positions[i + 6]) / 3;
+    const centerZ = (shapedRoof.positions[i + 2] + shapedRoof.positions[i + 5] + shapedRoof.positions[i + 8]) / 3;
+    assert.ok(!(centerX > 46.5 && centerZ > 46.5),
+      'roof triangles should not bridge across a concave footprint cut-out');
+  }
+});
+
+test('building render faces stop cleanly at streamed chunk seams', () => {
+  const base = {
+    meta: {},
+    grid: new Uint8Array(MAP_SIZE ** 2),
+    heights: new Int16Array((MAP_SIZE + 1) ** 2),
+    coverage: new Uint8Array(MAP_SIZE ** 2),
+    transport: new Uint8Array(MAP_SIZE ** 2),
+    speed: new Uint8Array(MAP_SIZE ** 2),
+  };
+  const common = {
+    kind: 'building', sourceId: 'building:seam', structureId: 'building:seam',
+    x: 114, z: 48, rotation: 0, width: 20, depth: 12, height: 8,
+    style: 'commercial', roof: 'gable', baseY: 0,
+  };
+  const left = { ...common, outline: [[-10, -6], [0, -6], [0, 6], [-10, 6]] };
+  const right = { ...common, outline: [[0, -6], [10, -6], [10, 6], [0, 6]] };
+  const context = createCompilerContext({
+    ...base,
+    objectIndex: { chunks: { '0,0': [left], '1,0': [right] } },
+  });
+  const compiled = compileChunkRecipe(context, 0, 0);
+  const walls = compiled.primitives.find((primitive) => primitive.material.startsWith('commercial'));
+  for (let i = 0; i < walls.positions.length; i += 9) {
+    const xs = [walls.positions[i], walls.positions[i + 3], walls.positions[i + 6]];
+    assert.ok(!xs.every((x) => Math.abs(x - 114) < 0.02),
+      'an artificial wall was emitted along the chunk cut');
+  }
+  const roof = compiled.primitives.find((primitive) => primitive.material === 'roof-membrane');
+  const roofXs = roof.positions.filter((_, index) => index % 3 === 0);
+  assert.ok(Math.max(...roofXs) <= 114.01, 'roof overhang crossed an artificial chunk cut');
 });
 
 test('real transport structures compile as concrete geometry with collision', () => {
