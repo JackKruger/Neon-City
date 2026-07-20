@@ -4,6 +4,7 @@ import { Vehicle } from './Vehicle';
 import { CellRef, lanePoint, nearestRoadPoint, nextRoadCell, pointWorld, roadNeighbors } from '../world/RoadGraph';
 import { speedLimitAt, worldToCell } from '../world/CityMap';
 import type { Outfit } from './HumanRig';
+import type { Drivable } from './Drivable';
 
 const TURN_SPEED = 4;
 
@@ -19,6 +20,8 @@ export class TrafficCar implements Entity {
   private stuckTime = 0;
   private reverseTime = 0;
   private exitRequested = false;
+  private nearbyVehicles: Drivable[] = [];
+  private sideVehicles: Drivable[] = [];
 
   constructor(
     private game: Game,
@@ -153,7 +156,7 @@ export class TrafficCar implements Entity {
   private obstacleAhead(): { stop: boolean; steerBias: number } {
     const t = this.vehicle.body.translation();
     const f = this.vehicle.forward();
-    for (const other of this.game.vehicles) {
+    for (const other of this.game.vehiclesNear(t.x, t.z, 9, this.nearbyVehicles)) {
       if (other === this.vehicle) continue;
       const o = other.body.translation();
       const dx = o.x - t.x;
@@ -200,7 +203,7 @@ export class TrafficCar implements Entity {
     const right = new THREE.Vector3(f.z, 0, -f.x).multiplyScalar(side);
     const sampleX = t.x + f.x * 5 + right.x * 2.4;
     const sampleZ = t.z + f.z * 5 + right.z * 2.4;
-    for (const other of this.game.vehicles) {
+    for (const other of this.game.vehiclesNear(sampleX, sampleZ, 3.2, this.sideVehicles)) {
       if (other === this.vehicle) continue;
       const o = other.body.translation();
       if (Math.hypot(o.x - sampleX, o.z - sampleZ) < 3.2) return false;

@@ -67,6 +67,8 @@ const FIRE_HEALTH = 40;
 const BURN_DURATION = 6;
 const IMPACT_DAMAGE_SPEED = 5.5;
 const CHARRED = new THREE.Color(0x17151a);
+// Identical lamp meshes share one immutable vertex buffer across every car.
+const HEADLIGHT_GEOMETRY = new THREE.BoxGeometry(0.28, 0.12, 0.06);
 
 export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
   readonly kind = 'car' as const;
@@ -99,7 +101,6 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     emissiveIntensity: 0,
     roughness: 0.3,
   });
-  private headlightGeometry = new THREE.BoxGeometry(0.28, 0.12, 0.06);
   private headlightBeam: THREE.SpotLight | null = null;
 
   // Vehicles are parked until a player or AI driver supplies a command.
@@ -449,7 +450,7 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
 
   private buildHeadlights(): void {
     for (const side of [-1, 1]) {
-      const lamp = new THREE.Mesh(this.headlightGeometry, this.headlightMaterial);
+      const lamp = new THREE.Mesh(HEADLIGHT_GEOMETRY, this.headlightMaterial);
       lamp.position.set(
         this.chassisCenter.x + side * this.chassisHalfSize.x * 0.58,
         this.chassisCenter.y,
@@ -457,12 +458,6 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
       );
       this.root.add(lamp);
     }
-    const beam = new THREE.SpotLight(0xffe6b0, 0, 34, Math.PI / 7, 0.55, 1.5);
-    beam.visible = false;
-    beam.position.set(this.chassisCenter.x, this.chassisCenter.y + 0.05, this.chassisCenter.z + this.chassisHalfSize.z);
-    beam.target.position.set(this.chassisCenter.x, this.chassisCenter.y - 0.35, this.chassisCenter.z + 18);
-    this.root.add(beam, beam.target);
-    this.headlightBeam = beam;
   }
 
   private updateHeadlights(): void {
@@ -473,8 +468,25 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     // lamps without multiplying split-screen shadow/light cost.
     const playerDriven = this.game.players.some((player) => player === this.driver);
     const beamActive = working && playerDriven && amount > 0.01;
-    this.headlightBeam!.visible = beamActive;
-    this.headlightBeam!.intensity = beamActive ? amount * 95 : 0;
+    if (beamActive) {
+      const beam = this.headlightBeam ?? this.createHeadlightBeam();
+      beam.visible = true;
+      beam.intensity = amount * 95;
+    } else if (this.headlightBeam) {
+      this.headlightBeam.visible = false;
+      this.headlightBeam.intensity = 0;
+    }
+  }
+
+  /** Only a player-driven car can cast a beam, so create that scene graph on
+   * first use instead of attaching an inert spotlight to every parked car. */
+  private createHeadlightBeam(): THREE.SpotLight {
+    const beam = new THREE.SpotLight(0xffe6b0, 0, 34, Math.PI / 7, 0.55, 1.5);
+    beam.position.set(this.chassisCenter.x, this.chassisCenter.y + 0.05, this.chassisCenter.z + this.chassisHalfSize.z);
+    beam.target.position.set(this.chassisCenter.x, this.chassisCenter.y - 0.35, this.chassisCenter.z + 18);
+    this.root.add(beam, beam.target);
+    this.headlightBeam = beam;
+    return beam;
   }
 
   private updateDoors(dt: number): void {
@@ -755,7 +767,6 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     for (const collider of this.colliders) this.game.combat.unregister(collider);
     for (const entry of this.damageMaterials) entry.material.dispose();
     this.headlightMaterial.dispose();
-    this.headlightGeometry.dispose();
     this.controller.free();
     this.game.world.removeRigidBody(this.body);
   }

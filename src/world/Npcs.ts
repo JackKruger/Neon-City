@@ -68,6 +68,7 @@ export class Npcs {
   private pendingEntries: { pedestrian: Pedestrian; vehicle: Vehicle }[] = [];
   private exitingDrivers = new Map<Drivable, Pedestrian>();
   private trafficSignals = new Map<string, TrafficSignalVisual>();
+  private nearbyVehicles: Drivable[] = [];
 
   constructor(private game: Game) {}
 
@@ -293,21 +294,16 @@ export class Npcs {
 
   private assignAbandonedVehicle(): void {
     const pedestrians = this.peds.filter((pedestrian) => pedestrian.availableForVehicle());
-    const vehicles = this.game.vehicles.filter(
-      (vehicle): vehicle is Vehicle =>
-        vehicle instanceof Vehicle &&
-        vehicle.driver === null &&
-        !vehicle.destroyed &&
-        !vehicle.burning &&
-        vehicle.getSpeed() < 0.8
-    );
     let best: { pedestrian: Pedestrian; vehicle: Vehicle; distance: number } | null = null;
     for (const pedestrian of pedestrians) {
       const pos = pedestrian.position();
-      for (const vehicle of vehicles) {
+      for (const candidate of this.game.vehiclesNear(pos.x, pos.z, 18, this.nearbyVehicles)) {
+        if (!(candidate instanceof Vehicle)) continue;
+        const vehicle = candidate;
+        if (vehicle.driver !== null || vehicle.destroyed || vehicle.burning || vehicle.getSpeed() >= 0.8) continue;
         const t = vehicle.body.translation();
         const distance = Math.hypot(t.x - pos.x, t.z - pos.z);
-        if (distance > 18 || (best && distance >= best.distance)) continue;
+        if (best && distance >= best.distance) continue;
         best = { pedestrian, vehicle, distance };
       }
     }

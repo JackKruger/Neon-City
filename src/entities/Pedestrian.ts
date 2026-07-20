@@ -10,6 +10,7 @@ import { Ragdoll } from './Ragdoll';
 import { CellRef, lanePoint, nextRoadCell, pointWorld } from '../world/RoadGraph';
 import { Vehicle } from './Vehicle';
 import type { TrafficCar } from './TrafficCar';
+import type { Drivable } from './Drivable';
 
 const WALK_DIR = new THREE.Vector3();
 const NPC_ENTER_TIME = 0.95;
@@ -60,6 +61,7 @@ export class Pedestrian implements Entity, CombatTarget {
   private knockedDown = false;
   private knockdownTimer = 0;
   private vehicleTransition: NpcVehicleTransition | null = null;
+  private nearbyVehicles: Drivable[] = [];
 
   constructor(
     private game: Game,
@@ -148,7 +150,7 @@ export class Pedestrian implements Entity, CombatTarget {
     }
 
     // Scared of fast cars nearby.
-    for (const v of this.game.vehicles) {
+    for (const v of this.game.vehiclesNear(pos.x, pos.z, 7, this.nearbyVehicles)) {
       const t = v.body.translation();
       const dx = pos.x - t.x;
       const dz = pos.z - t.z;
@@ -176,7 +178,13 @@ export class Pedestrian implements Entity, CombatTarget {
   private shouldYieldToTraffic(pos: THREE.Vector3, direction: THREE.Vector3): boolean {
     const futureX = pos.x + direction.x * 1.8;
     const futureZ = pos.z + direction.z * 1.8;
-    for (const vehicle of this.game.vehicles) {
+    for (const vehicle of this.game.vehiclesNearPredicted(
+      futureX,
+      futureZ,
+      0.55,
+      3.2,
+      this.nearbyVehicles
+    )) {
       const velocity = vehicle.body.linvel();
       const speed = Math.hypot(velocity.x, velocity.z);
       if (speed < 1.5) continue;

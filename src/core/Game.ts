@@ -48,6 +48,7 @@ export interface Entity {
 
 const ACTOR_ASSETS = [...CIVILIAN_CARS, 'cars/police', 'cars/debris-door-window'];
 const MAX_FIXED_STEPS_PER_FRAME = 3;
+const VEHICLE_GRID_CELL_SIZE = 24;
 
 interface FixedUpdateTiming {
   npcMs: number;
@@ -85,6 +86,8 @@ export class Game {
   private previousFrameStart = performance.now();
   private debugCam = false;
   private suburbCache: { cx: number; cz: number; name: string | null }[] = [];
+  private vehicleGrid = new Map<number, Map<number, Drivable[]>>();
+  private maximumVehicleSpeed = 0;
 
   readonly vehicles: Drivable[] = [];
   readonly players: Player[] = [];
@@ -305,6 +308,45 @@ export class Game {
   addVehicle(v: Drivable): void {
     this.vehicles.push(v);
     this.entities.push(v);
+  }
+
+  /** Fill `out` with vehicles whose chassis origins lie within `radius`.
+   * The fixed-step spatial index keeps local AI queries independent of the
+   * total number of parked cars in streamed chunks. */
+  vehiclesNear(x: number, z: number, radius: number, out: Drivable[]): Drivable[] {
+    out.length = 0;
+    const minX = Math.floor((x - radius) / VEHICLE_GRID_CELL_SIZE);
+    const maxX = Math.floor((x + radius) / VEHICLE_GRID_CELL_SIZE);
+    const minZ = Math.floor((z - radius) / VEHICLE_GRID_CELL_SIZE);
+    const maxZ = Math.floor((z + radius) / VEHICLE_GRID_CELL_SIZE);
+    const radiusSq = radius * radius;
+    for (let gx = minX; gx <= maxX; gx++) {
+      const column = this.vehicleGrid.get(gx);
+      if (!column) continue;
+      for (let gz = minZ; gz <= maxZ; gz++) {
+        const bucket = column.get(gz);
+        if (!bucket) continue;
+        for (const vehicle of bucket) {
+          const position = vehicle.body.translation();
+          const dx = position.x - x;
+          const dz = position.z - z;
+          if (dx * dx + dz * dz <= radiusSq) out.push(vehicle);
+        }
+      }
+    }
+    return out;
+  }
+
+  /** Query every vehicle that could reach a radius within a prediction
+   * window, including unusually fast crash/explosion velocities. */
+  vehiclesNearPredicted(
+    x: number,
+    z: number,
+    seconds: number,
+    radius: number,
+    out: Drivable[]
+  ): Drivable[] {
+    return this.vehiclesNear(x, z, radius + this.maximumVehicleSpeed * seconds, out);
   }
 
   removeVehicle(v: Drivable): void {
@@ -713,6 +755,7 @@ export class Game {
       p.input = this.input.read(p.index, controlsEnabled);
       p.cameraYaw = this.viewports.cameras[p.index]?.yaw() ?? 0;
     }
+    this.rebuildVehicleGrid();
     const npcStarted = performance.now();
     this.npcs.update(STEP);
     const npcMs = performance.now() - npcStarted;
@@ -731,5 +774,33 @@ export class Game {
     this.npcs.afterPhysics();
     const postPhysicsMs = performance.now() - postPhysicsStarted;
     return { npcMs, actorMs, physicsMs, postPhysicsMs };
+  }
+
+  private rebuildVehicleGrid(): void {
+    this.maximumVehicleSpeed = 0;
+    for (const column of this.vehicleGrid.values()) {
+      for (const bucket of column.values()) bucket.length = 0;
+    }
+    for (const vehicle of this.vehicles) {
+      const position = vehicle.body.translation();
+      const velocity = vehicle.body.linvel();
+      this.maximumVehicleSpeed = Math.max(
+        this.maximumVehicleSpeed,
+        Math.hypot(velocity.x, velocity.z)
+      );
+      const gx = Math.floor(position.x / VEHICLE_GRID_CELL_SIZE);
+      const gz = Math.floor(position.z / VEHICLE_GRID_CELL_SIZE);
+      let column = this.vehicleGrid.get(gx);
+      if (!column) {
+        column = new Map();
+        this.vehicleGrid.set(gx, column);
+      }
+      let bucket = column.get(gz);
+      if (!bucket) {
+        bucket = [];
+        column.set(gz, bucket);
+      }
+      bucket.push(vehicle);
+    }
   }
 }

@@ -102,6 +102,7 @@ export class Player implements Entity, CameraTarget, CombatTarget {
   private vehicleTransition: VehicleTransition | null = null;
   private vehicleDoorSide: 1 | -1 = 1;
   private respawnCost = 100;
+  private nearbyVehicles: Drivable[] = [];
 
   get canSave(): boolean {
     return !this.dead && !this.knockedDown && this.ragdoll === null && this.vehicleTransition === null;
@@ -507,7 +508,7 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     const pos = this.character.position();
     let best: Drivable | null = null;
     let bestDist = ENTER_RADIUS;
-    for (const v of this.game.vehicles) {
+    for (const v of this.game.vehiclesNear(pos.x, pos.z, ENTER_RADIUS, this.nearbyVehicles)) {
       if (v.destroyed) continue;
       const occupiedTraffic = v.driver instanceof TrafficCar && v.getSpeed() < 2.5;
       if (v.driver && !occupiedTraffic) continue;
