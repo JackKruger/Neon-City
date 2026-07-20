@@ -1,12 +1,20 @@
 import * as THREE from 'three';
 
-/** Colors for one person's skin, hair and clothing. */
+/** Colors and optional low-poly styling for one person's appearance. */
 export interface Outfit {
   skin: number;
   hair: number;
   shirt: number;
   pants: number;
   shoes: number;
+  /** Optional repeating albedo texture applied to the shirt and sleeves. */
+  shirtTexture?: string;
+  /** Visible beneath an open shirt collar. */
+  undershirt?: number;
+  /** Adds a raised, side-parted quiff and short sideburns. */
+  hairStyle?: 'swept';
+  /** Thin contrasting sneaker sole. */
+  shoeSole?: number;
 }
 
 /** Collider/joint description of one rigid part, for building a ragdoll. */
@@ -82,6 +90,23 @@ function sphere(radius: number): THREE.BufferGeometry {
   }
   return g;
 }
+function triangle(width: number, height: number): THREE.BufferGeometry {
+  const key = `t${width}:${height}`;
+  let g = GEO.get(key);
+  if (!g) {
+    g = new THREE.BufferGeometry();
+    g.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute(
+        [-width / 2, height / 2, 0, 0, -height / 2, 0, width / 2, height / 2, 0],
+        3
+      )
+    );
+    g.computeVertexNormals();
+    GEO.set(key, g);
+  }
+  return g;
+}
 
 // Shared materials keyed by color — outfits draw from small palettes.
 const MATS = new Map<number, THREE.MeshStandardMaterial>();
@@ -92,6 +117,29 @@ function material(color: number): THREE.MeshStandardMaterial {
     MATS.set(color, m);
   }
   return m;
+}
+const SHIRT_MATS = new Map<string, THREE.MeshStandardMaterial>();
+const TEXTURE_LOADER = new THREE.TextureLoader();
+function shirtMaterial(outfit: Outfit): THREE.MeshStandardMaterial {
+  if (!outfit.shirtTexture) return material(outfit.shirt);
+  const key = `${outfit.shirt}:${outfit.shirtTexture}`;
+  let shirt = SHIRT_MATS.get(key);
+  if (!shirt) {
+    const texture = TEXTURE_LOADER.load(outfit.shirtTexture);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(2, 1.5);
+    texture.magFilter = THREE.NearestFilter;
+    shirt = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      map: texture,
+      roughness: 0.85,
+      metalness: 0.02,
+    });
+    SHIRT_MATS.set(key, shirt);
+  }
+  return shirt;
 }
 
 interface Leg {
@@ -152,10 +200,17 @@ export class HumanRig {
     // Chest / spine.
     this.spine.position.y = WAIST_UP;
     this.pelvis.add(this.spine);
-    const chestMesh = new THREE.Mesh(capsule(0.135, CHEST_LEN + 0.16), material(outfit.shirt));
+    const chestMesh = new THREE.Mesh(capsule(0.135, CHEST_LEN + 0.16), shirtMaterial(outfit));
     chestMesh.scale.set(1.3, 1, 0.78);
     chestMesh.position.y = CHEST_LEN / 2;
     this.spine.add(chestMesh);
+    const chestMeshes: THREE.Object3D[] = [chestMesh];
+    if (outfit.undershirt !== undefined) {
+      const collarOpening = new THREE.Mesh(triangle(0.12, 0.14), material(outfit.undershirt));
+      collarOpening.position.set(0, CHEST_LEN - 0.09, 0.108);
+      this.spine.add(collarOpening);
+      chestMeshes.push(collarOpening);
+    }
     const chestIdx = this.addSpec({
       name: 'chest',
       pivot: this.spine,
@@ -163,7 +218,7 @@ export class HumanRig {
       center: new THREE.Vector3(0, CHEST_LEN / 2, 0),
       shape: { kind: 'capsule', halfHeight: CHEST_LEN / 2 - 0.05, radius: 0.13 },
       joint: { kind: 'spherical' },
-      meshes: [chestMesh],
+      meshes: chestMeshes,
     });
 
     // Neck + head.
@@ -178,12 +233,28 @@ export class HumanRig {
     headMesh.position.y = headY;
     this.neck.add(headMesh);
     const hairMesh = new THREE.Mesh(sphere(HEAD_R * 1.02), material(outfit.hair));
-    hairMesh.scale.set(0.95, 0.95, 0.95);
-    hairMesh.position.set(0, headY + 0.035, -0.022);
+    hairMesh.scale.set(0.95, outfit.hairStyle === 'swept' ? 0.72 : 0.95, 0.95);
+    hairMesh.position.set(0, headY + (outfit.hairStyle === 'swept' ? 0.068 : 0.035), -0.022);
     this.neck.add(hairMesh);
+    const headMeshes: THREE.Object3D[] = [neckMesh, headMesh, hairMesh];
+    if (outfit.hairStyle === 'swept') {
+      const quiff = new THREE.Mesh(sphere(HEAD_R * 0.62), material(outfit.hair));
+      quiff.scale.set(1.25, 0.54, 0.78);
+      quiff.rotation.z = -0.12;
+      quiff.position.set(-0.018, headY + 0.112, 0.032);
+      this.neck.add(quiff);
+      headMeshes.push(quiff);
+      for (const side of [-1, 1] as const) {
+        const sideburn = new THREE.Mesh(box(0.026, 0.082, 0.026), material(outfit.hair));
+        sideburn.position.set(side * 0.084, headY + 0.008, 0.016);
+        this.neck.add(sideburn);
+        headMeshes.push(sideburn);
+      }
+    }
     const noseMesh = new THREE.Mesh(sphere(0.018), material(outfit.skin));
     noseMesh.position.set(0, headY - 0.01, HEAD_R * 0.95);
     this.neck.add(noseMesh);
+    headMeshes.push(noseMesh);
     this.addSpec({
       name: 'head',
       pivot: this.neck,
@@ -191,7 +262,7 @@ export class HumanRig {
       center: new THREE.Vector3(0, headY, 0),
       shape: { kind: 'capsule', halfHeight: 0.03, radius: HEAD_R },
       joint: { kind: 'spherical' },
-      meshes: [neckMesh, headMesh, hairMesh, noseMesh],
+      meshes: headMeshes,
     });
 
     this.armL = this.buildArm(outfit, chestIdx, 1);
@@ -210,12 +281,14 @@ export class HumanRig {
     shoulder.position.set(side * SHOULDER_X, CHEST_LEN - SHOULDER_DROP, 0);
     this.spine.add(shoulder);
     // Short sleeve over the shoulder, skin below.
-    const sleeve = new THREE.Mesh(capsule(UPPER_ARM_R + 0.012, 0.18), material(outfit.shirt));
+    const sleeve = new THREE.Mesh(capsule(UPPER_ARM_R + 0.012, 0.18), shirtMaterial(outfit));
     sleeve.position.y = -0.06;
     shoulder.add(sleeve);
+    const armMeshes: THREE.Object3D[] = [sleeve];
     const upperMesh = new THREE.Mesh(capsule(UPPER_ARM_R, UPPER_ARM_LEN), material(outfit.skin));
     upperMesh.position.y = -UPPER_ARM_LEN / 2;
     shoulder.add(upperMesh);
+    armMeshes.push(upperMesh);
     const upperIdx = this.addSpec({
       name: `upperArm${side > 0 ? 'L' : 'R'}`,
       pivot: shoulder,
@@ -223,7 +296,7 @@ export class HumanRig {
       center: new THREE.Vector3(0, -UPPER_ARM_LEN / 2, 0),
       shape: { kind: 'capsule', halfHeight: UPPER_ARM_LEN / 2 - UPPER_ARM_R, radius: UPPER_ARM_R },
       joint: { kind: 'spherical' },
-      meshes: [sleeve, upperMesh],
+      meshes: armMeshes,
     });
 
     const elbow = new THREE.Group();
@@ -304,6 +377,13 @@ export class HumanRig {
     const footMesh = new THREE.Mesh(box(0.095, FOOT_H - 0.02, FOOT_LEN), material(outfit.shoes));
     footMesh.position.set(0, -FOOT_H + (FOOT_H - 0.02) / 2, FOOT_LEN / 2 - 0.075);
     ankle.add(footMesh);
+    const footMeshes: THREE.Object3D[] = [footMesh];
+    if (outfit.shoeSole !== undefined) {
+      const soleMesh = new THREE.Mesh(box(0.101, 0.018, FOOT_LEN + 0.01), material(outfit.shoeSole));
+      soleMesh.position.set(0, -FOOT_H + 0.005, FOOT_LEN / 2 - 0.075);
+      ankle.add(soleMesh);
+      footMeshes.push(soleMesh);
+    }
     this.addSpec({
       name: `foot${side > 0 ? 'L' : 'R'}`,
       pivot: ankle,
@@ -311,7 +391,7 @@ export class HumanRig {
       center: new THREE.Vector3(0, -FOOT_H / 2, FOOT_LEN / 2 - 0.075),
       shape: { kind: 'box', hx: 0.05, hy: FOOT_H / 2, hz: FOOT_LEN / 2 },
       joint: { kind: 'hinge', axis: new THREE.Vector3(1, 0, 0), min: -0.7, max: 0.7 },
-      meshes: [footMesh],
+      meshes: footMeshes,
     });
     return { hip, knee, ankle };
   }

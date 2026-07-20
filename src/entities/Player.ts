@@ -80,10 +80,14 @@ function transitionCommand(vehicle: Drivable): DriveCommand {
 
 const P1_OUTFIT: Outfit = {
   skin: 0xe0ac69,
-  hair: 0x241b17,
-  shirt: 0x29c5f6, // cyan jacket
-  pants: 0x2b2d42,
-  shoes: 0xf5f5f5,
+  hair: 0x34251f,
+  hairStyle: 'swept',
+  shirt: 0x32c7c5,
+  shirtTexture: '/assets/characters/tropical-shirt.png',
+  undershirt: 0xf3ead7,
+  pants: 0x496c9b,
+  shoes: 0xf7f4e8,
+  shoeSole: 0xd6d9d2,
 };
 const P2_OUTFIT: Outfit = {
   skin: 0xc68642,
