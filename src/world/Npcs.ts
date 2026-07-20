@@ -247,6 +247,25 @@ export class Npcs {
     }
   }
 
+  /** Clear every NPC reference before a vehicle's Rapier body is disposed. */
+  prepareVehicleRemoval(vehicle: Drivable): void {
+    if (vehicle instanceof Vehicle) {
+      for (let i = this.pendingEntries.length - 1; i >= 0; i--) {
+        const entry = this.pendingEntries[i];
+        if (entry.vehicle !== vehicle) continue;
+        entry.pedestrian.restoreAfterFailedVehicleEntry(vehicle);
+        this.pendingEntries.splice(i, 1);
+      }
+      for (const pedestrian of this.peds) {
+        pedestrian.cancelVehicleTransitionForRemoval(vehicle);
+      }
+    }
+    this.exitingDrivers.delete(vehicle);
+    for (let i = this.traffic.length - 1; i >= 0; i--) {
+      if (this.traffic[i].vehicle === vehicle) this.traffic.splice(i, 1);
+    }
+  }
+
   /** Called at the end of the pedestrian's doorway animation. */
   completePedestrianVehicleEntry(pedestrian: Pedestrian, vehicle: Vehicle): void {
     if (!this.pendingEntries.some((entry) => entry.pedestrian === pedestrian)) {
@@ -386,7 +405,8 @@ export class Npcs {
       }
       if (this.distToPlayers(pos.x, pos.z) > DESPAWN) {
         t.dispose();
-        this.traffic.splice(i, 1);
+        const remaining = this.traffic.indexOf(t);
+        if (remaining >= 0) this.traffic.splice(remaining, 1);
       }
     }
   }

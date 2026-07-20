@@ -309,8 +309,10 @@ export class Game {
 
   removeVehicle(v: Drivable): void {
     const vi = this.vehicles.indexOf(v);
-    if (vi >= 0) this.vehicles.splice(vi, 1);
     const ei = this.entities.indexOf(v);
+    if (vi < 0 && ei < 0) return;
+    this.npcs?.prepareVehicleRemoval(v);
+    if (vi >= 0) this.vehicles.splice(vi, 1);
     if (ei >= 0) this.entities.splice(ei, 1);
     if (v instanceof Vehicle) this.city?.forgetVehicle(v);
     v.dispose();

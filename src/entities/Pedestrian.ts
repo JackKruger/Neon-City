@@ -321,6 +321,11 @@ export class Pedestrian implements Entity, CombatTarget {
     }
   }
 
+  /** Release a streamed vehicle while its body is still available for a safe fallback pose. */
+  cancelVehicleTransitionForRemoval(vehicle: Vehicle): void {
+    if (this.vehicleTransition?.vehicle === vehicle) this.cancelVehicleTransition(false);
+  }
+
   private distanceToPlayers(vehicle: Vehicle): number {
     const t = vehicle.body.translation();
     return Math.min(...this.game.playerPositions().map((player) =>
