@@ -78,10 +78,16 @@ export class Character implements Entity {
     this.syncVisuals();
   }
 
-  /** Set the desired planar move direction (normalized) and sprint flag. */
-  setMove(dir: THREE.Vector3, sprint: boolean): void {
-    this.moveDir.copy(dir);
-    this.moveSpeed = dir.lengthSq() > 0.01 ? (sprint ? RUN_SPEED : WALK_SPEED) : 0;
+  /** Set the desired planar move direction, sprint flag, and analogue intensity. */
+  setMove(dir: THREE.Vector3, sprint: boolean, intensity = 1): void {
+    const amount = THREE.MathUtils.clamp(intensity, 0, 1);
+    if (dir.lengthSq() <= 0.01 || amount <= 0.01) {
+      this.moveDir.set(0, 0, 0);
+      this.moveSpeed = 0;
+      return;
+    }
+    this.moveDir.copy(dir).normalize();
+    this.moveSpeed = (sprint ? RUN_SPEED : WALK_SPEED) * amount;
   }
 
   /** Start a jump if the character was grounded on the previous physics step. */

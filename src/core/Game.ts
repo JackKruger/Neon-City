@@ -506,7 +506,13 @@ export class Game {
         !this.paused && !this.mapOverlay?.isOpen
       );
       if (!this.debugCam) {
-        this.viewports.cameras[i]?.update(p, dt, look, this.settings.values.reducedMotion);
+        this.viewports.cameras[i]?.update(
+          p,
+          dt,
+          look,
+          this.settings.values.reducedMotion,
+          p.driving
+        );
       }
       const def = p.inventory.def();
       const heading = p.getHeading();
@@ -668,8 +674,9 @@ export class Game {
   }
 
   private fixedUpdate(): FixedUpdateTiming {
+    const controlsEnabled = !this.mapOverlay?.isOpen;
     for (const p of this.players) {
-      p.input = this.input.read(p.index);
+      p.input = this.input.read(p.index, controlsEnabled);
       p.cameraYaw = this.viewports.cameras[p.index]?.yaw() ?? 0;
     }
     const npcStarted = performance.now();

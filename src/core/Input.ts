@@ -83,6 +83,7 @@ export class Input {
   private mouseButtons = new Set<number>();
   private mouseLookX = 0;
   private mouseLookY = 0;
+  private pointerLockTarget: HTMLElement | null = null;
   private methods: [InputMethod, InputMethod] = ['keyboard', 'gamepad'];
 
   p1Pad: number | null = null;
@@ -98,6 +99,12 @@ export class Input {
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     // Mouse always drives player 1: left fires, right aims.
     window.addEventListener('mousedown', (e) => {
+      // The first canvas click only captures the pointer. Treat mouse buttons
+      // as gameplay input once that capture is already active.
+      if (document.pointerLockElement !== this.pointerLockTarget) {
+        this.methods[0] = 'keyboard';
+        return;
+      }
       this.mouseButtons.add(e.button);
       if (e.button === 0) this.pendingAttack[0] = true;
       this.methods[0] = 'keyboard';
@@ -114,6 +121,9 @@ export class Input {
       this.keys.clear();
       this.mouseButtons.clear();
     });
+    document.addEventListener('pointerlockchange', () => {
+      if (document.pointerLockElement !== this.pointerLockTarget) this.mouseButtons.clear();
+    });
     window.addEventListener('gamepaddisconnected', (e) => {
       if (this.p1Pad === e.gamepad.index) this.p1Pad = null;
     });
@@ -121,6 +131,7 @@ export class Input {
 
   /** Capture relative mouse movement while playing; Esc releases it normally. */
   attachPointerLock(element: HTMLElement): void {
+    this.pointerLockTarget = element;
     element.addEventListener('mousedown', () => {
       if (!document.pointerLockElement) void element.requestPointerLock();
     });
@@ -257,21 +268,23 @@ export class Input {
   }
 
   /** Build the input snapshot for a player and clear their edge flags. */
-  read(player: 0 | 1): PlayerInput {
+  read(player: 0 | 1, enabled = true): PlayerInput {
     const input = emptyInput();
-    if (player === 0) this.readKeyboard(input);
-    const padIndex = player === 0 ? this.p1Pad : null;
-    if (padIndex !== null) {
-      const pad = navigator.getGamepads()[padIndex];
-      if (pad) this.readPad(pad, input);
+    if (enabled) {
+      if (player === 0) this.readKeyboard(input);
+      const padIndex = player === 0 ? this.p1Pad : null;
+      if (padIndex !== null) {
+        const pad = navigator.getGamepads()[padIndex];
+        if (pad) this.readPad(pad, input);
+      }
+      input.jump = this.pendingJump[player];
+      input.interact = this.pendingInteract[player];
+      input.pause = this.pendingPause[player];
+      input.attackPressed = this.pendingAttack[player];
+      input.weaponNext = this.pendingWeaponNext[player];
+      input.weaponPrev = this.pendingWeaponPrev[player];
+      input.reload = this.pendingReload[player];
     }
-    input.jump = this.pendingJump[player];
-    input.interact = this.pendingInteract[player];
-    input.pause = this.pendingPause[player];
-    input.attackPressed = this.pendingAttack[player];
-    input.weaponNext = this.pendingWeaponNext[player];
-    input.weaponPrev = this.pendingWeaponPrev[player];
-    input.reload = this.pendingReload[player];
     this.pendingJump[player] = false;
     this.pendingInteract[player] = false;
     this.pendingPause[player] = false;

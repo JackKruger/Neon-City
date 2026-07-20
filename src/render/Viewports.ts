@@ -21,6 +21,13 @@ type CollisionResolver = (
   out: THREE.Vector3
 ) => void;
 
+function angleDelta(next: number, previous: number): number {
+  let delta = next - previous;
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  while (delta < -Math.PI) delta += Math.PI * 2;
+  return delta;
+}
+
 export class ChaseCamera {
   readonly camera: THREE.PerspectiveCamera;
   private position = new THREE.Vector3();
@@ -30,19 +37,35 @@ export class ChaseCamera {
   private tmpIdeal = new THREE.Vector3();
   private tmpResolved = new THREE.Vector3();
   private fov = BASE_FOV;
+  private controlYaw = 0;
   private orbitYaw = 0;
   private orbitPitch = 0;
   private recentering = false;
+  private lastTargetHeading: number | null = null;
 
   constructor(aspect: number, private resolveCollision?: CollisionResolver) {
     this.camera = new THREE.PerspectiveCamera(BASE_FOV, aspect, 0.3, 340);
   }
 
-  update(target: CameraTarget, dt: number, look: CameraInput, reducedMotion: boolean): void {
-    this.orbitYaw += look.yaw;
-    this.orbitPitch = THREE.MathUtils.clamp(this.orbitPitch + look.pitch, -0.22, 0.78);
+  update(
+    target: CameraTarget,
+    dt: number,
+    look: CameraInput,
+    reducedMotion: boolean,
+    followHeading = true
+  ): void {
     if (look.recenter) this.recentering = true;
     if (Math.abs(look.yaw) > 0.0001 || Math.abs(look.pitch) > 0.0001) this.recentering = false;
+    const targetHeading = target.getHeading();
+    if (this.lastTargetHeading !== null && !followHeading && !this.recentering) {
+      // On foot, turning the character must not also rotate the movement basis.
+      // Preserve the current world-space chase heading until the player or
+      // recenter control explicitly changes it.
+      this.orbitYaw -= angleDelta(targetHeading, this.lastTargetHeading);
+    }
+    this.lastTargetHeading = targetHeading;
+    this.orbitYaw += look.yaw;
+    this.orbitPitch = THREE.MathUtils.clamp(this.orbitPitch + look.pitch, -0.22, 0.78);
     if (this.recentering) {
       const k = 1 - Math.exp(-6 * dt);
       this.orbitYaw *= 1 - k;
@@ -54,7 +77,8 @@ export class ChaseCamera {
       }
     }
     target.getFocus(this.tmpFocus);
-    const heading = target.getHeading() + this.orbitYaw;
+    const heading = targetHeading + this.orbitYaw;
+    this.controlYaw = heading;
     const base = target.getFollowDistance();
     const dist = base + Math.min(target.getSpeed() * 0.12, 4);
     const height = base * 0.45 + this.orbitPitch * dist;
@@ -100,12 +124,9 @@ export class ChaseCamera {
     );
   }
 
-  /** Current view yaw (camera toward focus), for camera-relative input. */
+  /** Intended chase yaw, kept stable through positional follow smoothing. */
   yaw(): number {
-    return Math.atan2(
-      this.focusSmooth.x - this.position.x,
-      this.focusSmooth.z - this.position.z
-    );
+    return this.controlYaw;
   }
 }
 

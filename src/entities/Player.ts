@@ -407,7 +407,7 @@ export class Player implements Entity, CameraTarget, CombatTarget {
         .multiplyScalar(input.moveY)
         .addScaledVector(right, input.moveX)
         .normalize();
-      this.character.setMove(dir, input.sprint);
+      this.character.setMove(dir, input.sprint, mag);
     } else {
       this.character.setMove(new THREE.Vector3(), false);
     }

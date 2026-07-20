@@ -7,7 +7,7 @@ export interface MapPlayer {
   heading: number;
 }
 
-/** Shared full-screen map. Simulation and player controls remain live beneath it. */
+/** Full-screen map. Simulation remains live while gameplay controls are suppressed. */
 export class MapOverlay {
   private root = document.createElement('div');
   private canvas = document.createElement('canvas');
