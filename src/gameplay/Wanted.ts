@@ -3,19 +3,23 @@ import type { Game } from '../core/Game';
 import type { Player } from '../entities/Player';
 import { CopPed } from '../entities/CopPed';
 import { PoliceCar } from '../entities/PoliceCar';
-import { randomRoadCellNear } from '../world/RoadGraph';
-import { cellToWorld } from '../world/CityMap';
+import { pointWorld, randomRoadCellNear } from '../world/RoadGraph';
 
 const STAR_THRESHOLDS = [25, 55, 100];
-const EVADE_RADIUS = 45;
-const EVADE_TIME = 14;
+const SIGHT_RADIUS = 42;
+const SEARCH_TIME = 18;
 const MAX_HEAT = 130;
+const RESPONSE_CARS = [0, 2, 3, 5];
 
 export class Wanted {
   heat = 0;
   stars = 0;
-  private evadeTimer = 0;
+  private unseenTimer = 0;
+  private searchTimer = 0;
+  private arrestTimer = 0;
   private spawnCooldown = 0;
+  private lastKnown = new THREE.Vector3();
+  searching = false;
   readonly police: PoliceCar[] = [];
   readonly copPeds: CopPed[] = [];
 
@@ -24,15 +28,34 @@ export class Wanted {
     private player: Player
   ) {}
 
-  addHeat(amount: number): void {
+  addHeat(amount: number, origin?: THREE.Vector3): void {
     this.heat = Math.min(this.heat + amount, MAX_HEAT);
-    this.evadeTimer = 0;
+    this.unseenTimer = 0;
+    this.searchTimer = 0;
+    this.searching = false;
+    this.lastKnown.copy(origin ?? this.player.position());
     this.recomputeStars();
+  }
+
+  get policeAware(): boolean {
+    return this.stars > 0 || this.police.some((police) => !police.leaving) ||
+      this.copPeds.some((cop) => !cop.leaving && !cop.dead);
+  }
+
+  /** Pursuers aim for the frozen last-known point while the player is hidden. */
+  pursuitTarget(out = new THREE.Vector3()): THREE.Vector3 {
+    if (this.searching) return out.copy(this.lastKnown);
+    const target = this.player.driving ? this.player.vehicle!.root.position : this.player.position();
+    return out.copy(target);
   }
 
   /** Drop all heat immediately (player death/arrest). Police disengage. */
   clear(): void {
     this.heat = 0;
+    this.searching = false;
+    this.searchTimer = 0;
+    this.unseenTimer = 0;
+    this.arrestTimer = 0;
     this.recomputeStars();
   }
 
@@ -45,30 +68,51 @@ export class Wanted {
   update(dt: number): void {
     for (const p of this.police) p.update(dt);
 
-    // Evasion: no police nearby for a while clears the heat.
+    // Line-of-sight is approximated by a conservative awareness radius. Once
+    // contact breaks, units search the last known position instead of tracking
+    // the player through the city.
     if (this.stars > 0) {
-      const nearest = Math.min(...this.police.map((p) => p.distanceToTarget()), Infinity);
-      if (nearest > EVADE_RADIUS) {
-        this.evadeTimer += dt;
-        if (this.evadeTimer > EVADE_TIME) {
+      const nearestCar = Math.min(...this.police.filter((p) => !p.leaving).map((p) => p.distanceToTarget()), Infinity);
+      const playerPos = this.player.position();
+      const nearestFoot = Math.min(...this.copPeds.filter((c) => !c.dead && !c.leaving).map((c) => {
+        const p = c.position();
+        return Math.hypot(playerPos.x - p.x, playerPos.z - p.z);
+      }), Infinity);
+      if (Math.min(nearestCar, nearestFoot) <= SIGHT_RADIUS) {
+        this.lastKnown.copy(this.player.driving ? this.player.vehicle!.root.position : playerPos);
+        this.unseenTimer = 0;
+        this.searchTimer = 0;
+        this.searching = false;
+      } else {
+        this.unseenTimer += dt;
+        if (this.unseenTimer > 2) {
+          this.searching = true;
+          this.searchTimer += dt;
+        }
+        if (this.searchTimer > SEARCH_TIME) {
           this.heat = 0;
           this.recomputeStars();
         }
-      } else {
-        this.evadeTimer = 0;
-        // Sustained pursuit slowly cools heat too, so chases can end.
-        this.heat = Math.max(0, this.heat - dt * 0.8);
-        this.recomputeStars();
       }
+
+      const arrestDistance = Math.min(nearestFoot, this.player.driving ? Infinity : nearestCar);
+      if (!this.player.driving && arrestDistance < 2.4) {
+        this.arrestTimer += dt;
+        if (this.arrestTimer > 1.35) {
+          const fine = 50 + this.stars * 75;
+          this.player.bust(fine);
+          return;
+        }
+      } else this.arrestTimer = 0;
     }
 
     // Keep police population in line with the star count.
-    const want = this.stars === 0 ? 0 : this.stars;
+    const want = RESPONSE_CARS[this.stars] ?? 0;
     const active = this.police.filter((p) => !p.leaving).length;
     this.spawnCooldown -= dt;
     if (active < want && this.spawnCooldown <= 0) {
       this.spawnCooldown = 2.5;
-      this.spawnPolice();
+      this.spawnPolice(active >= 3 && this.stars >= 3);
     }
     if (want === 0) {
       for (const p of this.police) p.leaving = true;
@@ -97,27 +141,30 @@ export class Wanted {
    * to engage an on-foot target. One deployment per car; capped at star count.
    */
   maybeDeployCop(car: PoliceCar): void {
-    if (this.stars < 2 || this.player.driving || this.player.dead) return;
+    if (this.stars < 2 || this.player.driving || this.player.dead || this.searching) return;
     if (car.deployedCop && !car.deployedCop.dead) return;
     const active = this.copPeds.filter((c) => !c.dead && !c.leaving).length;
     if (active >= this.stars) return;
     const t = car.vehicle.body.translation();
     const right = new THREE.Vector3(1.6, 0, 0).applyQuaternion(car.vehicle.quaternion());
-    const cop = new CopPed(this.game, this.player, t.x + right.x, t.z + right.z);
+    const cop = new CopPed(this.game, this.player, t.x + right.x, t.z + right.z, this.stars);
     car.deployedCop = cop;
     this.copPeds.push(cop);
   }
 
-  private spawnPolice(): void {
+  private spawnPolice(roadblock: boolean): void {
     const pos = this.player.driving
       ? this.player.vehicle!.root.position
       : this.player.position();
     for (let tries = 0; tries < 14; tries++) {
-      const cell = randomRoadCellNear(pos.x, pos.z, 40, 90);
+      const cell = randomRoadCellNear(pos.x, pos.z, 55, 105);
       if (!cell) continue;
-      const { x, z } = cellToWorld(cell.cx, cell.cz);
-      const heading = Math.atan2(pos.x - x, pos.z - z);
-      this.police.push(new PoliceCar(this.game, this.player, x, z, heading));
+      // Compiled navigation nodes carry exact lane coordinates. Falling back
+      // to the containing tile centre can put responders on the wrong deck of
+      // a bridge, beside the road, or inside nearby scenery.
+      const { x, z } = pointWorld(cell);
+      const heading = Math.atan2(pos.x - x, pos.z - z) + (roadblock ? Math.PI / 2 : 0);
+      this.police.push(new PoliceCar(this.game, this.player, x, z, heading, roadblock));
       return;
     }
   }

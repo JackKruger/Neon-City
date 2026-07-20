@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import type { Entity, Game } from '../core/Game';
 import { Vehicle } from './Vehicle';
-import { CellRef, lanePoint, nextRoadCell, pointWorld } from '../world/RoadGraph';
+import { CellRef, lanePoint, nearestRoadPoint, nextRoadCell, pointWorld, roadNeighbors } from '../world/RoadGraph';
 import { speedLimitAt, worldToCell } from '../world/CityMap';
+import type { Outfit } from './HumanRig';
 
 const TURN_SPEED = 4;
 
@@ -17,12 +18,15 @@ export class TrafficCar implements Entity {
   private hasPrevVel = false;
   private stuckTime = 0;
   private reverseTime = 0;
+  private exitRequested = false;
 
   constructor(
     private game: Game,
     model: string,
     from: CellRef,
-    to: CellRef
+    to: CellRef,
+    readonly driverProfile: { outfit: Outfit; heightScale: number },
+    existingVehicle?: Vehicle
   ) {
     this.from = from;
     this.to = to;
@@ -40,13 +44,38 @@ export class TrafficCar implements Entity {
       z: this.waypoint.z - (dir.z / length) * 6,
     };
     const heading = Math.atan2(dir.x, dir.z);
-    this.vehicle = new Vehicle(game, model, startPos.x, startPos.z, heading);
+    this.vehicle = existingVehicle ?? new Vehicle(game, model, startPos.x, startPos.z, heading);
     this.vehicle.driver = this;
-    game.addVehicle(this.vehicle);
+    if (!existingVehicle) game.addVehicle(this.vehicle);
+  }
+
+  /** Put an on-foot NPC behind the wheel of an existing abandoned car. */
+  static occupy(
+    game: Game,
+    vehicle: Vehicle,
+    profile: { outfit: Outfit; heightScale: number }
+  ): TrafficCar | null {
+    const t = vehicle.body.translation();
+    const from = nearestRoadPoint(t.x, t.z, 'vehicle');
+    if (!from) return null;
+    const neighbors = roadNeighbors(from, 'vehicle');
+    if (neighbors.length === 0) return null;
+    const forward = vehicle.forward();
+    const options = neighbors
+      .map((point) => {
+        const world = pointWorld(point);
+        const dx = world.x - t.x;
+        const dz = world.z - t.z;
+        const length = Math.hypot(dx, dz) || 1;
+        return { point, alignment: (dx * forward.x + dz * forward.z) / length };
+      })
+      .sort((a, b) => b.alignment - a.alignment);
+    return new TrafficCar(game, vehicle.modelName, from, options[0].point, profile, vehicle);
   }
 
   update(dt: number): void {
     const v = this.vehicle;
+    if ((v.destroyed || v.burning) && !this.crashed) this.crash();
     if (this.crashed) {
       v.command = { steer: 0, throttle: 0, brake: 0.4, handbrake: true };
       return;
@@ -74,14 +103,20 @@ export class TrafficCar implements Entity {
     const local = new THREE.Vector3(this.waypoint.x - t.x, 0, this.waypoint.z - t.z)
       .applyQuaternion(v.quaternion().invert());
     const angle = Math.atan2(local.x, Math.max(local.z, 0.01));
-    const steer = -THREE.MathUtils.clamp(angle / 0.45, -1, 1);
+    let steer = -THREE.MathUtils.clamp(angle / 0.45, -1, 1);
 
     const turning = Math.abs(angle) > 0.25;
     // Preserve the existing 8 m/s feel for a 50 km/h street while allowing
     // authored limits to slow shopping strips and speed up arterials.
     const roadLimit = Math.min(12, (this.to.speed ?? speedLimitAt(this.to.cx, this.to.cz)) * 0.16);
     let target = turning ? Math.min(TURN_SPEED, roadLimit) : roadLimit;
-    if (this.blockedAhead()) target = 0;
+    const obstacle = this.obstacleAhead();
+    if (obstacle.stop) target = 0;
+    else if (obstacle.steerBias !== 0) {
+      steer = THREE.MathUtils.clamp(steer + obstacle.steerBias, -1, 1);
+      target = Math.min(target, 5.5);
+    }
+    if (dist < 10 && !this.game.npcs.trafficSignalAllows(this.from, this.to, t.y + 0.75)) target = 0;
 
     const speed = v.forwardSpeed();
     let throttle = 0;
@@ -115,7 +150,7 @@ export class TrafficCar implements Entity {
     this.waypoint = lanePoint(this.from, this.to, 0.18);
   }
 
-  private blockedAhead(): boolean {
+  private obstacleAhead(): { stop: boolean; steerBias: number } {
     const t = this.vehicle.body.translation();
     const f = this.vehicle.forward();
     for (const other of this.game.vehicles) {
@@ -128,7 +163,14 @@ export class TrafficCar implements Entity {
       const along = dx * f.x + dz * f.z;
       if (along < 1.5) continue;
       const side = Math.abs(dx * -f.z + dz * f.x);
-      if (side < 2.2) return true;
+      if (side < 2.2) {
+        // Keep a safe queue at close range. Farther back, gently move around a
+        // stopped obstacle when the adjacent space is clear.
+        if (along < 5.2 || other.getSpeed() > 2.5) return { stop: true, steerBias: 0 };
+        const passSide = dx * -f.z + dz * f.x >= 0 ? -1 : 1;
+        if (this.sideClear(passSide)) return { stop: false, steerBias: passSide * 0.32 };
+        return { stop: true, steerBias: 0 };
+      }
     }
     for (const p of this.game.players) {
       if (p.driving) continue;
@@ -137,20 +179,49 @@ export class TrafficCar implements Entity {
       const dz = pos.z - t.z;
       if (dx * dx + dz * dz > 64) continue;
       const along = dx * f.x + dz * f.z;
-      if (along > 1 && Math.abs(dx * -f.z + dz * f.x) < 2) return true;
+      if (along > 1 && Math.abs(dx * -f.z + dz * f.x) < 2) return { stop: true, steerBias: 0 };
     }
-    return false;
+    for (const pedestrian of this.game.npcs.peds) {
+      if (!pedestrian.alive()) continue;
+      const pos = pedestrian.position();
+      const dx = pos.x - t.x;
+      const dz = pos.z - t.z;
+      const along = dx * f.x + dz * f.z;
+      if (along > 0.8 && along < 8 && Math.abs(dx * -f.z + dz * f.x) < 1.8) {
+        return { stop: true, steerBias: 0 };
+      }
+    }
+    return { stop: false, steerBias: 0 };
+  }
+
+  private sideClear(side: number): boolean {
+    const t = this.vehicle.body.translation();
+    const f = this.vehicle.forward();
+    const right = new THREE.Vector3(f.z, 0, -f.x).multiplyScalar(side);
+    const sampleX = t.x + f.x * 5 + right.x * 2.4;
+    const sampleZ = t.z + f.z * 5 + right.z * 2.4;
+    for (const other of this.game.vehicles) {
+      if (other === this.vehicle) continue;
+      const o = other.body.translation();
+      if (Math.hypot(o.x - sampleX, o.z - sampleZ) < 3.2) return false;
+    }
+    return true;
   }
 
   crash(): void {
+    if (this.crashed) return;
     this.crashed = true;
-    // The shaken NPC driver abandons the car; players can steal it.
-    this.vehicle.driver = null;
+    this.vehicle.command = { steer: 0, throttle: 0, brake: 0.4, handbrake: true };
+    if (!this.exitRequested) {
+      this.exitRequested = true;
+      this.game.npcs.beginTrafficDriverExit(this);
+    }
   }
 
   /** Stop AI control before a player claims the occupied vehicle. */
   prepareForCarjacking(): void {
     this.crashed = true;
+    this.exitRequested = true;
     this.vehicle.command = { steer: 0, throttle: 0, brake: 0, handbrake: true };
   }
 

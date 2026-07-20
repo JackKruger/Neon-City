@@ -14,6 +14,7 @@ export class PoliceCar implements Entity {
   private reverseTime = 0;
   private stuckTime = 0;
   private beaconTime = 0;
+  private roadblockTime = 0;
   private beaconRed: THREE.Mesh;
   private beaconBlue: THREE.Mesh;
 
@@ -22,7 +23,8 @@ export class PoliceCar implements Entity {
     private target: Player,
     x: number,
     z: number,
-    heading: number
+    heading: number,
+    private roadblock = false
   ) {
     this.vehicle = new Vehicle(game, 'cars/police', x, z, heading);
     this.vehicle.driver = this;
@@ -49,6 +51,12 @@ export class PoliceCar implements Entity {
     this.updateBeacons(dt);
     const v = this.vehicle;
 
+    if (v.destroyed) {
+      this.leaving = true;
+      this.leaveTimer += dt;
+      return;
+    }
+
     if (this.leaving) {
       this.leaveTimer += dt;
       v.command = { steer: 0, throttle: 0.5, brake: 0, handbrake: false };
@@ -56,14 +64,21 @@ export class PoliceCar implements Entity {
     }
 
     const t = v.body.translation();
-    const targetPos = this.target.driving
-      ? this.target.vehicle!.root.position
-      : this.target.character.position();
+    const targetPos = this.target.wanted.pursuitTarget();
     const local = new THREE.Vector3(targetPos.x - t.x, 0, targetPos.z - t.z);
     const dist = local.length();
     local.applyQuaternion(v.quaternion().invert());
     const angle = Math.atan2(local.x, Math.max(local.z, 0.01));
     const behind = local.z < 0;
+
+    if (this.roadblock) {
+      this.roadblockTime += dt;
+      if (dist > 18 && this.roadblockTime < 16) {
+        v.command = { steer: 0, throttle: 0, brake: 0, handbrake: true };
+        return;
+      }
+      this.roadblock = false;
+    }
 
     if (this.reverseTime > 0) {
       this.reverseTime -= dt;
@@ -120,7 +135,7 @@ export class PoliceCar implements Entity {
   }
 
   shouldDespawn(): boolean {
-    return this.leaving && (this.leaveTimer > 6 || this.distanceToTarget() > 110);
+    return this.vehicle.destroyed || (this.leaving && (this.leaveTimer > 6 || this.distanceToTarget() > 110));
   }
 
   dispose(): void {

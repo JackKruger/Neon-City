@@ -334,13 +334,10 @@ function pointInOutline(x: number, z: number, object: Extract<AuthoredObject, { 
 }
 
 /** Real bridge decks override the terrain surface without changing its lattice. */
-function clampedSmoothstep(value: number): number {
-  const t = Math.max(0, Math.min(1, value));
-  return t * t * (3 - 2 * t);
-}
-
-/** Deck profile for one real bridge footprint. The middle honours the source
- * elevation while each end eases back to natural ground inside the footprint. */
+/** Deck profile for one real bridge footprint. The footprint's maximum AHD is
+ * the top of the whole structure, not necessarily its road surface. Prefer a
+ * shallow line between viable approach elevations; only use the structure top
+ * when those samples would leave no clearance over the centre ground. */
 export function bridgeProfileHeightAt(
   x: number,
   z: number,
@@ -352,18 +349,19 @@ export function bridgeProfileHeightAt(
   const axisX = alongWidth ? c : s;
   const axisZ = alongWidth ? -s : c;
   const halfLength = Math.max(object.width, object.depth) / 2;
-  const along = (x - object.x) * axisX + (z - object.z) * axisZ;
-  const side = along < 0 ? -1 : 1;
-  const edgeX = object.x + axisX * halfLength * side;
-  const edgeZ = object.z + axisZ * halfLength * side;
-  const edgeY = terrainHeightAt(edgeX, edgeZ);
+  const startY = terrainHeightAt(object.x - axisX * halfLength, object.z - axisZ * halfLength);
+  const endY = terrainHeightAt(object.x + axisX * halfLength, object.z + axisZ * halfLength);
   const centerGround = terrainHeightAt(object.x, object.z);
   const sourceDeck = Number.isFinite(object.topY) ? object.topY as number : centerGround + 0.8;
-  const deckY = Math.max(sourceDeck, centerGround + 0.45);
-  const transition = Math.min(30, Math.max(6, halfLength * 0.32));
-  const distanceFromEnd = Math.max(0, halfLength - Math.abs(along));
-  const blend = clampedSmoothstep(distanceFromEnd / transition);
-  return edgeY + (deckY - edgeY) * blend;
+  if ((startY + endY) / 2 < centerGround + 0.45) return Math.max(sourceDeck, centerGround + 0.45);
+  const middle = (startY + endY) / 2;
+  const maxDelta = halfLength * 2 * 0.05;
+  const delta = Math.max(-maxDelta, Math.min(maxDelta, endY - startY));
+  const deckStart = middle - delta / 2;
+  const deckEnd = middle + delta / 2;
+  const along = (x - object.x) * axisX + (z - object.z) * axisZ;
+  const t = Math.max(0, Math.min(1, (along + halfLength) / (halfLength * 2)));
+  return deckStart + (deckEnd - deckStart) * t;
 }
 
 /** Elevated road surface at a bridge point. Natural terrain is deliberately

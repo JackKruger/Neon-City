@@ -146,7 +146,7 @@ function blur(values, frozen, width, passes) {
  * A greyscale morphological opening retains broad hills while estimating the
  * local ground envelope below features narrower than roughly 2*radius cells.
  */
-export function removeUrbanSurfaceSpikes(values, width, { radius = 4, clearance = 2 } = {}) {
+export function removeUrbanSurfaceSpikes(values, width, { radius = 8, clearance = 2 } = {}) {
   if (values.length !== width * width) throw new Error('surface-spike filter size mismatch');
   const eroded = new Float64Array(values.length);
   const opened = new Float64Array(values.length);
@@ -272,27 +272,8 @@ function relaxQuantizedRoadGrades(values, frozen, grid, width) {
   }
 }
 
-function softenBuildingLots(heights, frozen, grid, width) {
-  const lots = [];
-  for (let z = 0; z < MAP_SIZE; z++) {
-    for (let x = 0; x < MAP_SIZE; x++) {
-      const code = cell(grid, x, z);
-      const frontage = cell(grid, x - 1, z) === 1 || cell(grid, x + 1, z) === 1 ||
-        cell(grid, x, z - 1) === 1 || cell(grid, x, z + 1) === 1;
-      if (code === 2 || (code === 3 && frontage)) lots.push([x, z]);
-    }
-  }
-  for (let pass = 0; pass < 10; pass++) {
-    for (const [x, z] of lots) {
-      const corners = [x + z * width, x + 1 + z * width, x + (z + 1) * width, x + 1 + (z + 1) * width];
-      const mean = corners.reduce((sum, i) => sum + heights[i], 0) / 4;
-      for (const i of corners) if (!frozen[i]) heights[i] += (mean - heights[i]) * 0.35;
-    }
-  }
-}
-
-/** Flatten complete authored footprints and gently lower a three-corner blend ring. */
-export function flattenBuildingPads(
+/** Place authored buildings on the final terrain without modifying that terrain. */
+export function placeBuildingsOnTerrain(
   heights,
   frozen,
   objectChunks,
@@ -341,47 +322,10 @@ export function flattenBuildingPads(
     const movable = [...group.corners].filter((index) => !frozen?.[index]);
     if (movable.length === 0) continue;
     const base = Math.min(...movable.map((index) => heights[index]));
-    for (const index of movable) heights[index] = base;
-    for (const index of movable) {
-      const x = index % width;
-      const z = Math.floor(index / width);
-      for (let radius = 1; radius <= 3; radius++) {
-        const weight = (4 - radius) / 4;
-        for (let dz = -radius; dz <= radius; dz++) {
-          for (let dx = -radius; dx <= radius; dx++) {
-            if (Math.max(Math.abs(dx), Math.abs(dz)) !== radius) continue;
-            const nx = x + dx;
-            const nz = z + dz;
-            if (nx < 0 || nz < 0 || nx >= width || nz >= width) continue;
-            const neighbor = nx + nz * width;
-            if (group.corners.has(neighbor) || frozen?.[neighbor]) continue;
-            heights[neighbor] = Math.min(
-              heights[neighbor],
-              heights[neighbor] + (base - heights[neighbor]) * weight
-            );
-          }
-        }
-      }
-    }
-    for (const object of group.objects) object.baseY = Math.round(base * 10) / 10;
     group.corners = new Set(movable);
+    for (const object of group.objects) object.baseY = Math.round(base * 10) / 10;
   }
   return [...groups.values()];
-}
-
-function levelQuantizedBuildingPads(values, groups) {
-  let changed = false;
-  for (const group of groups) {
-    const corners = [...group.corners];
-    if (corners.length === 0) continue;
-    const base = Math.min(...corners.map((index) => values[index]));
-    for (const index of corners) {
-      if (values[index] === base) continue;
-      values[index] = base;
-      changed = true;
-    }
-  }
-  return changed;
 }
 
 export function maxRoadGrade(heights, grid) {
@@ -481,10 +425,6 @@ export function buildTerrainHeights(grid, tiles, { objectChunks = null } = {}) {
   }
 
   relaxRoadGrades(heights, frozen, grid, width);
-  softenBuildingLots(heights, frozen, grid, width);
-  // Lot softening shares some corners with roads; restore the grade contract.
-  relaxRoadGrades(heights, frozen, grid, width);
-  const buildingPads = flattenBuildingPads(heights, frozen, objectChunks);
 
   const quantized = new Int16Array(heights.length);
   const quantizedMeters = new Float64Array(heights.length);
@@ -495,14 +435,7 @@ export function buildTerrainHeights(grid, tiles, { objectChunks = null } = {}) {
     const value = Math.max(-3276.8, Math.min(3276.7, heights[i]));
     quantized[i] = Math.round(value / HEIGHT_SCALE);
   }
-  // Road constraints only lower high points. Alternating them with pad
-  // leveling converges on a surface that keeps both contracts, including
-  // imperfect source footprints that overlap a road corner.
-  for (let pass = 0; pass < 128; pass++) {
-    relaxQuantizedRoadGrades(quantized, frozen, grid, width);
-    if (!levelQuantizedBuildingPads(quantized, buildingPads)) break;
-    if (pass === 127) throw new Error('terrain constraints did not converge');
-  }
+  relaxQuantizedRoadGrades(quantized, frozen, grid, width);
   let min = Infinity;
   let max = -Infinity;
   for (let i = 0; i < heights.length; i++) {
@@ -510,12 +443,16 @@ export function buildTerrainHeights(grid, tiles, { objectChunks = null } = {}) {
     min = Math.min(min, quantizedMeters[i]);
     max = Math.max(max, quantizedMeters[i]);
   }
-  let maxBuildingSpread = 0;
-  for (const group of buildingPads) {
+  // Buildings are consumers of the completed elevation lattice. Their flat
+  // bases sit at the lowest covered sample so uphill terrain may hide a little
+  // wall, but no building footprint can reshape roads, parks, or nearby lots.
+  const buildingBases = placeBuildingsOnTerrain(quantizedMeters, frozen, objectChunks);
+  let maxFootprintTerrainSpread = 0;
+  for (const group of buildingBases) {
     const samples = [...group.corners].map((index) => quantizedMeters[index]);
     if (samples.length === 0) continue;
     const base = Math.min(...samples);
-    maxBuildingSpread = Math.max(maxBuildingSpread, Math.max(...samples) - base);
+    maxFootprintTerrainSpread = Math.max(maxFootprintTerrainSpread, Math.max(...samples) - base);
     for (const object of group.objects) object.baseY = Math.round(base * 10) / 10;
   }
   return {
@@ -524,8 +461,8 @@ export function buildTerrainHeights(grid, tiles, { objectChunks = null } = {}) {
     min,
     max,
     maxGrade: maxRoadGrade(quantizedMeters, grid),
-    maxBuildingSpread,
-    buildingPadCount: buildingPads.length,
+    maxFootprintTerrainSpread,
+    buildingBaseCount: buildingBases.length,
     seaDatum,
     surfaceSpikeCount: spikeFilter.count,
     maxSurfaceSpikeReduction: spikeFilter.maxReduction,

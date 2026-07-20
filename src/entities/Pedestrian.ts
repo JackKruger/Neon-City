@@ -8,8 +8,34 @@ import { Character } from './Character';
 import type { Outfit } from './HumanRig';
 import { Ragdoll } from './Ragdoll';
 import { CellRef, lanePoint, nextRoadCell, pointWorld } from '../world/RoadGraph';
+import { Vehicle } from './Vehicle';
+import type { TrafficCar } from './TrafficCar';
 
 const WALK_DIR = new THREE.Vector3();
+const NPC_ENTER_TIME = 0.95;
+const NPC_EXIT_TIME = 0.8;
+
+interface NpcVehicleTransition {
+  kind: 'enter' | 'exit';
+  vehicle: Vehicle;
+  owner: TrafficCar | null;
+  side: 1 | -1;
+  phase: 'approach' | 'animate';
+  elapsed: number;
+  startFeet: THREE.Vector3;
+  startYaw: number;
+}
+
+function ease(t: number): number {
+  return THREE.MathUtils.smootherstep(THREE.MathUtils.clamp(t, 0, 1), 0, 1);
+}
+
+function lerpYaw(from: number, to: number, t: number): number {
+  let delta = to - from;
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  while (delta < -Math.PI) delta += Math.PI * 2;
+  return from + delta * t;
+}
 
 export class Pedestrian implements Entity, CombatTarget {
   character: Character;
@@ -33,6 +59,7 @@ export class Pedestrian implements Entity, CombatTarget {
   private pendingPunch = false;
   private knockedDown = false;
   private knockdownTimer = 0;
+  private vehicleTransition: NpcVehicleTransition | null = null;
 
   constructor(
     private game: Game,
@@ -62,6 +89,10 @@ export class Pedestrian implements Entity, CombatTarget {
 
   alive(): boolean {
     return !this.dead;
+  }
+
+  get profile(): { outfit: Outfit; heightScale: number } {
+    return { outfit: this.outfit, heightScale: this.heightScale };
   }
 
   /** Weapon damage from players (and later cops/brawlers). */
@@ -95,6 +126,10 @@ export class Pedestrian implements Entity, CombatTarget {
       this.ragdoll?.update();
       this.knockdownTimer -= dt;
       if (this.knockdownTimer <= 0) this.standUp();
+      return;
+    }
+    if (this.vehicleTransition) {
+      this.updateVehicleTransition(dt);
       return;
     }
     const pos = this.character.position();
@@ -133,8 +168,196 @@ export class Pedestrian implements Entity, CombatTarget {
       this.waypoint = this.laneWaypoint();
     }
     WALK_DIR.set(this.waypoint.x - pos.x, 0, this.waypoint.z - pos.z).normalize();
-    this.character.setMove(WALK_DIR, false);
+    this.character.setMove(this.shouldYieldToTraffic(pos, WALK_DIR) ? new THREE.Vector3() : WALK_DIR, false);
     this.character.update(dt);
+  }
+
+  /** Pause when a moving vehicle's short prediction crosses this footpath. */
+  private shouldYieldToTraffic(pos: THREE.Vector3, direction: THREE.Vector3): boolean {
+    const futureX = pos.x + direction.x * 1.8;
+    const futureZ = pos.z + direction.z * 1.8;
+    for (const vehicle of this.game.vehicles) {
+      const velocity = vehicle.body.linvel();
+      const speed = Math.hypot(velocity.x, velocity.z);
+      if (speed < 1.5) continue;
+      const t = vehicle.body.translation();
+      const predictedX = t.x + velocity.x * 0.55;
+      const predictedZ = t.z + velocity.z * 0.55;
+      if (Math.hypot(predictedX - futureX, predictedZ - futureZ) < 3.2) return true;
+    }
+    return false;
+  }
+
+  /** Reserve an abandoned car once this pedestrian reaches its driver door. */
+  tryEnterVehicle(vehicle: Vehicle): boolean {
+    if (this.dead || this.knockedDown || this.vehicleTransition || this.brawlTarget || this.fleeDir) return false;
+    if (vehicle.driver || vehicle.destroyed || vehicle.burning || vehicle.getSpeed() > 0.8) return false;
+    const pos = this.character.position();
+    const t = vehicle.body.translation();
+    const local = pos.clone().sub(new THREE.Vector3(t.x, t.y, t.z)).applyQuaternion(vehicle.quaternion().invert());
+    this.vehicleTransition = {
+      kind: 'enter',
+      vehicle,
+      owner: null,
+      side: local.x >= 0 ? 1 : -1,
+      phase: 'approach',
+      elapsed: 0,
+      startFeet: pos,
+      startYaw: this.character.getFacing(),
+    };
+    return true;
+  }
+
+  /** Materialize a traffic driver in the seat and animate them out safely. */
+  beginVehicleExit(vehicle: Vehicle, owner: TrafficCar, side: 1 | -1): void {
+    if (this.dead || this.knockedDown || this.vehicleTransition) return;
+    this.vehicleTransition = {
+      kind: 'exit',
+      vehicle,
+      owner,
+      side,
+      phase: 'animate',
+      elapsed: 0,
+      startFeet: vehicle.seatPosition(side),
+      startYaw: vehicle.getHeading(),
+    };
+    vehicle.setDoorOpen(side, true);
+    this.character.beginVehicleTransition(false);
+  }
+
+  private updateVehicleTransition(dt: number): void {
+    const transition = this.vehicleTransition!;
+    const vehicle = transition.vehicle;
+    const side = transition.side;
+    if (vehicle.destroyed) {
+      this.cancelVehicleTransition(true);
+      return;
+    }
+
+    if (transition.phase === 'approach') {
+      if (vehicle.driver !== null || vehicle.burning || vehicle.getSpeed() > 1.2) {
+        this.cancelVehicleTransition(false);
+        return;
+      }
+      const pos = this.character.position();
+      const outside = vehicle.doorPosition(side, 1.05);
+      const dx = outside.x - pos.x;
+      const dz = outside.z - pos.z;
+      const distance = Math.hypot(dx, dz);
+      if (distance > 0.05) this.character.setMove(new THREE.Vector3(dx / distance, 0, dz / distance), false);
+      this.character.update(dt);
+      if (distance > 1.15) return;
+      vehicle.driver = this; // claim the seat before the doorway animation starts
+      vehicle.command = { steer: 0, throttle: 0, brake: 0, handbrake: true };
+      vehicle.setDoorOpen(side, true);
+      transition.phase = 'animate';
+      transition.elapsed = 0;
+      transition.startFeet.copy(this.character.position());
+      transition.startYaw = this.character.getFacing();
+      this.character.beginVehicleTransition(true);
+      this.game.audio.carDoor(this.distanceToPlayers(vehicle));
+      return;
+    }
+
+    if (transition.kind === 'exit' && vehicle.driver !== transition.owner) {
+      this.cancelVehicleTransition(false);
+      return;
+    }
+    transition.elapsed += dt;
+    const duration = transition.kind === 'enter' ? NPC_ENTER_TIME : NPC_EXIT_TIME;
+    const p = Math.min(1, transition.elapsed / duration);
+    const seat = vehicle.seatPosition(side);
+    const doorway = vehicle.doorPosition(side, 0.18);
+    const outside = vehicle.doorPosition(side, 1.05);
+    const t = vehicle.body.translation();
+    const inwardYaw = Math.atan2(t.x - outside.x, t.z - outside.z);
+    const feet = new THREE.Vector3();
+    let seatBlend = 0;
+    let visible = true;
+    let yaw = inwardYaw;
+
+    if (transition.kind === 'enter') {
+      if (p < 0.42) feet.lerpVectors(transition.startFeet, outside, ease(p / 0.42));
+      else if (p < 0.72) feet.lerpVectors(outside, doorway, ease((p - 0.42) / 0.3));
+      else feet.lerpVectors(doorway, seat, ease((p - 0.72) / 0.28));
+      seatBlend = ease((p - 0.42) / 0.58);
+      yaw = lerpYaw(transition.startYaw, inwardYaw, ease(p / 0.4));
+      visible = p < 0.92;
+    } else {
+      if (p < 0.38) feet.lerpVectors(seat, doorway, ease(p / 0.38));
+      else feet.lerpVectors(doorway, outside, ease((p - 0.38) / 0.62));
+      seatBlend = 1 - ease(p / 0.82);
+      visible = p > 0.08;
+    }
+    this.character.setVehicleTransitionPose(feet, yaw, seatBlend, side, visible);
+    if (p < 1) return;
+
+    vehicle.setDoorOpen(side, false);
+    this.game.audio.carDoor(this.distanceToPlayers(vehicle));
+    this.vehicleTransition = null;
+    if (transition.kind === 'enter') {
+      this.game.npcs.completePedestrianVehicleEntry(this, vehicle);
+      return;
+    }
+    if (vehicle.driver === transition.owner) vehicle.driver = null;
+    this.game.npcs.completeTrafficDriverExit(vehicle, this);
+    this.character.teleport(outside.x, outside.y, outside.z);
+    this.character.setFacing(inwardYaw);
+    this.character.setEnabled(true);
+    this.fleeDir = vehicle.forward().multiplyScalar(-1);
+    this.fleeTime = 2.5;
+  }
+
+  private cancelVehicleTransition(forceAway: boolean): void {
+    const transition = this.vehicleTransition;
+    if (!transition) return;
+    const outside = transition.vehicle.doorPosition(transition.side, forceAway ? 1.7 : 1.05);
+    if (transition.vehicle.driver === this) transition.vehicle.driver = null;
+    transition.vehicle.setDoorOpen(transition.side, false);
+    this.vehicleTransition = null;
+    if (!this.character.enabled) {
+      this.character.teleport(outside.x, outside.y, outside.z);
+      this.character.setEnabled(true);
+    }
+  }
+
+  private distanceToPlayers(vehicle: Vehicle): number {
+    const t = vehicle.body.translation();
+    return Math.min(...this.game.playerPositions().map((player) =>
+      Math.hypot(player.x - t.x, player.z - t.z)
+    ));
+  }
+
+  /** Recover if the road graph unloads between entering the seat and AI handoff. */
+  restoreAfterFailedVehicleEntry(vehicle: Vehicle): void {
+    const position = this.character.position();
+    const t = vehicle.body.translation();
+    const local = position.clone()
+      .sub(new THREE.Vector3(t.x, t.y, t.z))
+      .applyQuaternion(vehicle.quaternion().invert());
+    const outside = vehicle.doorPosition(local.x >= 0 ? 1 : -1, 1.1);
+    this.character.teleport(outside.x, outside.y, outside.z);
+    this.character.setEnabled(true);
+    this.fleeDir = vehicle.forward().multiplyScalar(-1);
+    this.fleeTime = 2;
+  }
+
+  /** Witnesses flee the scene and make the crime reportable. */
+  reactToCrime(origin: THREE.Vector3): void {
+    if (this.dead || this.knockedDown) return;
+    if (this.vehicleTransition?.phase === 'approach') this.cancelVehicleTransition(false);
+    if (this.vehicleTransition) return;
+    const pos = this.character.position();
+    this.fleeDir = pos.clone().sub(origin).setY(0);
+    if (this.fleeDir.lengthSq() < 0.01) this.fleeDir.set(1, 0, 0);
+    this.fleeDir.normalize();
+    this.fleeTime = Math.max(this.fleeTime, 4.5);
+    this.brawlTarget = null;
+    this.pendingPunch = false;
+  }
+
+  availableForVehicle(): boolean {
+    return !this.dead && !this.knockedDown && !this.vehicleTransition && !this.brawlTarget && !this.fleeDir;
   }
 
   /** Footpath target with a small perpendicular offset so pedestrians spread
@@ -214,6 +437,7 @@ export class Pedestrian implements Entity, CombatTarget {
     impact: THREE.Vector3
   ): void {
     if (this.dead || this.knockedDown) return;
+    this.vehicleTransition = null;
     this.brawlTarget = null;
     this.pendingPunch = false;
     this.fleeDir = impact.clone().setY(0);

@@ -7,6 +7,7 @@ import { Character } from './Character';
 import type { Outfit } from './HumanRig';
 import { Ragdoll } from './Ragdoll';
 import { TrafficCar } from './TrafficCar';
+import { Vehicle } from './Vehicle';
 import type { Drivable, DriveCommand } from './Drivable';
 import { Wanted } from '../gameplay/Wanted';
 import { Inventory } from '../gameplay/Inventory';
@@ -30,6 +31,7 @@ interface VehicleTransition {
   startFeet: THREE.Vector3;
   startYaw: number;
   occupantEjected: boolean;
+  occupantProfile?: TrafficCar['driverProfile'];
 }
 
 function ease(t: number): number {
@@ -84,7 +86,7 @@ export class Player implements Entity, CameraTarget, CombatTarget {
   knockedDown = false;
   /** Message for this player's HUD center slot ("WASTED"). */
   hudMessage: string | null = null;
-  private balance = 0;
+  private balance = 500;
   private attackCooldown = 0;
   private heldWeaponId: WeaponId = 'fists';
   /** Melee damage waiting for the swing to reach its contact frame. */
@@ -98,6 +100,7 @@ export class Player implements Entity, CameraTarget, CombatTarget {
   private ragdoll: Ragdoll | null = null;
   private vehicleTransition: VehicleTransition | null = null;
   private vehicleDoorSide: 1 | -1 = 1;
+  private respawnCost = 100;
 
   constructor(
     private game: Game,
@@ -147,6 +150,20 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     if (!this.dead && !this.knockedDown && !this.driving) this.knockDown(velocityChange);
   }
 
+  /** Crash forces can injure occupants even while the chassis protects them. */
+  takeOccupantCrashDamage(damage: number, origin: THREE.Vector3): void {
+    if (this.dead || !this.vehicle || damage <= 0) return;
+    const absorbed = Math.min(this.armour, damage * 0.55);
+    this.armour -= absorbed;
+    this.health -= damage - absorbed;
+    if (this.health > 0) return;
+    const vehicle = this.vehicle;
+    this.ejectFromDestroyedVehicle(vehicle, origin);
+    const away = this.position().sub(origin).setY(0);
+    if (away.lengthSq() < 0.01) away.set(1, 0, 0);
+    this.die(away.normalize());
+  }
+
   private knockDown(impact: THREE.Vector3): void {
     this.knockedDown = true;
     this.knockdownTimer = KNOCKDOWN_TIME;
@@ -182,6 +199,7 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     this.health = 0;
     this.knockedDown = false;
     this.hudMessage = 'WASTED';
+    this.respawnCost = 100;
     this.respawnTimer = 4;
     this.game.combat.unregister(this.character.collider);
     // The ragdoll steals the rig's meshes (and drops any held weapon).
@@ -213,9 +231,33 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     this.dead = false;
     this.knockdownTimer = 0;
     this.hudMessage = null;
-    this.balance = Math.max(0, this.balance - 100); // hospital fee
+    this.balance = Math.max(0, this.balance - this.respawnCost);
     this.inventory.loseReserves();
     this.heldWeaponId = 'fists'; // re-attach the current weapon to the new rig
+  }
+
+  /** Resolve a close-range police arrest, including a star-scaled fine. */
+  bust(fine: number): void {
+    if (this.dead) return;
+    const vehiclePos = this.vehicle?.body.translation();
+    const arrestPos = vehiclePos
+      ? new THREE.Vector3(vehiclePos.x, vehiclePos.y, vehiclePos.z)
+      : this.position();
+    if (this.vehicle) {
+      this.vehicle.driver = null;
+      this.vehicle.setDoorOpen(this.vehicleDoorSide, false);
+      this.vehicle = null;
+    }
+    this.vehicleTransition = null;
+    this.pendingMelee = null;
+    this.character.teleport(arrestPos.x, heightAt(arrestPos.x, arrestPos.z), arrestPos.z);
+    this.character.setEnabled(false);
+    this.dead = true;
+    this.hudMessage = 'BUSTED';
+    this.respawnTimer = 3;
+    this.respawnCost = Math.max(0, Math.floor(fine));
+    this.wanted.clear();
+    this.game.audio.busted();
   }
 
   get driving(): boolean {
@@ -282,6 +324,14 @@ export class Player implements Entity, CameraTarget, CombatTarget {
         this.prompt = this.vehicle.canExit()
           ? `Space / A ascend · Shift / B descend · ${interact} exit`
           : 'Space ascend · Shift descend · land to exit';
+      } else if (this.vehicle instanceof Vehicle && !this.vehicle.burning &&
+          this.vehicle.getSpeed() < 1.2 && this.vehicle.healthFraction < 0.98) {
+        const repair = this.game.input.inputMethod(this.index) === 'gamepad' ? 'X' : 'R';
+        this.prompt = `${repair} roadside repair $75 · ${this.game.input.interactLabel(this.index)} exit`;
+        if (input.reload && this.spendMoney(75)) {
+          this.vehicle.repair(90);
+          this.game.audio.repairChime();
+        }
       }
       if (input.interact) this.exitVehicle();
       return;
@@ -441,8 +491,10 @@ export class Player implements Entity, CameraTarget, CombatTarget {
       startFeet,
       startYaw: this.character.getFacing(),
       occupantEjected: false,
+      occupantProfile: occupant?.driverProfile,
     };
     this.character.beginVehicleTransition(true);
+    this.game.audio.carDoor();
   }
 
   exitVehicle(): void {
@@ -464,6 +516,7 @@ export class Player implements Entity, CameraTarget, CombatTarget {
       occupantEjected: false,
     };
     this.character.beginVehicleTransition(false);
+    this.game.audio.carDoor();
   }
 
   /** Emergency exit used immediately before an occupied vehicle's blast. */
@@ -538,7 +591,7 @@ export class Player implements Entity, CameraTarget, CombatTarget {
       carjackPull = ease((p - 0.28) / 0.3);
       if (!transition.occupantEjected && p >= 0.48) {
         transition.occupantEjected = true;
-        this.game.npcs.ejectTrafficDriver(v, side);
+        this.game.npcs.ejectTrafficDriver(v, side, transition.occupantProfile);
         this.game.audio.thwack();
         this.game.reportCrime(this, 28);
       }

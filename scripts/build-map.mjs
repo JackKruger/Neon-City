@@ -469,7 +469,7 @@ async function main() {
       meta.attribution = `${meta.attribution}; elevation data NASA SRTM via AWS Open Data`;
     }
     writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n');
-    console.log(`terrain: ${result.min.toFixed(1)}m..${result.max.toFixed(1)}m, sea datum ${result.seaDatum.toFixed(2)}m, max road grade ${(result.maxGrade * 100).toFixed(2)}%, ${result.surfaceSpikeCount} SRTM spikes lowered (max ${result.maxSurfaceSpikeReduction.toFixed(1)}m), ${result.buildingPadCount} building pads, max pad spread ${result.maxBuildingSpread.toFixed(2)}m`);
+    console.log(`terrain: ${result.min.toFixed(1)}m..${result.max.toFixed(1)}m, sea datum ${result.seaDatum.toFixed(2)}m, max road grade ${(result.maxGrade * 100).toFixed(2)}%, ${result.surfaceSpikeCount} SRTM spikes lowered (max ${result.maxSurfaceSpikeReduction.toFixed(1)}m), ${result.buildingBaseCount} building bases, max footprint terrain spread ${result.maxFootprintTerrainSpread.toFixed(2)}m`);
     console.log(`wrote public/maps/${MAP.name}-height.bin`);
     return;
   }
@@ -697,7 +697,7 @@ async function main() {
   const covered = keptCounts.reduce((sum, count) => sum + count, 0);
   console.log(`suburbs: ${suburbs.length}, coverage: ${((covered / N) * 100).toFixed(1)}%`);
   console.log(`spawn: world (${spawn.x}, ${spawn.z})`);
-  console.log(`terrain: ${terrain.min.toFixed(1)}m..${terrain.max.toFixed(1)}m, sea datum ${terrain.seaDatum.toFixed(2)}m, max road grade ${(terrain.maxGrade * 100).toFixed(2)}%, ${terrain.surfaceSpikeCount} SRTM spikes lowered (max ${terrain.maxSurfaceSpikeReduction.toFixed(1)}m), ${terrain.buildingPadCount} building pads, max pad spread ${terrain.maxBuildingSpread.toFixed(2)}m`);
+  console.log(`terrain: ${terrain.min.toFixed(1)}m..${terrain.max.toFixed(1)}m, sea datum ${terrain.seaDatum.toFixed(2)}m, max road grade ${(terrain.maxGrade * 100).toFixed(2)}%, ${terrain.surfaceSpikeCount} SRTM spikes lowered (max ${terrain.maxSurfaceSpikeReduction.toFixed(1)}m), ${terrain.buildingBaseCount} building bases, max footprint terrain spread ${terrain.maxFootprintTerrainSpread.toFixed(2)}m`);
   console.log(`wrote public/maps/${MAP.name}.{bin,suburbs.bin,json,png} and ${MAP.name}-height.bin`);
 }
 

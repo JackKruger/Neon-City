@@ -6,6 +6,7 @@ import { Minimap } from './Minimap';
 export interface HudState {
   speedKmh?: number;
   stars?: number;
+  wantedSearching?: boolean;
   money?: number;
   prompt?: string;
   message?: string;
@@ -21,6 +22,7 @@ export interface HudState {
   weapon?: string;
   ammoMag?: number;
   ammoReserve?: number;
+  vehicleHealth?: number;
 }
 
 /** DOM overlay HUD, one panel per viewport (left/right half in split screen). */
@@ -56,6 +58,8 @@ export class Hud {
       .hud-stars { position:absolute; right:18px; top:12px; font-size:24px; letter-spacing:3px;
         color:#ffd84d; text-shadow: 0 0 8px rgba(255,170,0,.9), 0 2px 2px rgba(0,0,0,.5); }
       .hud-stars .off { opacity:.22; }
+      .hud-stars .status { display:block; margin-top:2px; font-size:10px; letter-spacing:1px;
+        color:#fff; text-align:right; opacity:.9; }
       .hud-money { position:absolute; left:18px; top:12px; font-size:23px; font-weight:800;
         color:#74ffd1; font-variant-numeric:tabular-nums;
         text-shadow:0 0 9px rgba(30,255,188,.65), 0 2px 2px rgba(0,0,0,.7); }
@@ -296,7 +300,8 @@ export class Hud {
         : '';
     if (state.stars !== undefined && state.stars > 0) {
       p.stars.innerHTML =
-        '★'.repeat(state.stars) + `<span class="off">${'★'.repeat(3 - state.stars)}</span>`;
+        '★'.repeat(state.stars) + `<span class="off">${'★'.repeat(3 - state.stars)}</span>` +
+        (state.wantedSearching ? '<span class="status">SEARCHING</span>' : '<span class="status">PURSUIT</span>');
     } else {
       p.stars.innerHTML = '';
     }
@@ -304,7 +309,10 @@ export class Hud {
     p.prompt.style.display = state.prompt ? 'block' : 'none';
     p.prompt.textContent = state.prompt ?? '';
     p.message.textContent = state.message ?? '';
-    if (state.weapon) {
+    if (state.vehicleHealth !== undefined) {
+      const condition = Math.round(Math.max(0, Math.min(1, state.vehicleHealth)) * 100);
+      p.weapon.innerHTML = `VEHICLE <span class="ammo">${condition}% condition</span>`;
+    } else if (state.weapon) {
       const ammo =
         state.ammoMag !== undefined ? `<span class="ammo">${state.ammoMag} / ${state.ammoReserve ?? 0}</span>` : '';
       p.weapon.innerHTML = `${state.weapon}${ammo}`;

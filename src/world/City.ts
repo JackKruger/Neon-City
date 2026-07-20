@@ -376,6 +376,7 @@ export class City implements CityStreamer {
 
   constructor(private game: Game) {
     setRoadNetwork(null);
+    this.groundMats.asphalt.name = 'asphalt';
     // Deep tunnelling net. Streamed heightfields are the actual terrain.
     this.safetyBody = game.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
     game.world.createCollider(
@@ -703,7 +704,9 @@ export class City implements CityStreamer {
     coarse.translate(feature.x, feature.elevation ?? 0.018, feature.z);
     const geometry = this.subdivideForTerrain(coarse);
     coarse.dispose();
-    this.displaceHeight(geometry, feature.structure === 'bridge' ? bridgeSurfaceHeightAt : terrainHeightAt);
+    const sitsOnBridge = feature.structure === 'bridge' ||
+      (feature.structure !== 'tunnel' && feature.surface === 'pavement');
+    this.displaceHeight(geometry, sitsOnBridge ? bridgeSurfaceHeightAt : terrainHeightAt);
     this.bucket(this.groundMats[feature.surface], geometry, buckets);
   }
 
@@ -1007,7 +1010,10 @@ export class City implements CityStreamer {
     body: RAPIER.RigidBody,
     buckets: Buckets
   ): void {
-    const baseY = heightAt(feature.x, feature.z);
+    // Civic point data has no layer/structure field. A prop whose point lies
+    // in a road-deck footprint is overwhelmingly part of that deck (Princes
+    // Bridge's bollards are a common example), so resolve the elevated surface.
+    const baseY = bridgeSurfaceHeightAt(feature.x, feature.z);
     let geometry: THREE.BufferGeometry;
     let material: THREE.Material = this.propMats.metal;
     let collider: { hx: number; hy: number; hz: number } | null = null;

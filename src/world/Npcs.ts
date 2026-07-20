@@ -6,6 +6,7 @@ import { Pedestrian } from '../entities/Pedestrian';
 import type { Outfit } from '../entities/HumanRig';
 import { TrafficCar } from '../entities/TrafficCar';
 import type { Drivable } from '../entities/Drivable';
+import { Vehicle } from '../entities/Vehicle';
 import {
   CellRef,
   NavigationMode,
@@ -17,12 +18,22 @@ import {
 
 const MAX_PEDS = 26;
 const MAX_TRAFFIC = 12;
+const MAX_TRAFFIC_BODIES = MAX_TRAFFIC + 8;
 const SPAWN_MIN = 45;
 const SPAWN_MAX = 100;
 const DESPAWN = 140;
 const MIN_CONTACT_SPEED = 0.65;
 const RAGDOLL_IMPACT_SPEED = 4.5;
 const MAX_PLAYER_VEHICLE_DAMAGE = 45;
+const SIGNAL_GREEN = new THREE.Color(0x3cff88);
+const SIGNAL_RED = new THREE.Color(0xff365f);
+
+interface TrafficSignalVisual {
+  root: THREE.Group;
+  northSouth: THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>;
+  eastWest: THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>;
+  lastSeen: number;
+}
 
 const SKINS = [0xffdbc4, 0xf1c27d, 0xe0ac69, 0xc68642, 0x8d5524, 0x5c3a21];
 const HAIRS = [0x241b17, 0x4a2f23, 0x8c5a3c, 0xb5651d, 0xd8c6a0, 0x707580, 0x1a1a2e];
@@ -52,19 +63,35 @@ export class Npcs {
   readonly peds: Pedestrian[] = [];
   readonly traffic: TrafficCar[] = [];
   private spawnTimer = 0;
+  private vehicleChoiceTimer = 2;
+  private signalClock = 0;
+  private pendingEntries: { pedestrian: Pedestrian; vehicle: Vehicle }[] = [];
+  private exitingDrivers = new Map<Drivable, Pedestrian>();
+  private trafficSignals = new Map<string, TrafficSignalVisual>();
 
   constructor(private game: Game) {}
 
   update(dt: number): void {
+    this.signalClock += dt;
     for (const p of this.peds) p.update(dt);
     for (const t of this.traffic) t.update(dt);
+    this.finishPendingEntries();
+
+    this.vehicleChoiceTimer -= dt;
+    if (this.vehicleChoiceTimer <= 0) {
+      this.vehicleChoiceTimer = 2.5 + Math.random() * 2;
+      this.assignAbandonedVehicle();
+    }
 
     this.spawnTimer -= dt;
     if (this.spawnTimer <= 0) {
       this.spawnTimer = 0.4;
       this.recycle();
       if (this.peds.length < MAX_PEDS) this.spawnPed();
-      if (this.traffic.length < MAX_TRAFFIC) this.spawnTraffic();
+      const activeTraffic = this.traffic.filter(
+        (traffic) => !traffic.crashed && !traffic.vehicle.destroyed && traffic.vehicle.driver === traffic
+      ).length;
+      if (activeTraffic < MAX_TRAFFIC && this.traffic.length < MAX_TRAFFIC_BODIES) this.spawnTraffic();
     }
   }
 
@@ -109,25 +136,204 @@ export class Npcs {
     const edge = this.randomSpawnEdge('vehicle');
     if (!edge) return;
     const model = CIVILIAN_CARS[Math.floor(Math.random() * CIVILIAN_CARS.length)];
-    this.traffic.push(new TrafficCar(this.game, model, edge.from, edge.to));
+    const profile = { outfit: randomOutfit(), heightScale: 0.94 + Math.random() * 0.1 };
+    this.traffic.push(new TrafficCar(this.game, model, edge.from, edge.to, profile));
+  }
+
+  /** Alternating virtual signals at junctions; roads without a junction stay green. */
+  trafficSignalAllows(from: CellRef, to: CellRef, surfaceCeiling: number): boolean {
+    const exits = roadNeighbors(to, 'vehicle');
+    const junction = exits.length >= (to.x === undefined ? 3 : 2);
+    if (!junction) return true;
+    const a = pointWorld(from);
+    const b = pointWorld(to);
+    const northSouth = Math.abs(b.z - a.z) >= Math.abs(b.x - a.x);
+    const offset = Math.abs((to.cx * 17 + to.cz * 31) % 5);
+    const phase = (this.signalClock + offset) % 16;
+    // A short all-red interval gives pedestrians and crossing traffic time to clear.
+    const northSouthGreen = phase < 7;
+    const eastWestGreen = phase >= 8 && phase < 15;
+    this.updateTrafficSignalVisual(to, northSouthGreen, eastWestGreen, surfaceCeiling);
+    return northSouth ? northSouthGreen : eastWestGreen;
+  }
+
+  private updateTrafficSignalVisual(
+    to: CellRef,
+    northSouthGreen: boolean,
+    eastWestGreen: boolean,
+    surfaceCeiling: number
+  ): void {
+    const world = pointWorld(to);
+    const surfaceY = this.game.surfaceHeightBelow(world.x, world.z, surfaceCeiling);
+    const key = `${to.cx},${to.cz},${Math.round(surfaceY * 2)}`;
+    let signal = this.trafficSignals.get(key);
+    if (!signal) {
+      const root = new THREE.Group();
+      root.position.set(world.x, surfaceY, world.z);
+      const poleMaterial = new THREE.MeshStandardMaterial({ color: 0x252a35, roughness: 0.75, metalness: 0.3 });
+      const pole = new THREE.Mesh(new THREE.BoxGeometry(0.12, 3.2, 0.12), poleMaterial);
+      pole.position.set(2.8, 1.6, 2.8);
+      root.add(pole);
+      const makeHead = (x: number, z: number, rotation: number) => {
+        const material = new THREE.MeshStandardMaterial({
+          color: SIGNAL_RED,
+          emissive: SIGNAL_RED,
+          emissiveIntensity: 1.8,
+          roughness: 0.35,
+        });
+        const head = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.58, 0.22), material);
+        head.position.set(x, 3, z);
+        head.rotation.y = rotation;
+        root.add(head);
+        return head;
+      };
+      signal = {
+        root,
+        northSouth: makeHead(2.8, 2.45, 0),
+        eastWest: makeHead(2.45, 2.8, Math.PI / 2),
+        lastSeen: this.signalClock,
+      };
+      this.game.scene.add(root);
+      this.trafficSignals.set(key, signal);
+    }
+    signal.lastSeen = this.signalClock;
+    this.setSignalColor(signal.northSouth.material, northSouthGreen ? SIGNAL_GREEN : SIGNAL_RED);
+    this.setSignalColor(signal.eastWest.material, eastWestGreen ? SIGNAL_GREEN : SIGNAL_RED);
+  }
+
+  private setSignalColor(material: THREE.MeshStandardMaterial, color: THREE.Color): void {
+    material.color.copy(color);
+    material.emissive.copy(color);
+  }
+
+  /** Start a normal door animation when a shaken traffic driver abandons a car. */
+  beginTrafficDriverExit(driver: TrafficCar): void {
+    const vehicle = driver.vehicle;
+    if (vehicle.driver !== driver || vehicle.destroyed) return;
+    const side: 1 | -1 = 1; // right-hand-drive driver's door
+    const doorway = vehicle.doorPosition(side, 0.9);
+    const from = nearestRoadPoint(doorway.x, doorway.z, 'pedestrian');
+    if (!from) {
+      vehicle.driver = null;
+      return;
+    }
+    const neighbors = roadNeighbors(from, 'pedestrian');
+    if (neighbors.length === 0) {
+      vehicle.driver = null;
+      return;
+    }
+    const pedestrian = new Pedestrian(
+      this.game,
+      driver.driverProfile.outfit,
+      driver.driverProfile.heightScale,
+      from,
+      neighbors[Math.floor(Math.random() * neighbors.length)],
+      { x: doorway.x, z: doorway.z }
+    );
+    pedestrian.beginVehicleExit(vehicle, driver, side);
+    this.peds.push(pedestrian);
+    this.exitingDrivers.set(vehicle, pedestrian);
+  }
+
+  completeTrafficDriverExit(vehicle: Drivable, pedestrian: Pedestrian): void {
+    if (this.exitingDrivers.get(vehicle) === pedestrian) this.exitingDrivers.delete(vehicle);
+  }
+
+  /** Called at the end of the pedestrian's doorway animation. */
+  completePedestrianVehicleEntry(pedestrian: Pedestrian, vehicle: Vehicle): void {
+    if (!this.pendingEntries.some((entry) => entry.pedestrian === pedestrian)) {
+      this.pendingEntries.push({ pedestrian, vehicle });
+    }
+  }
+
+  private finishPendingEntries(): void {
+    for (const { pedestrian, vehicle } of this.pendingEntries.splice(0)) {
+      const driver = TrafficCar.occupy(this.game, vehicle, pedestrian.profile);
+      if (!driver) {
+        vehicle.driver = null;
+        pedestrian.restoreAfterFailedVehicleEntry(vehicle);
+        continue;
+      }
+      const pedIndex = this.peds.indexOf(pedestrian);
+      if (pedIndex >= 0) this.peds.splice(pedIndex, 1);
+      pedestrian.dispose();
+      // Replace any abandoned TrafficCar wrapper that still owns this body.
+      const oldIndex = this.traffic.findIndex((traffic) => traffic !== driver && traffic.vehicle === vehicle);
+      if (oldIndex >= 0) this.traffic.splice(oldIndex, 1);
+      this.traffic.push(driver);
+    }
+  }
+
+  private assignAbandonedVehicle(): void {
+    const pedestrians = this.peds.filter((pedestrian) => pedestrian.availableForVehicle());
+    const vehicles = this.game.vehicles.filter(
+      (vehicle): vehicle is Vehicle =>
+        vehicle instanceof Vehicle &&
+        vehicle.driver === null &&
+        !vehicle.destroyed &&
+        !vehicle.burning &&
+        vehicle.getSpeed() < 0.8
+    );
+    let best: { pedestrian: Pedestrian; vehicle: Vehicle; distance: number } | null = null;
+    for (const pedestrian of pedestrians) {
+      const pos = pedestrian.position();
+      for (const vehicle of vehicles) {
+        const t = vehicle.body.translation();
+        const distance = Math.hypot(t.x - pos.x, t.z - pos.z);
+        if (distance > 18 || (best && distance >= best.distance)) continue;
+        best = { pedestrian, vehicle, distance };
+      }
+    }
+    if (best) best.pedestrian.tryEnterVehicle(best.vehicle);
+  }
+
+  /** Nearby civilians witness a crime, flee, and make it eligible for police dispatch. */
+  witnessCrime(origin: THREE.Vector3, radius = 28): boolean {
+    let witnessed = false;
+    for (const pedestrian of this.peds) {
+      if (!pedestrian.alive()) continue;
+      const pos = pedestrian.position();
+      if (Math.hypot(pos.x - origin.x, pos.z - origin.z) > radius) continue;
+      witnessed = true;
+      pedestrian.reactToCrime(origin);
+    }
+    return witnessed;
+  }
+
+  reactToDanger(origin: THREE.Vector3, radius = 22): void {
+    for (const pedestrian of this.peds) {
+      if (!pedestrian.alive()) continue;
+      const pos = pedestrian.position();
+      if (Math.hypot(pos.x - origin.x, pos.z - origin.z) <= radius) pedestrian.reactToCrime(origin);
+    }
   }
 
   /** Materialize an abstract traffic driver as a recoverable ejected NPC. */
-  ejectTrafficDriver(vehicle: Drivable, side: 1 | -1): void {
+  ejectTrafficDriver(
+    vehicle: Drivable,
+    side: 1 | -1,
+    profile?: { outfit: Outfit; heightScale: number }
+  ): void {
     const doorway = vehicle.doorPosition(side, 0.52);
     const from = nearestRoadPoint(doorway.x, doorway.z, 'pedestrian');
     if (!from) return;
     const neighbors = roadNeighbors(from, 'pedestrian');
     if (neighbors.length === 0) return;
     const to = neighbors[Math.floor(Math.random() * neighbors.length)];
-    const pedestrian = new Pedestrian(
-      this.game,
-      randomOutfit(),
-      0.94 + Math.random() * 0.1,
-      from,
-      to,
-      { x: doorway.x, z: doorway.z }
-    );
+    let pedestrian = this.exitingDrivers.get(vehicle);
+    if (!pedestrian) {
+      pedestrian = new Pedestrian(
+        this.game,
+        profile?.outfit ?? randomOutfit(),
+        profile?.heightScale ?? 0.94 + Math.random() * 0.1,
+        from,
+        to,
+        { x: doorway.x, z: doorway.z }
+      );
+      this.peds.push(pedestrian);
+    } else {
+      this.exitingDrivers.delete(vehicle);
+    }
 
     const t = vehicle.body.translation();
     const outward = new THREE.Vector3(doorway.x - t.x, 0, doorway.z - t.z).normalize();
@@ -139,10 +345,21 @@ export class Npcs {
     );
     const inwardYaw = Math.atan2(t.x - doorway.x, t.z - doorway.z);
     pedestrian.pullFromVehicle(doorway, inwardYaw, side, impact);
-    this.peds.push(pedestrian);
   }
 
   private recycle(): void {
+    for (const [key, signal] of this.trafficSignals) {
+      if (this.signalClock - signal.lastSeen < 8) continue;
+      this.game.scene.remove(signal.root);
+      signal.root.traverse((object) => {
+        const mesh = object as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        mesh.geometry.dispose();
+        if (Array.isArray(mesh.material)) mesh.material.forEach((material) => material.dispose());
+        else mesh.material.dispose();
+      });
+      this.trafficSignals.delete(key);
+    }
     for (let i = this.peds.length - 1; i >= 0; i--) {
       const p = this.peds[i];
       const pos = p.position();

@@ -29,7 +29,7 @@ import { Helicopter } from '../entities/Helicopter';
 import type { Drivable } from '../entities/Drivable';
 import { Player } from '../entities/Player';
 import { Npcs } from '../world/Npcs';
-import type { TrafficCar } from '../entities/TrafficCar';
+import { TrafficCar } from '../entities/TrafficCar';
 import { Combat } from '../gameplay/Combat';
 import { Fx } from '../render/Fx';
 import { Pickup } from '../entities/Pickup';
@@ -175,6 +175,22 @@ export class Game {
     return heightAt(x, z);
   }
 
+  /** Highest fixed world surface below a nearby actor. Unlike `heightAt`, this
+   * can resolve a bridge deck without turning the terrain beneath it solid. */
+  surfaceHeightBelow(x: number, z: number, ceilingY: number, maxDistance = 16): number {
+    const ray = new RAPIER.Ray(
+      new RAPIER.Vector3(x, ceilingY, z),
+      new RAPIER.Vector3(0, -1, 0)
+    );
+    const hit = this.world.castRay(
+      ray,
+      maxDistance,
+      true,
+      RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC
+    );
+    return hit ? ceilingY - hit.timeOfImpact : heightAt(x, z);
+  }
+
   addVehicle(v: Drivable): void {
     this.vehicles.push(v);
     this.entities.push(v);
@@ -188,14 +204,27 @@ export class Game {
     v.dispose();
   }
 
-  /** Attribute a crime's wanted heat to a player (null: no witness/unknown). */
-  reportCrime(player: Player | null, heat: number): void {
-    player?.wanted.addHeat(heat);
+  /** Attribute a witnessed crime; active police always count as witnesses. */
+  reportCrime(
+    player: Player | null,
+    heat: number,
+    origin?: THREE.Vector3,
+    requiresWitness = true
+  ): void {
+    if (!player) return;
+    const point = origin ?? player.position();
+    const witnessed = !requiresWitness || player.wanted.policeAware || this.npcs?.witnessCrime(point);
+    if (witnessed) player.wanted.addHeat(heat, point);
   }
 
   /** Crime hooks from the NPC simulation. */
   onPedestrianKilled(vehicle: Drivable): void {
-    this.reportCrime(vehicle.driver instanceof Player ? vehicle.driver : null, 45);
+    const t = vehicle.body.translation();
+    this.reportCrime(
+      vehicle.driver instanceof Player ? vehicle.driver : null,
+      45,
+      new THREE.Vector3(t.x, t.y, t.z)
+    );
   }
 
   onTrafficRammed(car: TrafficCar): void {
@@ -205,7 +234,7 @@ export class Game {
       if (!p.driving) continue;
       const v = p.vehicle!.body.translation();
       if (Math.hypot(v.x - t.x, v.z - t.z) < 8) {
-        p.wanted.addHeat(16);
+        this.reportCrime(p, 16, new THREE.Vector3(t.x, t.y, t.z));
         return;
       }
     }
@@ -214,9 +243,23 @@ export class Game {
   /** Eject occupants, resolve radial damage, and attribute a destroyed car. */
   onVehicleExploded(vehicle: Vehicle, origin: THREE.Vector3, attacker: Player | null): void {
     for (const player of this.players) player.ejectFromDestroyedVehicle(vehicle, origin);
+    const trafficDriver = vehicle.driver instanceof TrafficCar ? vehicle.driver : null;
+    if (trafficDriver) this.npcs.ejectTrafficDriver(vehicle, 1, trafficDriver.driverProfile);
     vehicle.driver = null;
     this.combat.blast(origin, 10, 105, attacker, vehicle);
-    this.reportCrime(attacker, 24);
+    this.reportCrime(attacker, 24, origin);
+  }
+
+  /** Transfer a portion of severe chassis deceleration to occupants. */
+  onVehicleCrashDamage(vehicle: Vehicle, chassisDamage: number, deltaV: number): void {
+    if (deltaV < 7) return;
+    const t = vehicle.body.translation();
+    const origin = new THREE.Vector3(t.x, t.y, t.z);
+    const injury = Math.min(48, Math.max(2, chassisDamage * 0.32 + (deltaV - 7) * 0.8));
+    for (const player of this.players) {
+      if (player.vehicle === vehicle) player.takeOccupantCrashDamage(injury, origin);
+    }
+    if (deltaV > 9) this.npcs.reactToDanger(origin, Math.min(32, 16 + deltaV));
   }
 
   /** Split the screen and drop player 2 next to player 1. */
@@ -292,7 +335,7 @@ export class Game {
     const sun = new THREE.DirectionalLight(0xffcf90, 1.7);
     sun.position.set(-80, 100, 40);
     this.scene.add(sun);
-    return new WorldLighting(this.scene, hemi, sun);
+    return new WorldLighting(this.scene, hemi, sun, () => this.audio.thunder());
   }
 
   start(): void {
@@ -373,10 +416,12 @@ export class Game {
         speedKmh: p.driving ? p.vehicle!.speedKmh() : undefined,
         prompt: p.prompt ?? undefined,
         stars: p.wanted.stars,
+        wantedSearching: p.wanted.searching,
         money: p.money,
         weapon: p.driving ? undefined : def.name,
         ammoMag: !p.driving && def.kind === 'gun' ? p.inventory.magCount() : undefined,
         ammoReserve: !p.driving && def.kind === 'gun' ? p.inventory.reserveCount() : undefined,
+        vehicleHealth: p.vehicle instanceof Vehicle ? p.vehicle.healthFraction : undefined,
         health: p.health / 100,
         armour: p.armour / 100,
         message: p.hudMessage ?? undefined,
@@ -445,6 +490,8 @@ export class Game {
     let throttle = 0;
     let skidding = false;
     let sirenDist = Infinity;
+    let walking = false;
+    let running = false;
     for (const p of this.players) {
       if (p.vehicle) {
         speed = Math.max(speed, p.vehicle.getSpeed());
@@ -454,11 +501,26 @@ export class Game {
           p.vehicle.command.handbrake &&
           p.vehicle.getSpeed() > 6;
       }
+      if (!p.vehicle && !p.dead && !p.knockedDown && p.input) {
+        const move = Math.hypot(p.input.moveX, p.input.moveY);
+        walking ||= move > 0.15;
+        running ||= move > 0.15 && p.input.sprint;
+      }
       for (const cop of p.wanted.police) {
         sirenDist = Math.min(sirenDist, cop.distanceToTarget());
       }
     }
-    this.audio.update(dt, speed, throttle, skidding, sirenDist);
+    this.audio.update(
+      dt,
+      speed,
+      throttle,
+      skidding,
+      sirenDist,
+      walking,
+      running,
+      this.lighting.darknessAmount,
+      this.lighting.rainAmount
+    );
   }
 
   private fixedUpdate(): void {

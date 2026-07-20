@@ -29,13 +29,19 @@
 
 ## Vehicles and animation
 
-- [ ] Allow NPCs to enter and exit vehicles.
+- [x] Allow NPCs to enter and exit vehicles.
   - Support choosing a vehicle, approaching a valid door, claiming a seat, and leaving safely.
   - Integrate the behavior with traffic, panic, police, and abandoned vehicles.
-- [ ] Add enter/exit vehicle animations for players and NPCs.
+  - Shipped: pedestrians claim nearby abandoned cars through animated, seat-reserved door
+    transitions and join the traffic graph; shaken traffic drivers exit safely, while panic,
+    carjacking, burning vehicles, and ownership changes interrupt or replace the transition.
+- [x] Add enter/exit vehicle animations for players and NPCs.
   - Align characters to the correct door and seat.
   - Prevent movement, collisions, or ownership changes from breaking the transition.
   - Provide a quick fallback for blocked or missing doors.
+  - Shipped: players, carjacking victims, and autonomous NPCs interpolate through the nearest
+    driver door and seat with collision-safe ownership claims; destroyed, moving, stolen, or
+    navigation-orphaned vehicles cancel to a safe outside position.
 
 ## Combat and survival
 
@@ -79,12 +85,18 @@
 - [ ] Expand NPC behavior and reactions.
   - Add idle activities, conversations, panic, fleeing, self-preservation, and reactions to weapons, crashes, injured NPCs, and police.
   - Keep behavior deterministic and inexpensive enough for dense crowds.
-- [ ] Add vehicle damage and destruction.
+- [x] Add vehicle damage and destruction.
   - Track body and engine damage, visible deformation states, smoke/fire, occupant injuries, and eventual wrecks.
   - Add repair or replacement options so damaged vehicles fit the money system.
-- [ ] Expand the wanted and police systems.
+  - Shipped: weapon and crash damage degrade engine output and bodywork through visible crumple,
+    soot, smoke, fire, and explosions; severe crashes injure occupants, wrecks eject them, and
+    stopped cars can receive a paid roadside repair while replacement vehicles remain stealable.
+- [x] Expand the wanted and police systems.
   - Add witnesses, crime reporting, a last-known-position search area, arrests, a busted state, and fines.
   - Scale responses from patrol cars to roadblocks and stronger units without spawning police directly in view.
+  - Shipped: nearby civilians report and flee crimes, police switch between pursuit and a visible
+    last-known search state, close officers can bust and fine players, and response tiers scale to
+    off-screen patrols, stronger armed officers, and three-star roadblocks.
 - [ ] Add map waypoints and GPS routing.
   - Let players place and clear waypoints on the full map.
   - Display the target on minimaps and calculate a road route with distance to destination.
@@ -94,12 +106,18 @@
 - [ ] Add pickups, shops, and usable locations.
   - Provide places to acquire weapons, ammunition, armour, health, and vehicle repairs.
   - Use clear world markers and interaction prompts without cluttering the HUD.
-- [ ] Add a full day/night and weather cycle.
+- [x] Add a full day/night and weather cycle.
   - Drive sky, fog, sun, streetlights, vehicle headlights, wet-road appearance, and ambient audio from shared world state.
   - Keep weather visibility and lighting fair during driving and combat.
-- [ ] Improve vehicle and pedestrian traffic behavior.
+  - Shipped: the shared clock now transitions among clear, rain, fog, and storm conditions with
+    split-screen precipitation, lightning, thunder, wet asphalt, visibility-aware fog, streetlights,
+    and player-vehicle headlights. `?weather=clear|rain|fog|storm` forces a preview state.
+- [x] Improve vehicle and pedestrian traffic behavior.
   - Add traffic lights, yielding, overtaking, obstacle avoidance, crash recovery, and safer pedestrian crossings.
   - Prevent traffic deadlocks and provide recovery for stuck or flipped vehicles.
+  - Shipped: visible alternating junction signals, vehicle and pedestrian yielding, conservative
+    overtaking and obstacle steering, queued following distances, reverse recovery, automatic
+    righting, and predictive pedestrian crossing checks reduce collisions and deadlocks.
 - [x] Add camera collision and accessibility options.
   - Keep the camera out of buildings and terrain while preserving visibility in narrow streets.
   - Add sensitivity, inversion, camera shake, aim assistance, subtitle, and reduced-motion settings.
@@ -108,8 +126,11 @@
     the camera does not add shake.
 - [ ] Add input rebinding and controller feedback.
   - Support remappable keyboard/gamepad controls, per-player controller assignment, vibration, and disconnected-controller recovery.
-- [ ] Add ambient audio and combat feedback.
+- [x] Add ambient audio and combat feedback.
   - Add city ambience, footsteps, impacts, vehicle collisions, weapon sounds, and positional reactions to nearby events.
+  - Shipped: procedural city/night/rain beds, walk/run footsteps, door and repair cues, metallic
+    crashes, thunder, explosions, impacts, reloads, pickups, firearms, distance falloff, subtitles,
+    and nearby civilian danger reactions require no sampled assets.
 - [ ] Establish performance budgets and diagnostics.
   - Track frame time, physics cost, active NPCs, draw calls, dynamic lights, and streamed chunks.
   - Add scalable crowd, traffic, shadow, lighting, and effects settings for split-screen and lower-end hardware.

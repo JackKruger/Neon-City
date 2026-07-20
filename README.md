@@ -56,7 +56,12 @@ for expanding the world across Greater Melbourne are documented in
 - Every weapon and a flyable helicopter spawn nearby. Helicopters use W/S
   for forward/back, A/D to yaw, and Space/Shift (A/B) to climb/descend.
 - The world clock follows local time when a session starts and then advances at
-  two in-game minutes per real second. Use `?time=22` to preview night lighting.
+  two in-game minutes per real second. Use `?time=22` to preview night lighting;
+  `?weather=clear`, `rain`, `fog`, or `storm` locks a weather preview.
+- Civilian drivers leave damaged cars, pedestrians can claim abandoned vehicles,
+  and stopped damaged cars can be repaired with R / X for $75.
+- Crimes need a nearby civilian or police witness. Breaking contact starts a
+  last-known-position search; close police can arrest and fine the player.
 - Camera sensitivity, inversion, reduced motion, aim assistance, and subtitles
   can be changed from the pause menu and persist in the browser.
 

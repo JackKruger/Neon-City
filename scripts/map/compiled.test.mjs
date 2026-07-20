@@ -203,24 +203,38 @@ test('real transport structures compile as concrete geometry with collision', ()
     structure: 'bridge', surface: 'asphalt', elevation: 0.06,
     x: 48, z: 48, outline: [[-10, -3], [10, -3], [10, 3], [-10, 3]],
   };
+  const authoritativeFootpath = {
+    kind: 'road-surface', sourceId: 'footpath:test:bridge', role: 'footpath-authoritative',
+    surface: 'pavement', elevation: 0.13,
+    x: 48, z: 48, outline: [[-8, -3], [8, -3], [8, -2], [-8, -2]],
+  };
+  const bollard = {
+    kind: 'bollard', sourceId: 'bollard:test:bridge', x: 48, z: 48, rotation: 0,
+  };
   const context = createCompilerContext({
     ...base,
-    objectIndex: { chunks: { '0,0': [bridge, bridgeRoad, tunnel] } },
+    objectIndex: { chunks: { '0,0': [bridge, bridgeRoad, authoritativeFootpath, bollard, tunnel] } },
   });
   assert.equal(context.terrainHeightAt(48, 48), 0);
   assert.equal(context.heightAt(48, 48), 0, 'bridge must not replace natural terrain');
   assert.equal(context.bridgeSurfaceHeightAt(48, 48), 3);
-  assert.equal(context.bridgeSurfaceHeightAt(38, 48), 0, 'bridge end should meet natural ground');
-  assert.ok(context.bridgeSurfaceHeightAt(41, 48) > 0 && context.bridgeSurfaceHeightAt(41, 48) < 3,
-    'bridge approach should ease between terrain and deck');
+  assert.equal(context.bridgeSurfaceHeightAt(38, 48), 3, 'surveyed deck should stay level to its end');
+  assert.equal(context.bridgeSurfaceHeightAt(41, 48), 3, 'short bridge spans must not contain steep ramps');
+  assert.equal(context.bridgeSurfaceHeightAt(37.9, 48), 0, 'natural terrain outside the deck stays separate');
   const result = compileChunkRecipe(context, 0, 0);
   assert.ok(result.primitives.some((primitive) => primitive.material === 'concrete'));
   const asphalt = result.primitives.find((primitive) => primitive.material === 'asphalt');
   assert.ok(asphalt.positions.some((value, index) => index % 3 === 1 && value > 3),
     'bridge-tagged road was not draped over the deck profile');
-  assert.equal(result.counts.meshes, 1, 'bridge outline should compile to one collision mesh');
+  const pavement = result.primitives.find((primitive) => primitive.material === 'pavement');
+  assert.ok(pavement.positions.some((value, index) => index % 3 === 1 && value >= 3.13),
+    'authoritative footpath was not placed on the bridge deck');
+  const props = result.primitives.find((primitive) => primitive.material === 'prop');
+  assert.ok(props.positions.some((value, index) => index % 3 === 1 && value >= 3),
+    'bridge furniture was not placed on the bridge deck');
+  assert.equal(result.counts.meshes, 2, 'bridge and raised footpath should compile collision meshes');
   assert.equal(result.counts.cuboids, 3, 'tunnel shell should compile to a ceiling and two walls');
-  assert.equal(result.recipe.colliderCount, 4);
+  assert.equal(result.recipe.colliderCount, 5);
 });
 
 test('committed spawn compilation has valid hashes, GLBs, containers, and navigation', () => {

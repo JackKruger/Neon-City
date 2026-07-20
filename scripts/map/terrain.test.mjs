@@ -5,10 +5,10 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import { MAP_SIZE } from './geo.mjs';
 import {
   MAX_GRADE,
-  flattenBuildingPads,
   hgtTileNamesForBounds,
   maxRoadGrade,
   normalizeInfrastructureElevations,
+  placeBuildingsOnTerrain,
   removeUrbanSurfaceSpikes,
 } from './terrain.mjs';
 
@@ -89,7 +89,7 @@ test('urban surface filter removes narrow towers without flattening broad terrai
   assert.equal(broad[12 + 7 * width], 6);
 });
 
-test('authored footprint pads flatten every covered terrain cell', () => {
+test('authored buildings derive their base without changing terrain', () => {
   const mapSize = 4;
   const width = mapSize + 1;
   const heights = Float64Array.from({ length: width * width }, (_, index) => {
@@ -104,7 +104,8 @@ test('authored footprint pads flatten every covered terrain cell', () => {
     z: 0,
     outline: [[-2, -2], [12, -2], [12, 12], [-2, 12]],
   };
-  const [group] = flattenBuildingPads(
+  const original = heights.slice();
+  const [group] = placeBuildingsOnTerrain(
     heights,
     new Uint8Array(heights.length),
     { '0,0': [building] },
@@ -112,8 +113,8 @@ test('authored footprint pads flatten every covered terrain cell', () => {
   );
   assert.ok(group.corners.size > 4);
   const padHeights = [...group.corners].map((index) => heights[index]);
-  assert.ok(padHeights.every((height) => height === padHeights[0]));
-  assert.equal(building.baseY, padHeights[0]);
+  assert.deepEqual(heights, original);
+  assert.equal(building.baseY, Math.min(...padHeights));
 });
 
 test('compiled map manifest and object index declare compatible formats', () => {

@@ -75,6 +75,7 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
   readonly aimAssist = false;
   readonly root = new THREE.Group();
   readonly body: RAPIER.RigidBody;
+  private model: THREE.Object3D;
   private controller: RAPIER.DynamicRayCastVehicleController;
   private wheels: WheelVisual[] = [];
   private steerAngle = 0;
@@ -92,6 +93,14 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
   private burnTime = 0;
   private lastAttacker: Player | null = null;
   private parkingAnchor: { x: number; z: number; rotation: RAPIER.Rotation } | null = null;
+  private headlightMaterial = new THREE.MeshStandardMaterial({
+    color: 0xfff2c0,
+    emissive: 0xffe1a0,
+    emissiveIntensity: 0,
+    roughness: 0.3,
+  });
+  private headlightGeometry = new THREE.BoxGeometry(0.28, 0.12, 0.06);
+  private headlightBeam: THREE.SpotLight | null = null;
 
   // Vehicles are parked until a player or AI driver supplies a command.
   command: DriveCommand = { steer: 0, throttle: 0, brake: 0, handbrake: true };
@@ -110,6 +119,7 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     heading: number
   ) {
     const model = game.assets.get(modelName);
+    this.model = model;
     model.scale.setScalar(CAR_SCALE);
     const materialClones = new Map<THREE.Material, THREE.Material>();
     model.traverse((object) => {
@@ -163,6 +173,7 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     this.chassisCenter.copy(center);
     this.chassisHalfSize.copy(size).multiplyScalar(0.5);
     this.buildDoors();
+    this.buildHeadlights();
 
     const world = game.world;
     this.body = world.createRigidBody(
@@ -260,7 +271,10 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     ).applyQuaternion(this.quaternion());
     const x = t.x + local.x;
     const z = t.z + local.z;
-    return out.set(x, heightAt(x, z), z);
+    // Sample from just above this chassis so an upper-deck car finds the deck,
+    // while a car passing underneath starts its ray below that same deck.
+    const surfaceY = this.game.surfaceHeightBelow(x, z, t.y + 0.75);
+    return out.set(x, surfaceY, z);
   }
 
   /** Approximate foot point inside the front seat for transition animation. */
@@ -314,6 +328,7 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
       this.command = { steer: 0, throttle: 0, brake: 0, handbrake: true };
     }
     this.updateDoors(dt);
+    this.updateHeadlights();
     const { steer, throttle, brake, handbrake } = this.command;
     this.pinWhileParked(
       !this.destroyed && !this.burning &&
@@ -416,6 +431,33 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     }
   }
 
+  private buildHeadlights(): void {
+    for (const side of [-1, 1]) {
+      const lamp = new THREE.Mesh(this.headlightGeometry, this.headlightMaterial);
+      lamp.position.set(
+        this.chassisCenter.x + side * this.chassisHalfSize.x * 0.58,
+        this.chassisCenter.y,
+        this.chassisCenter.z + this.chassisHalfSize.z + 0.035
+      );
+      this.root.add(lamp);
+    }
+    const beam = new THREE.SpotLight(0xffe6b0, 0, 34, Math.PI / 7, 0.55, 1.5);
+    beam.position.set(this.chassisCenter.x, this.chassisCenter.y + 0.05, this.chassisCenter.z + this.chassisHalfSize.z);
+    beam.target.position.set(this.chassisCenter.x, this.chassisCenter.y - 0.35, this.chassisCenter.z + 18);
+    this.root.add(beam, beam.target);
+    this.headlightBeam = beam;
+  }
+
+  private updateHeadlights(): void {
+    const amount = THREE.MathUtils.smoothstep(this.game.lighting.darknessAmount, 0.28, 0.72);
+    const working = !this.destroyed && this.health > 18;
+    this.headlightMaterial.emissiveIntensity = working ? amount * 3.2 : 0;
+    // Restrict actual illumination to player cars; traffic retains emissive
+    // lamps without multiplying split-screen shadow/light cost.
+    const playerDriven = this.game.players.some((player) => player === this.driver);
+    this.headlightBeam!.intensity = working && playerDriven ? amount * 95 : 0;
+  }
+
   private updateDoors(dt: number): void {
     const blend = 1 - Math.exp(-10 * dt);
     for (const [side, door] of this.doors) {
@@ -475,6 +517,19 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     this.updateDamageAppearance();
     if (this.health <= FIRE_HEALTH) this.startBurning();
     if (this.health <= 0) this.burnTime = Math.max(this.burnTime, BURN_DURATION - 1.35);
+  }
+
+  /** Restore mechanical condition at a repair point; returns health restored. */
+  repair(amount = MAX_HEALTH): number {
+    if (this.destroyed || this.burning || !Number.isFinite(amount) || amount <= 0) return 0;
+    const before = this.health;
+    this.health = Math.min(MAX_HEALTH, this.health + amount);
+    this.updateDamageAppearance();
+    return this.health - before;
+  }
+
+  get healthFraction(): number {
+    return this.health / MAX_HEALTH;
   }
 
   private startBurning(): void {
@@ -539,6 +594,12 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
       entry.material.color.copy(entry.original).lerp(CHARRED, damage * 0.88);
       entry.material.roughness = Math.min(1, entry.roughness + damage * 0.18);
     }
+    // The body shell progressively shortens at the nose while wheels and the
+    // physics chassis keep their stable dimensions. This gives three readable
+    // crumple states without destabilising suspension or collision handling.
+    const stage = damage < 0.28 ? 0 : damage < 0.62 ? 0.5 : 1;
+    this.model.scale.z = CAR_SCALE * (1 - stage * 0.06);
+    this.model.position.z = -this.chassisHalfSize.z * stage * 0.06;
   }
 
   /** Apply post-step parking constraints, then render the final physics pose. */
@@ -559,12 +620,13 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     const damage = Math.min(85, Math.pow(deltaV - IMPACT_DAMAGE_SPEED, 1.35) * 2.1);
     this.impactCooldown = 0.22;
     this.applyDamage(damage);
+    this.game.onVehicleCrashDamage(this, damage, deltaV);
     const point = this.effectPosition();
     this.game.fx.spark(point);
     const nearest = Math.min(...this.game.playerPositions().map((position) =>
       Math.hypot(position.x - point.x, position.z - point.z)
     ));
-    this.game.audio.thwack(nearest);
+    this.game.audio.vehicleCrash(nearest);
   }
 
   /**
@@ -662,6 +724,8 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     this.game.scene.remove(this.root);
     for (const collider of this.colliders) this.game.combat.unregister(collider);
     for (const entry of this.damageMaterials) entry.material.dispose();
+    this.headlightMaterial.dispose();
+    this.headlightGeometry.dispose();
     this.controller.free();
     this.game.world.removeRigidBody(this.body);
   }

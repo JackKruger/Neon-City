@@ -248,19 +248,19 @@ function bridgeProfileHeightAt(x, z, object, terrainHeightAt) {
   const axisX = alongWidth ? c : s;
   const axisZ = alongWidth ? -s : c;
   const halfLength = Math.max(object.width, object.depth) / 2;
-  const along = (x - object.x) * axisX + (z - object.z) * axisZ;
-  const side = along < 0 ? -1 : 1;
-  const edgeY = terrainHeightAt(
-    object.x + axisX * halfLength * side,
-    object.z + axisZ * halfLength * side
-  );
+  const startY = terrainHeightAt(object.x - axisX * halfLength, object.z - axisZ * halfLength);
+  const endY = terrainHeightAt(object.x + axisX * halfLength, object.z + axisZ * halfLength);
   const centerGround = terrainHeightAt(object.x, object.z);
   const sourceDeck = Number.isFinite(object.topY) ? object.topY : centerGround + 0.8;
-  const deckY = Math.max(sourceDeck, centerGround + 0.45);
-  const transition = Math.min(30, Math.max(6, halfLength * 0.32));
-  const t = Math.max(0, Math.min(1, Math.max(0, halfLength - Math.abs(along)) / transition));
-  const blend = t * t * (3 - 2 * t);
-  return edgeY + (deckY - edgeY) * blend;
+  if ((startY + endY) / 2 < centerGround + 0.45) return Math.max(sourceDeck, centerGround + 0.45);
+  const middle = (startY + endY) / 2;
+  const maxDelta = halfLength * 2 * 0.05;
+  const delta = Math.max(-maxDelta, Math.min(maxDelta, endY - startY));
+  const deckStart = middle - delta / 2;
+  const deckEnd = middle + delta / 2;
+  const along = (x - object.x) * axisX + (z - object.z) * axisZ;
+  const t = Math.max(0, Math.min(1, (along + halfLength) / (halfLength * 2)));
+  return deckStart + (deckEnd - deckStart) * t;
 }
 
 function profiledSlabTriangles(points, topAt, thickness) {
@@ -738,7 +738,9 @@ export function compileChunkRecipe(context, kx, kz) {
       const points = object.outline.map(([x, z]) => [object.x + x, object.z + z]);
       const material = MATERIALS.some((entry) => entry.name === object.surface) ? object.surface : 'asphalt';
       const elevation = object.elevation ?? 0.025;
-      const surfaceHeightAt = object.structure === 'bridge' ? context.bridgeSurfaceHeightAt : context.terrainHeightAt;
+      const sitsOnBridge = object.structure === 'bridge' ||
+        (object.structure !== 'tunnel' && material === 'pavement');
+      const surfaceHeightAt = sitsOnBridge ? context.bridgeSurfaceHeightAt : context.terrainHeightAt;
       if (elevation >= 0.1 && ['pavement', 'concrete'].includes(material)) {
         const collision = addRaisedPolygon(buckets.get(material), points, surfaceHeightAt, elevation);
         collisionMeshes.push({ sourceId: object.sourceId, ...collision });
@@ -817,7 +819,7 @@ export function compileChunkRecipe(context, kx, kz) {
     } else if (object.kind === 'parking') {
       parked.push({ sourceId: object.sourceId, x: object.x, z: object.z, rotation: object.rotation ?? 0, seed: Number.parseInt(createHash('sha256').update(object.sourceId).digest('hex').slice(0, 8), 16) });
     } else if (object.kind !== 'road-surface' && object.kind !== 'nav-path') {
-      const base = context.heightAt(object.x, object.z);
+      const base = context.bridgeSurfaceHeightAt(object.x, object.z);
       const isArt = object.kind === 'art';
       const height = object.kind === 'fountain' ? 0.8 : object.kind === 'bollard' ? 1.05 : 0.9;
       const half = object.kind === 'fountain' ? 1.4 : object.kind === 'seat' ? 0.85 : 0.3;

@@ -46,7 +46,8 @@ export class CopPed implements Entity, CombatTarget {
   leaving = false;
   private leaveTimer = 0;
   private ragdoll: Ragdoll | null = null;
-  private health = COP_HEALTH;
+  private health: number;
+  private pistol: GunDef;
   private fireCooldown = 1.2; // grace period after deploying
   private punchCooldown = 0;
   private pendingPunch = false;
@@ -55,8 +56,15 @@ export class CopPed implements Entity, CombatTarget {
     private game: Game,
     private target: Player,
     x: number,
-    z: number
+    z: number,
+    responseLevel = 2
   ) {
+    this.health = COP_HEALTH + Math.max(0, responseLevel - 2) * 30;
+    this.pistol = {
+      ...COP_PISTOL,
+      damage: COP_PISTOL.damage + Math.max(0, responseLevel - 2) * 3,
+      fireInterval: Math.max(0.58, COP_PISTOL.fireInterval - Math.max(0, responseLevel - 2) * 0.12),
+    };
     this.character = new Character(game, COP_OUTFIT, x, z, 1, PEDESTRIAN_COLLISION_GROUPS);
     this.character.rig.setHeldItem(buildWeaponMesh('pistol'));
     game.combat.register(this.character.collider, this);
@@ -76,11 +84,11 @@ export class CopPed implements Entity, CombatTarget {
     if (this.health <= 0) {
       this.die(dir.clone().multiplyScalar(weapon.kind === 'melee' ? 3.5 + weapon.knockback : 6));
       // Killing an officer escalates hard, and their sidearm hits the street.
-      this.game.reportCrime(attacker, 70);
+      this.game.reportCrime(attacker, 70, this.position(), false);
       return;
     }
     this.character.flinch();
-    if (weapon.kind === 'melee') this.game.reportCrime(attacker, weapon.heatPerHit);
+    if (weapon.kind === 'melee') this.game.reportCrime(attacker, weapon.heatPerHit, this.position(), false);
   }
 
   private die(impact: THREE.Vector3): void {
@@ -103,7 +111,7 @@ export class CopPed implements Entity, CombatTarget {
     this.punchCooldown = Math.max(0, this.punchCooldown - dt);
 
     const pos = this.character.position();
-    const targetPos = this.target.position();
+    const targetPos = this.target.wanted.pursuitTarget();
     DIR.set(targetPos.x - pos.x, 0, targetPos.z - pos.z);
     const dist = DIR.length();
 
@@ -116,6 +124,19 @@ export class CopPed implements Entity, CombatTarget {
       } else {
         this.character.setMove(new THREE.Vector3(), false);
       }
+      this.character.update(dt);
+      return;
+    }
+
+    if (this.target.wanted.searching) {
+      // Search the frozen last-known position without firing or swinging at
+      // an empty point. A later sighting clears `searching` and resumes combat.
+      this.pendingPunch = false;
+      this.character.setAimPose('none');
+      this.character.setMove(
+        dist > 1.2 ? DIR.clone().divideScalar(Math.max(dist, 0.1)) : new THREE.Vector3(),
+        false
+      );
       this.character.update(dt);
       return;
     }
@@ -157,7 +178,7 @@ export class CopPed implements Entity, CombatTarget {
         this.character.setMove(new THREE.Vector3(), false);
       }
       if (this.fireCooldown <= 0) {
-        this.fireCooldown = COP_PISTOL.fireInterval;
+        this.fireCooldown = this.pistol.fireInterval;
         const muzzle = new THREE.Vector3(
           pos.x + Math.sin(yawToTarget) * 0.45,
           pos.y + 1.35,
@@ -168,7 +189,7 @@ export class CopPed implements Entity, CombatTarget {
           targetPos.y + 1.2 - muzzle.y,
           targetPos.z - muzzle.z
         ).normalize();
-        this.game.combat.fireHitscan(COP_PISTOL, muzzle, aim, null, this.character.collider);
+        this.game.combat.fireHitscan(this.pistol, muzzle, aim, null, this.character.collider);
         this.game.audio.gunshot('pistol', dist);
       }
     } else {
