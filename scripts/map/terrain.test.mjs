@@ -5,10 +5,8 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import { MAP_SIZE } from './geo.mjs';
 import { readObjectIndex } from './object-index.mjs';
 import {
-  MAX_GRADE,
   applyTerrainCuttings,
   hgtTileNamesForBounds,
-  maxRoadGrade,
   normalizeInfrastructureElevations,
   placeBuildingsOnTerrain,
   removeUrbanSurfaceSpikes,
@@ -57,7 +55,7 @@ function readHeights() {
   return heights;
 }
 
-test('baked Melbourne terrain pins water and keeps roads drivable', () => {
+test('baked Melbourne terrain pins water and caps urban surface spikes', () => {
   const grid = new Uint8Array(readFileSync(new URL('../../public/maps/melbourne.bin', import.meta.url)));
   const heights = readHeights();
   const width = MAP_SIZE + 1;
@@ -77,16 +75,6 @@ test('baked Melbourne terrain pins water and keeps roads drivable', () => {
       }
     }
   }
-  // The cutting deliberately introduces retaining-wall discontinuities in the
-  // final lattice. Restore its captured natural samples to assess ordinary roads.
-  const gradeHeights = heights.slice();
-  const objects = readObjectIndex(new URL('../../public/maps', import.meta.url).pathname, 'melbourne');
-  const cutting = Object.values(objects.chunks).flat().find((object) => object.kind === 'terrain-cutting');
-  assert.ok(cutting?.terrainCorners?.length > 0, 'reviewed cutting samples are absent');
-  for (const [ix, iz, raw] of cutting.terrainCorners) {
-    gradeHeights[ix + MAP_SIZE / 2 + (iz + MAP_SIZE / 2) * width] = raw * 0.1;
-  }
-  assert.ok(maxRoadGrade(gradeHeights, grid) <= MAX_GRADE, 'ordinary road grade exceeds terrain contract');
   assert.ok(maxDryHeight <= 65, `urban surface spike remains in terrain: ${maxDryHeight}m`);
 });
 

@@ -330,6 +330,7 @@ async function importReviewedTerrain(root, chunks, report) {
         provenance: {
           cityStructure: properties.city_structure_source,
           vicmap: properties.vicmap_source,
+          railEnvelopeMethod: properties.rail_envelope_method,
           review: properties.review,
         },
         outline: world.map((point) => [round(point.x - x), round(point.z - z)]),

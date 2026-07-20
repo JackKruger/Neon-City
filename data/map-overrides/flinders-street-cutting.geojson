@@ -4,7 +4,7 @@
   "metadata": {
     "reviewStatus": "reviewed-hybrid",
     "coordinateReferenceSystem": "EPSG:4326",
-    "description": "Reviewed open-cutting correction derived from Vicmap Transport railway geometry and City of Melbourne structure 804817.",
+    "description": "Reviewed open-cutting correction following the outer Vicmap rail envelope beneath City of Melbourne structure 804817. The street and entrance/concourse remain at their independent upper grades.",
     "sources": [
       "Vicmap Transport Railway Line (tr_rail)",
       "City of Melbourne 2023 Building Footprints structure 804817"
@@ -23,20 +23,20 @@
         "surface": "ballast",
         "city_structure_source": "building:804817:1139",
         "vicmap_source": "open-data-platform:tr_rail",
+        "rail_envelope_method": "convex outer envelope of reviewed station train-bed polygons, clipped at the western throat and eastern rail_uground_o boundary",
         "review": "reviewed-hybrid; station-only correction"
       },
       "geometry": {
         "type": "Polygon",
         "coordinates": [[
-          [144.9626615601, -37.8183093784],
-          [144.9670440784, -37.8176907621],
-          [144.9674205464, -37.8178237109],
-          [144.9678292880, -37.8187116115],
-          [144.9678046555, -37.8187637294],
-          [144.9677377170, -37.8187753599],
-          [144.9650793191, -37.8191874892],
-          [144.9626615601, -37.8190729429],
-          [144.9626615601, -37.8183093784]
+          [144.9626615601, -37.8192766798],
+          [144.9670440349, -37.8176908013],
+          [144.9674205205, -37.8178237513],
+          [144.9678293088, -37.8187116421],
+          [144.9678046268, -37.8187637442],
+          [144.9677377466, -37.8187753324],
+          [144.9626615601, -37.8195249731],
+          [144.9626615601, -37.8192766798]
         ]]
       }
     },
@@ -56,8 +56,8 @@
       "geometry": {
         "type": "LineString",
         "coordinates": [
-          [144.9626615601, -37.8183093784],
-          [144.9626615601, -37.8190729429]
+          [144.9626615601, -37.8192766798],
+          [144.9626615601, -37.8195249731]
         ]
       }
     },

@@ -31,6 +31,63 @@ function filesBelow(root, prefix = '') {
   return output;
 }
 
+let committedContextCache;
+function committedCompilerContext() {
+  if (committedContextCache) return committedContextCache;
+  const mapRoot = join(import.meta.dirname, '..', '..', 'public', 'maps');
+  const bytes = (name) => new Uint8Array(readFileSync(join(mapRoot, name)));
+  const encodedHeights = readFileSync(join(mapRoot, 'melbourne-height.bin'));
+  const heights = new Int16Array(encodedHeights.length / 2);
+  for (let index = 0; index < heights.length; index++) heights[index] = encodedHeights.readInt16LE(index * 2);
+  const objectIndex = readObjectIndex(mapRoot, 'melbourne');
+  const context = createCompilerContext({
+    meta: JSON.parse(readFileSync(join(mapRoot, 'melbourne.json'), 'utf8')),
+    grid: bytes('melbourne.bin'), heights,
+    coverage: bytes('melbourne.coverage.bin'), transport: bytes('melbourne.transport.bin'),
+    speed: bytes('melbourne.speed.bin'), objectIndex,
+  });
+  committedContextCache = { context, mapRoot, objectIndex };
+  return committedContextCache;
+}
+
+function collisionSources(gameplay) {
+  let offset = 108 + gameplay.readUInt16LE(4) * 20;
+  const sources = [];
+  for (let index = 0; index < gameplay.readUInt16LE(6); index++) {
+    const length = gameplay.readUInt16LE(offset);
+    offset += 2;
+    sources.push(gameplay.toString('utf8', offset, offset + length));
+    offset += length;
+  }
+  return sources;
+}
+
+function collisionMeshTriangles(collision, sources, sourceId) {
+  let offset = 12 + collision.readUInt32LE(4) * 32;
+  const triangles = [];
+  for (let meshIndex = 0; meshIndex < collision.readUInt32LE(8); meshIndex++) {
+    const sourceIndex = collision.readUInt32LE(offset);
+    const vertexCount = collision.readUInt32LE(offset + 4);
+    const indexCount = collision.readUInt32LE(offset + 8);
+    offset += 12;
+    const vertices = Array.from({ length: vertexCount }, (_, index) => [
+      collision.readFloatLE(offset + index * 12),
+      collision.readFloatLE(offset + index * 12 + 4),
+      collision.readFloatLE(offset + index * 12 + 8),
+    ]);
+    offset += vertexCount * 12;
+    if (sources[sourceIndex] === sourceId) {
+      for (let index = 0; index < indexCount; index += 3) triangles.push([
+        vertices[collision.readUInt32LE(offset + index * 4)],
+        vertices[collision.readUInt32LE(offset + (index + 1) * 4)],
+        vertices[collision.readUInt32LE(offset + (index + 2) * 4)],
+      ]);
+    }
+    offset += indexCount * 4;
+  }
+  return triangles;
+}
+
 test('NBCH round-trips its versioned section table and rejects corrupt offsets', () => {
   const sections = {
     HGT1: Buffer.alloc(242),
@@ -429,17 +486,7 @@ test('reviewed rail profile wins over terrain and tunnel offsets through Swansto
 });
 
 test('committed Swanston Street crossing retains surveyed road-to-track clearance', () => {
-  const mapRoot = join(import.meta.dirname, '..', '..', 'public', 'maps');
-  const bytes = (name) => new Uint8Array(readFileSync(join(mapRoot, name)));
-  const encodedHeights = readFileSync(join(mapRoot, 'melbourne-height.bin'));
-  const heights = new Int16Array(encodedHeights.length / 2);
-  for (let index = 0; index < heights.length; index++) heights[index] = encodedHeights.readInt16LE(index * 2);
-  const context = createCompilerContext({
-    meta: JSON.parse(readFileSync(join(mapRoot, 'melbourne.json'), 'utf8')),
-    grid: bytes('melbourne.bin'), heights,
-    coverage: bytes('melbourne.coverage.bin'), transport: bytes('melbourne.transport.bin'),
-    speed: bytes('melbourne.speed.bin'), objectIndex: readObjectIndex(mapRoot, 'melbourne'),
-  });
+  const { context } = committedCompilerContext();
   assert.equal(context.railSurfaceHeightAt(624, -1859, 'tunnel'), 3,
     'station rail does not use the reviewed 4.1 m AHD floor');
   // Surveyed east portal / Swanston Street crossing, immediately beyond the
@@ -451,6 +498,100 @@ test('committed Swanston Street crossing retains surveyed road-to-track clearanc
   assert.ok(roadY - trackY >= 4.5,
     `Swanston Street clearance is ${(roadY - trackY).toFixed(2)}m`);
   assert.ok(trackY < roadY - 0.1, 'train rail leaked to Swanston Street road height');
+});
+
+test('committed cutting never lowers Flinders Street or ordinary vehicle navigation', () => {
+  const { context, mapRoot, objectIndex } = committedCompilerContext();
+  const roadIndex = JSON.parse(readFileSync(join(mapRoot, 'melbourne.roads.json'), 'utf8'));
+  const flindersName = roadIndex.names.indexOf('Flinders Street');
+  assert.ok(flindersName >= 0);
+  let flindersSamples = 0;
+  let flindersMaximumGrade = 0;
+  let flindersMinimumY = Infinity;
+  for (const lines of Object.values(roadIndex.chunks)) {
+    for (const line of lines) {
+      if (line[0] !== flindersName) continue;
+      const midpointX = (line[2] + line[4]) / 2;
+      const midpointZ = (line[3] + line[5]) / 2;
+      if (midpointX >= 150 && midpointX <= 750 && midpointZ >= -2050 && midpointZ <= -1650) {
+        flindersMinimumY = Math.min(flindersMinimumY, context.bridgeSurfaceHeightAt(midpointX, midpointZ));
+        const distance = Math.hypot(line[4] - line[2], line[5] - line[3]);
+        if (distance >= 0.5) flindersMaximumGrade = Math.max(flindersMaximumGrade, Math.abs(
+          context.bridgeSurfaceHeightAt(line[4], line[5]) - context.bridgeSurfaceHeightAt(line[2], line[3])
+        ) / distance);
+      }
+      for (const [x, z] of [[line[2], line[3]], [line[4], line[5]], [(line[2] + line[4]) / 2, (line[3] + line[5]) / 2]]) {
+        if (x < 150 || x > 750 || z < -2050 || z > -1650) continue;
+        flindersSamples++;
+        assert.equal(context.cuttingProfileHeightAt(x, z), null,
+          `Flinders Street ${x.toFixed(1)},${z.toFixed(1)} overlaps the rail cutting`);
+      }
+    }
+  }
+  assert.ok(flindersSamples > 20, 'Flinders Street regression area was not sampled');
+  assert.ok(flindersMaximumGrade <= 0.08,
+    `Flinders Street grade is ${(flindersMaximumGrade * 100).toFixed(1)}%`);
+  assert.ok(flindersMinimumY >= 14,
+    `Flinders Street was lowered to ${flindersMinimumY.toFixed(1)}m near the station`);
+
+  const authored = [...new Map(Object.values(objectIndex.chunks).flat()
+    .map((object) => [object.sourceId, object])).values()];
+  const stationBuildings = authored.filter((object) => object.kind === 'building' && object.structureId === 'building:804817');
+  assert.ok(stationBuildings.length > 0 && stationBuildings.every((object) => object.baseY >= 6.8),
+    'station entrance/concourse components no longer remain above track grade');
+  let maximumGrade = 0;
+  for (const path of authored.filter((object) => object.kind === 'nav-path' && object.mode === 'vehicle' &&
+    object.structure !== 'bridge' && object.structure !== 'tunnel' &&
+    object.x > 150 && object.x < 750 && object.z > -2050 && object.z < -1650)) {
+    const points = path.points.map(([x, z]) => [path.x + x, path.z + z]);
+    for (let index = 1; index < points.length; index++) {
+      const [ax, az] = points[index - 1];
+      const [bx, bz] = points[index];
+      const distance = Math.hypot(bx - ax, bz - az);
+      if (distance < 0.5) continue;
+      const grade = Math.abs(context.bridgeSurfaceHeightAt(bx, bz) - context.bridgeSurfaceHeightAt(ax, az)) / distance;
+      maximumGrade = Math.max(maximumGrade, grade);
+    }
+  }
+  assert.ok(maximumGrade <= 0.2, `ordinary station-area road discontinuity is ${(maximumGrade * 100).toFixed(1)}%`);
+});
+
+test('every custom-terrain chunk has complete, non-overlapping projected collision coverage', () => {
+  const { context } = committedCompilerContext();
+  let checked = 0;
+  for (let kz = -18; kz <= -14; kz++) {
+    for (let kx = 2; kx <= 6; kx++) {
+      const result = compileChunkRecipe(context, kx, kz);
+      if ((result.sections.COL1.readUInt16LE(2) & COLLISION_FLAGS.CustomTerrain) === 0) continue;
+      checked++;
+      const sources = collisionSources(result.sections.GME1);
+      const triangles = collisionMeshTriangles(
+        result.sections.COL1,
+        sources,
+        'terrain-cutting:flinders-street-station'
+      ).filter(([a, b, c]) => Math.abs(
+        (b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0])
+      ) > 1e-6);
+      assert.ok(triangles.length > 0, `custom terrain mesh ${kx},${kz} is absent`);
+      const minX = (kx * 10 - 0.5) * 12;
+      const minZ = (kz * 10 - 0.5) * 12;
+      for (let sampleZ = minZ + 1.73; sampleZ < minZ + 120; sampleZ += 4.37) {
+        for (let sampleX = minX + 2.11; sampleX < minX + 120; sampleX += 3.89) {
+          let inclusiveCovers = 0;
+          let interiorCovers = 0;
+          for (const [a, b, c] of triangles) {
+            const side = (p, q) => (q[0] - p[0]) * (sampleZ - p[2]) - (q[2] - p[2]) * (sampleX - p[0]);
+            const signs = [side(a, b), side(b, c), side(c, a)];
+            inclusiveCovers += Number(signs.every((value) => value >= -1e-6) || signs.every((value) => value <= 1e-6));
+            interiorCovers += Number(signs.every((value) => value > 1e-5) || signs.every((value) => value < -1e-5));
+          }
+          assert.ok(inclusiveCovers >= 1, `terrain hole at ${sampleX.toFixed(2)},${sampleZ.toFixed(2)} in ${kx},${kz}`);
+          assert.ok(interiorCovers <= 1, `overlapping terrain at ${sampleX.toFixed(2)},${sampleZ.toFixed(2)} in ${kx},${kz}`);
+        }
+      }
+    }
+  }
+  assert.ok(checked > 0, 'no custom terrain chunks were checked');
 });
 
 test('real transport structures compile as concrete geometry with collision', () => {

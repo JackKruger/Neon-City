@@ -1241,7 +1241,9 @@ export function compileChunkRecipe(context, kx, kz) {
   // source-coverage bit.
   const authoredBuildingArea = objectsByKind.has('building');
   const authoredNavigation = objectsByKind.has('nav-path');
-  const localCuttings = [...new Map((objectsByKind.get('terrain-cutting') ?? []).map((object) => [object.sourceId, object])).values()];
+  const localCuttings = [...new Map((objectsByKind.get('terrain-cutting') ?? [])
+    .filter((object) => clipPolygonToChunk(absoluteOutline(object), chunkBounds(kx, kz)).length >= 3)
+    .map((object) => [object.sourceId, object])).values()];
   const localPortalRamps = [...new Map((objectsByKind.get('terrain-portal') ?? [])
     .filter((object) => !object.covered)
     .filter((object) => {
