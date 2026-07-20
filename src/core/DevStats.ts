@@ -78,6 +78,7 @@ export interface DevStatsSnapshot {
 
 /** Low-overhead rolling performance display. F3 toggles it; dev builds start open. */
 export class DevStats {
+  private events = new AbortController();
   private root: HTMLPreElement;
   private frame = new RollingMetric();
   private cpu = new RollingMetric();
@@ -125,7 +126,12 @@ export class DevStats {
       this.visible = !this.visible;
       this.root.style.display = this.visible ? 'block' : 'none';
       if (this.visible) this.refresh(performance.now());
-    });
+    }, { signal: this.events.signal });
+  }
+
+  dispose(): void {
+    this.events.abort();
+    this.root.remove();
   }
 
   record(timing: FrameTiming, world: WorldStats): void {

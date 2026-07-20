@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { MAP_CONTRACT } from '../../src/world/MapContract';
 import { parseCompiledChunk, validateCompiledManifest } from '../../src/world/CompiledFormat';
+import { selectPrewarmChunkKeys } from '../../src/world/CityStreamer';
 import {
   CONTAINER_VERSION,
   encodeChunkContainer,
@@ -34,6 +35,20 @@ describe('shared map contract', () => {
     expect(MAP_CONTRACT.nbchSections).toEqual({ HGT1: 1, COL1: 1, NAV2: 2, GME1: 1 });
     const manifest = JSON.parse(readFileSync('public/maps/melbourne.compiled.json', 'utf8'));
     expect(validateCompiledManifest(manifest).mapId).toBe(MAP_CONTRACT.mapId);
+  });
+});
+
+describe('compiled map prewarming', () => {
+  const edge = { kx: 2, kz: -18 };
+  const partialEdge = new Set(['2,-18', '3,-18', '2,-17', '3,-17']);
+
+  it('loads the available neighborhood at the edge of a partial map', () => {
+    expect(selectPrewarmChunkKeys(partialEdge, edge, true).sort()).toEqual([...partialEdge].sort());
+  });
+
+  it('still requires the center chunk and complete neighborhoods for full maps', () => {
+    expect(() => selectPrewarmChunkKeys(partialEdge, edge, false)).toThrow(/missing required spawn chunk/);
+    expect(() => selectPrewarmChunkKeys(partialEdge, { kx: 1, kz: -18 }, true)).toThrow(/missing required spawn chunk 1,-18/);
   });
 });
 

@@ -62,6 +62,8 @@ interface SimulationTiming extends FixedUpdateTiming {
 }
 
 export class Game {
+  private events = new AbortController();
+  private disposed = false;
   readonly scene = new THREE.Scene();
   readonly renderer: THREE.WebGLRenderer;
   readonly world: RAPIER.World;
@@ -111,8 +113,13 @@ export class Game {
       loadAuthoredMap('melbourne', { loadObjects: false }),
     ]);
     const game = new Game(container, assets, saveStorage);
-    await game.initialize(initialSave);
-    return game;
+    try {
+      await game.initialize(initialSave);
+      return game;
+    } catch (error) {
+      game.dispose();
+      throw error;
+    }
   }
 
   private constructor(container: HTMLElement, assets: Assets, saveStorage: SaveStorage) {
@@ -128,7 +135,7 @@ export class Game {
     window.addEventListener('resize', () => {
       this.renderer.setSize(container.clientWidth, container.clientHeight);
       this.viewports.updateAspects();
-    });
+    }, { signal: this.events.signal });
 
     this.world = new RAPIER.World(new RAPIER.Vector3(0, GRAVITY, 0));
     this.world.timestep = STEP;
@@ -156,7 +163,28 @@ export class Game {
       () => this.players[0]?.canSave === true,
       () => { this.saveNow(); }
     );
-    window.addEventListener('pagehide', () => { this.saveController.saveForPageHide(); });
+    window.addEventListener('pagehide', () => { this.saveController.saveForPageHide(); }, { signal: this.events.signal });
+  }
+
+  /** Tear down a partially-created game after startup fails. */
+  private dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.renderer.setAnimationLoop(null);
+    this.events.abort();
+    this.mapOverlay?.dispose();
+    this.city.dispose();
+    this.lighting.dispose();
+    this.hud.dispose();
+    this.devStats.dispose();
+    this.input.dispose();
+    this.audio.dispose();
+    if (document.pointerLockElement === this.renderer.domElement) void document.exitPointerLock?.();
+    this.renderer.dispose();
+    this.renderer.forceContextLoss();
+    this.renderer.domElement.remove();
+    this.eventQueue.free();
+    this.world.free();
   }
 
   private async initialize(initialSave?: GameSaveV1): Promise<void> {
@@ -284,6 +312,7 @@ export class Game {
     if (vi >= 0) this.vehicles.splice(vi, 1);
     const ei = this.entities.indexOf(v);
     if (ei >= 0) this.entities.splice(ei, 1);
+    if (v instanceof Vehicle) this.city?.forgetVehicle(v);
     v.dispose();
   }
 
@@ -638,12 +667,14 @@ export class Game {
   private updateAudio(dt: number): void {
     let speed = 0;
     let throttle = 0;
+    let engineActive = false;
     let skidding = false;
     let sirenDist = Infinity;
     let walking = false;
     let running = false;
     for (const p of this.players) {
       if (p.vehicle) {
+        engineActive = true;
         speed = Math.max(speed, p.vehicle.getSpeed());
         throttle = Math.max(throttle, p.vehicle.command.throttle);
         skidding ||=
@@ -669,7 +700,8 @@ export class Game {
       walking,
       running,
       this.lighting.darknessAmount,
-      this.lighting.rainAmount
+      this.lighting.rainAmount,
+      engineActive
     );
   }
 

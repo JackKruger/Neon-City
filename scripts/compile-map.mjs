@@ -126,10 +126,51 @@ function selectedChunks(scope, spawn) {
   return chunks.sort((a, b) => a.kz - b.kz || a.kx - b.kx);
 }
 
-function atomicWrite(path, contents) {
-  const temp = `${path}.tmp`;
-  writeFileSync(temp, contents);
-  renameSync(temp, path);
+/** Publish the staged directory and metadata as one recoverable operation. */
+export function publishCompiledMap(stagingRoot, outputRoot, stagingCity, stagedManifest, stagedProvenance) {
+  const publications = [
+    { staged: stagingCity, target: join(outputRoot, 'melbourne'), backup: join(stagingRoot, 'previous-city'), directory: true },
+    { staged: stagedManifest, target: join(outputRoot, 'melbourne.compiled.json'), backup: join(stagingRoot, 'previous-manifest.json'), directory: false },
+    { staged: stagedProvenance, target: join(outputRoot, 'melbourne.compiled.provenance.json'), backup: join(stagingRoot, 'previous-provenance.json'), directory: false },
+  ];
+  const backedUp = [];
+  const installed = [];
+  try {
+    for (const publication of publications) {
+      if (!existsSync(publication.target)) continue;
+      renameSync(publication.target, publication.backup);
+      backedUp.push(publication);
+    }
+    for (const publication of publications) {
+      renameSync(publication.staged, publication.target);
+      installed.push(publication);
+    }
+  } catch (publicationError) {
+    let rollbackError = null;
+    for (const publication of installed.reverse()) {
+      try {
+        if (existsSync(publication.target)) rmSync(publication.target, { recursive: publication.directory, force: true });
+      } catch (error) {
+        rollbackError ??= error;
+      }
+    }
+    for (const publication of backedUp.reverse()) {
+      try {
+        if (existsSync(publication.backup)) renameSync(publication.backup, publication.target);
+      } catch (error) {
+        rollbackError ??= error;
+      }
+    }
+    if (rollbackError) {
+      const failure = new AggregateError(
+        [publicationError, rollbackError],
+        `compiled-map publication and rollback failed; recovery files remain in ${stagingRoot}`
+      );
+      failure.preserveStaging = true;
+      throw failure;
+    }
+    throw publicationError;
+  }
 }
 
 export async function compileMelbourne({ scope = 'all', outputRoot = join(ROOT, 'public', 'maps'), quiet = false } = {}) {
@@ -177,6 +218,7 @@ export async function compileMelbourne({ scope = 'all', outputRoot = join(ROOT, 
   let renderBytes = 0;
   let dataBytes = 0;
   const requiredGltfExtensions = new Set();
+  let preserveStagingOnError = false;
 
   try {
     for (let i = 0; i < chunks.length; i++) {
@@ -252,19 +294,21 @@ export async function compileMelbourne({ scope = 'all', outputRoot = join(ROOT, 
       compilerFiles: compilerPaths.map((path) => ({ path: relative(ROOT, path), hash: sha256(readFileSync(path)) })),
     };
 
-    const targetCity = join(outputRoot, 'melbourne');
-    const backupCity = join(outputRoot, '.melbourne-compiled-backup');
-    if (existsSync(backupCity)) rmSync(backupCity, { recursive: true, force: true });
-    if (existsSync(targetCity)) renameSync(targetCity, backupCity);
-    renameSync(stagingCity, targetCity);
-    if (existsSync(backupCity)) rmSync(backupCity, { recursive: true, force: true });
-    atomicWrite(join(outputRoot, 'melbourne.compiled.json'), `${stableStringify(manifest)}\n`);
-    atomicWrite(join(outputRoot, 'melbourne.compiled.provenance.json'), `${stableStringify(provenance)}\n`);
+    const stagedManifest = join(stagingRoot, 'melbourne.compiled.json');
+    const stagedProvenance = join(stagingRoot, 'melbourne.compiled.provenance.json');
+    writeFileSync(stagedManifest, `${stableStringify(manifest)}\n`);
+    writeFileSync(stagedProvenance, `${stableStringify(provenance)}\n`);
+    try {
+      publishCompiledMap(stagingRoot, outputRoot, stagingCity, stagedManifest, stagedProvenance);
+    } catch (error) {
+      preserveStagingOnError = error?.preserveStaging === true;
+      throw error;
+    }
     rmSync(stagingRoot, { recursive: true, force: true });
     if (!quiet) console.log(`wrote ${manifestChunks.length} deterministic chunks (${renderBytes + dataBytes} bytes), build ${buildId}`);
     return manifest;
   } catch (error) {
-    rmSync(stagingRoot, { recursive: true, force: true });
+    if (!preserveStagingOnError) rmSync(stagingRoot, { recursive: true, force: true });
     throw error;
   }
 }

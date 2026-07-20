@@ -499,6 +499,13 @@ export class Pedestrian implements Entity, CombatTarget {
   }
 
   dispose(): void {
+    const transition = this.vehicleTransition;
+    if (transition) {
+      if (transition.vehicle.driver === this) transition.vehicle.driver = null;
+      transition.vehicle.setDoorOpen(transition.side, false);
+      this.vehicleTransition = null;
+    }
+    this.game.npcs.forgetPedestrian(this);
     this.game.combat.unregister(this.character.collider);
     this.ragdoll?.dispose();
     this.character.dispose();

@@ -67,6 +67,7 @@ function emptyInput(): PlayerInput {
  * A/B/X/Y; local split-screen input is intentionally disabled.
  */
 export class Input {
+  private events = new AbortController();
   private keys = new Set<string>();
   private keyEdges = new Set<string>();
   private padPrev = new Map<number, boolean[]>();
@@ -79,6 +80,8 @@ export class Input {
   private pendingWeaponPrev = [false, false];
   private pendingReload = [false, false];
   private pendingCameraReset = [false, false];
+  /** Combat controls pressed over an overlay stay blocked until released. */
+  private combatBlockedUntilRelease = [false, false];
   private pendingMap = false;
   private mouseButtons = new Set<number>();
   private mouseLookX = 0;
@@ -95,8 +98,8 @@ export class Input {
       this.keys.add(e.code);
       this.keyEdges.add(e.code);
       this.methods[0] = 'keyboard';
-    });
-    window.addEventListener('keyup', (e) => this.keys.delete(e.code));
+    }, { signal: this.events.signal });
+    window.addEventListener('keyup', (e) => this.keys.delete(e.code), { signal: this.events.signal });
     // Mouse always drives player 1: left fires, right aims.
     window.addEventListener('mousedown', (e) => {
       // The first canvas click only captures the pointer. Treat mouse buttons
@@ -108,25 +111,25 @@ export class Input {
       this.mouseButtons.add(e.button);
       if (e.button === 0) this.pendingAttack[0] = true;
       this.methods[0] = 'keyboard';
-    });
+    }, { signal: this.events.signal });
     window.addEventListener('mousemove', (e) => {
       if (!document.pointerLockElement) return;
       this.mouseLookX += e.movementX;
       this.mouseLookY += e.movementY;
       if (e.movementX !== 0 || e.movementY !== 0) this.methods[0] = 'keyboard';
-    });
-    window.addEventListener('mouseup', (e) => this.mouseButtons.delete(e.button));
-    window.addEventListener('contextmenu', (e) => e.preventDefault());
+    }, { signal: this.events.signal });
+    window.addEventListener('mouseup', (e) => this.mouseButtons.delete(e.button), { signal: this.events.signal });
+    window.addEventListener('contextmenu', (e) => e.preventDefault(), { signal: this.events.signal });
     window.addEventListener('blur', () => {
       this.keys.clear();
       this.mouseButtons.clear();
-    });
+    }, { signal: this.events.signal });
     document.addEventListener('pointerlockchange', () => {
       if (document.pointerLockElement !== this.pointerLockTarget) this.mouseButtons.clear();
-    });
+    }, { signal: this.events.signal });
     window.addEventListener('gamepaddisconnected', (e) => {
       if (this.p1Pad === e.gamepad.index) this.p1Pad = null;
-    });
+    }, { signal: this.events.signal });
   }
 
   /** Capture relative mouse movement while playing; Esc releases it normally. */
@@ -134,7 +137,16 @@ export class Input {
     this.pointerLockTarget = element;
     element.addEventListener('mousedown', () => {
       if (!document.pointerLockElement) void element.requestPointerLock();
-    });
+    }, { signal: this.events.signal });
+  }
+
+  dispose(): void {
+    this.events.abort();
+    this.keys.clear();
+    this.keyEdges.clear();
+    this.mouseButtons.clear();
+    this.padPrev.clear();
+    this.clearQueuedInput();
   }
 
   /** Call once per render frame to poll gamepads and accumulate edges. */
@@ -270,13 +282,15 @@ export class Input {
   /** Build the input snapshot for a player and clear their edge flags. */
   read(player: 0 | 1, enabled = true): PlayerInput {
     const input = emptyInput();
+    const padIndex = player === 0 ? this.p1Pad : null;
+    const pad = padIndex === null ? null : navigator.getGamepads()[padIndex];
+    const combatHeld = (player === 0 && (this.keys.has('KeyF') || this.mouseButtons.has(0) || this.mouseButtons.has(2))) ||
+      (pad?.buttons[7]?.pressed ?? false) || (pad?.buttons[6]?.pressed ?? false);
+    if (!enabled && combatHeld) this.combatBlockedUntilRelease[player] = true;
+    else if (!combatHeld) this.combatBlockedUntilRelease[player] = false;
     if (enabled) {
       if (player === 0) this.readKeyboard(input);
-      const padIndex = player === 0 ? this.p1Pad : null;
-      if (padIndex !== null) {
-        const pad = navigator.getGamepads()[padIndex];
-        if (pad) this.readPad(pad, input);
-      }
+      if (pad) this.readPad(pad, input);
       input.jump = this.pendingJump[player];
       input.interact = this.pendingInteract[player];
       input.pause = this.pendingPause[player];
@@ -284,6 +298,11 @@ export class Input {
       input.weaponNext = this.pendingWeaponNext[player];
       input.weaponPrev = this.pendingWeaponPrev[player];
       input.reload = this.pendingReload[player];
+    }
+    if (this.combatBlockedUntilRelease[player]) {
+      input.attack = false;
+      input.aim = false;
+      input.attackPressed = false;
     }
     this.pendingJump[player] = false;
     this.pendingInteract[player] = false;

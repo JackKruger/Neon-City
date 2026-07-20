@@ -9,6 +9,7 @@ export interface MapPlayer {
 
 /** Full-screen map. Simulation remains live while gameplay controls are suppressed. */
 export class MapOverlay {
+  private events = new AbortController();
   private root = document.createElement('div');
   private canvas = document.createElement('canvas');
   private ctx: CanvasRenderingContext2D;
@@ -48,12 +49,13 @@ export class MapOverlay {
         .sort((a, b) => b.cells - a.cells || a.name.localeCompare(b.name));
     }
 
-    this.canvas.addEventListener('pointerdown', this.onPointerDown);
-    this.canvas.addEventListener('pointermove', this.onPointerMove);
-    this.canvas.addEventListener('pointerup', this.onPointerUp);
-    this.canvas.addEventListener('pointercancel', this.onPointerUp);
-    this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
-    window.addEventListener('resize', this.resize);
+    const signal = this.events.signal;
+    this.canvas.addEventListener('pointerdown', this.onPointerDown, { signal });
+    this.canvas.addEventListener('pointermove', this.onPointerMove, { signal });
+    this.canvas.addEventListener('pointerup', this.onPointerUp, { signal });
+    this.canvas.addEventListener('pointercancel', this.onPointerUp, { signal });
+    this.canvas.addEventListener('wheel', this.onWheel, { passive: false, signal });
+    window.addEventListener('resize', this.resize, { signal });
   }
 
   get isOpen(): boolean {
@@ -77,6 +79,12 @@ export class MapOverlay {
     this.openState = false;
     this.root.style.display = 'none';
     this.parent.classList.remove('hud-map-open');
+  }
+
+  dispose(): void {
+    this.events.abort();
+    this.parent.classList.remove('hud-map-open');
+    this.root.remove();
   }
 
   setPlayers(players: MapPlayer[]): void {

@@ -35,6 +35,7 @@ export interface HudState {
 
 /** DOM overlay HUD. */
 export class Hud {
+  private style = document.createElement('style');
   private panels: {
     root: HTMLDivElement;
     speed: HTMLDivElement;
@@ -57,8 +58,7 @@ export class Hud {
   private saveActions: HudSaveActions | null = null;
 
   constructor(private container: HTMLElement, private settings: Settings) {
-    const style = document.createElement('style');
-    style.textContent = `
+    this.style.textContent = `
       .hud-panel { position:absolute; top:0; height:100%; pointer-events:none; color:#fff;
         text-shadow: 0 0 6px rgba(255,60,180,.9), 0 2px 2px rgba(0,0,0,.5); }
       .hud-speed { position:absolute; right:18px; bottom:14px; font-size:26px; font-weight:700;
@@ -158,7 +158,7 @@ export class Hud {
         .hud-pause p { font-size:13px; text-align:center; }
       }
     `;
-    document.head.appendChild(style);
+    document.head.appendChild(this.style);
     this.hint = document.createElement('div');
     this.hint.className = 'hud-hint';
     this.updateHint();
@@ -182,6 +182,18 @@ export class Hud {
 
   setSaveActions(actions: HudSaveActions): void {
     this.saveActions = actions;
+  }
+
+  dispose(): void {
+    window.clearTimeout(this.captionTimer);
+    cancelAnimationFrame(this.pauseGamepadFrame);
+    for (const panel of this.panels) panel.minimap?.dispose();
+    this.panels = [];
+    this.pauseEl?.remove();
+    this.pauseEl = null;
+    this.hint.remove();
+    this.caption.remove();
+    this.style.remove();
   }
 
   setInputMethods(methods: InputMethod[]): void {

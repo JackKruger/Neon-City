@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { compileMelbourne } from '../compile-map.mjs';
+import { compileMelbourne, publishCompiledMap } from '../compile-map.mjs';
 import { validateCompiledMap } from '../validate-compiled-map.mjs';
 import {
   encodeChunkContainer,
@@ -46,6 +46,35 @@ test('NBCH round-trips its versioned section table and rejects corrupt offsets',
   const incompatible = Buffer.from(encoded);
   incompatible.writeUInt16LE(99, 4);
   assert.throws(() => parseChunkContainer(incompatible), /unsupported NBCH version/);
+});
+
+test('compiled-map publication restores every previous artifact after a partial install', () => {
+  const root = mkdtempSync(join(tmpdir(), 'neon-map-publication-'));
+  const output = join(root, 'output');
+  const staging = join(output, '.staging');
+  const stagedCity = join(staging, 'city');
+  const stagedManifest = join(staging, 'manifest.json');
+  const missingProvenance = join(staging, 'missing-provenance.json');
+  try {
+    mkdirSync(join(output, 'melbourne'), { recursive: true });
+    mkdirSync(stagedCity, { recursive: true });
+    writeFileSync(join(output, 'melbourne', 'marker'), 'old city');
+    writeFileSync(join(stagedCity, 'marker'), 'new city');
+    writeFileSync(join(output, 'melbourne.compiled.json'), 'old manifest');
+    writeFileSync(join(output, 'melbourne.compiled.provenance.json'), 'old provenance');
+    writeFileSync(stagedManifest, 'new manifest');
+
+    assert.throws(
+      () => publishCompiledMap(staging, output, stagedCity, stagedManifest, missingProvenance),
+      /ENOENT/
+    );
+    assert.equal(readFileSync(join(output, 'melbourne', 'marker'), 'utf8'), 'old city');
+    assert.equal(readFileSync(join(output, 'melbourne.compiled.json'), 'utf8'), 'old manifest');
+    assert.equal(readFileSync(join(output, 'melbourne.compiled.provenance.json'), 'utf8'), 'old provenance');
+    assert.equal(existsSync(join(staging, 'previous-city')), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('authoritative building source coverage suppresses generated fallback buildings', () => {

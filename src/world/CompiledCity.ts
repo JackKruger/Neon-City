@@ -5,7 +5,7 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import type { Game } from '../core/Game';
 import { CIVILIAN_CARS } from '../core/const';
 import { Vehicle } from '../entities/Vehicle';
-import type { CityStreamer, CityStreamStats } from './CityStreamer';
+import { selectPrewarmChunkKeys, type CityStreamer, type CityStreamStats } from './CityStreamer';
 import {
   hashBuffer,
   parseCompiledChunk,
@@ -27,7 +27,6 @@ interface LoadedChunk {
   kz: number;
   root: THREE.Group;
   body: RAPIER.RigidBody;
-  vehicles: Vehicle[];
   renderBytes: number;
   dataBytes: number;
 }
@@ -52,6 +51,8 @@ export class CompiledCity implements CityStreamer {
   private manifest: CompiledManifest | null = null;
   private entries = new Map<string, CompiledChunkManifest>();
   private chunks = new Map<string, LoadedChunk>();
+  /** Compiled parked cars follow their current chunk after being moved. */
+  private managedVehicles = new Map<Vehicle, string>();
   private pending = new Map<string, PendingChunk>();
   private wanted = new Set<string>();
   private centers: { kx: number; kz: number }[] = [];
@@ -97,15 +98,8 @@ export class CompiledCity implements CityStreamer {
   async prewarm(x: number, z: number): Promise<void> {
     await this.loadManifest();
     const center = chunkOfWorld(x, z);
-    const required: CompiledChunkManifest[] = [];
-    for (let dz = -1; dz <= 1; dz++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        const key = chunkKey(center.kx + dx, center.kz + dz);
-        const entry = this.entries.get(key);
-        if (!entry) throw new Error(`compiled map ${this.mapName} is missing required spawn chunk ${key}`);
-        required.push(entry);
-      }
-    }
+    const keys = selectPrewarmChunkKeys(new Set(this.entries.keys()), center, this.manifest!.partial);
+    const required = keys.map((key) => this.entries.get(key)!);
     let cursor = 0;
     const workers = Array.from({ length: Math.min(MAX_CONCURRENT_LOADS, required.length) }, async () => {
       while (cursor < required.length) {
@@ -126,6 +120,7 @@ export class CompiledCity implements CityStreamer {
         for (let dx = -LOAD_RADIUS; dx <= LOAD_RADIUS; dx++) this.wanted.add(chunkKey(center.kx + dx, center.kz + dz));
       }
     }
+    this.reconcileManagedVehicles(positions);
     for (const chunk of [...this.chunks.values()]) if (distanceTo(chunk.kx, chunk.kz) > UNLOAD_RADIUS) this.unloadChunk(chunk);
     for (const [key, pending] of this.pending) {
       if (!this.wanted.has(key)) pending.controller.abort();
@@ -139,6 +134,8 @@ export class CompiledCity implements CityStreamer {
     for (const pending of this.pending.values()) pending.controller.abort();
     this.pending.clear();
     for (const chunk of [...this.chunks.values()]) this.unloadChunk(chunk);
+    for (const vehicle of [...this.managedVehicles.keys()]) this.game.removeVehicle(vehicle);
+    this.managedVehicles.clear();
     this.roadNetwork.clear();
     setRoadNetwork(null);
     this.game.world.removeRigidBody(this.safetyBody);
@@ -210,9 +207,9 @@ export class CompiledCity implements CityStreamer {
     const root = gltf.scene;
     this.game.scene.add(root);
     this.game.lighting.registerWetSurfaces(root);
-    const vehicles = this.spawnVehicles(data);
+    this.spawnVehicles(data);
     this.roadNetwork.registerChunk(key, data.navNodes, data.navEdges);
-    this.chunks.set(key, { kx: entry.kx, kz: entry.kz, root, body, vehicles, renderBytes: entry.renderBytes, dataBytes: entry.dataBytes });
+    this.chunks.set(key, { kx: entry.kx, kz: entry.kz, root, body, renderBytes: entry.renderBytes, dataBytes: entry.dataBytes });
     const elapsed = performance.now() - started;
     this.recentLoadMs.push(elapsed);
     if (this.recentLoadMs.length > 32) this.recentLoadMs.shift();
@@ -242,8 +239,8 @@ export class CompiledCity implements CityStreamer {
     return body;
   }
 
-  private spawnVehicles(data: CompiledChunkData): Vehicle[] {
-    const vehicles: Vehicle[] = [];
+  private spawnVehicles(data: CompiledChunkData): void {
+    const owner = chunkKey(data.kx, data.kz);
     for (const spawn of data.parked) {
       if (this.game.vehicles.some((vehicle) => {
         const position = vehicle.body.translation();
@@ -252,9 +249,28 @@ export class CompiledCity implements CityStreamer {
       const model = CIVILIAN_CARS[spawn.seed % CIVILIAN_CARS.length];
       const vehicle = new Vehicle(this.game, model, spawn.x, spawn.z, spawn.rotation);
       this.game.addVehicle(vehicle);
-      vehicles.push(vehicle);
+      this.managedVehicles.set(vehicle, owner);
     }
-    return vehicles;
+  }
+
+  /** Called before a vehicle's Rapier body is freed by another subsystem. */
+  forgetVehicle(vehicle: Vehicle): void {
+    this.managedVehicles.delete(vehicle);
+  }
+
+  /** Transfer moved cars to their current chunk and retire abandoned cars once
+   * both their chunk and every player are outside the streaming hysteresis. */
+  private reconcileManagedVehicles(positions: { x: number; z: number }[]): void {
+    for (const [vehicle] of [...this.managedVehicles]) {
+      const position = vehicle.body.translation();
+      const owner = chunkOfWorld(position.x, position.z);
+      const key = chunkKey(owner.kx, owner.kz);
+      this.managedVehicles.set(vehicle, key);
+      const nearPlayer = positions.some((player) =>
+        Math.hypot(player.x - position.x, player.z - position.z) <= UNLOAD_RADIUS * CHUNK_SIZE
+      );
+      if (!this.chunks.has(key) && vehicle.driver === null && !nearPlayer) this.game.removeVehicle(vehicle);
+    }
   }
 
   private unloadChunk(chunk: LoadedChunk): void {
@@ -264,10 +280,8 @@ export class CompiledCity implements CityStreamer {
     this.game.scene.remove(chunk.root);
     this.disposeObject(chunk.root);
     this.game.world.removeRigidBody(chunk.body);
-    for (const vehicle of chunk.vehicles) {
-      const position = vehicle.body.translation();
-      const owner = chunkOfWorld(position.x, position.z);
-      if (vehicle.driver === null && owner.kx === chunk.kx && owner.kz === chunk.kz) this.game.removeVehicle(vehicle);
+    for (const [vehicle, owner] of [...this.managedVehicles]) {
+      if (owner === key && vehicle.driver === null) this.game.removeVehicle(vehicle);
     }
     this.chunks.delete(key);
   }

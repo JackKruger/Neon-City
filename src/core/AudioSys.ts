@@ -3,6 +3,7 @@
  * No samples needed; everything is oscillators and filtered noise.
  */
 export class AudioSys {
+  private events = new AbortController();
   onCaption: ((text: string) => void) | null = null;
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
@@ -24,8 +25,16 @@ export class AudioSys {
       if (!this.ctx) this.init();
       this.ctx?.resume();
     };
-    window.addEventListener('keydown', unlock);
-    window.addEventListener('pointerdown', unlock);
+    window.addEventListener('keydown', unlock, { signal: this.events.signal });
+    window.addEventListener('pointerdown', unlock, { signal: this.events.signal });
+  }
+
+  dispose(): void {
+    this.events.abort();
+    this.onCaption = null;
+    if (this.ctx) void this.ctx.close();
+    this.ctx = null;
+    this.master = null;
   }
 
   private init(): void {
@@ -287,14 +296,16 @@ export class AudioSys {
     walking = false,
     running = false,
     darkness = 0,
-    rain = 0
+    rain = 0,
+    engineActive = false
   ): void {
     if (!this.ctx || this.ctx.state !== 'running') return;
     const t = this.ctx.currentTime;
 
     const rpm = 45 + speed * 3.5 + throttle * 25;
     this.engineOsc!.frequency.setTargetAtTime(rpm, t, 0.1);
-    this.engineGain!.gain.setTargetAtTime(0.03 + Math.min(speed / 40, 1) * 0.05, t, 0.1);
+    const engineVolume = engineActive ? 0.03 + Math.min(speed / 40, 1) * 0.05 : 0;
+    this.engineGain!.gain.setTargetAtTime(engineVolume, t, 0.1);
 
     this.skidGain!.gain.setTargetAtTime(skidding ? 0.12 : 0, t, 0.08);
 

@@ -239,6 +239,14 @@ export class Npcs {
     if (this.exitingDrivers.get(vehicle) === pedestrian) this.exitingDrivers.delete(vehicle);
   }
 
+  /** Remove manager-side references before a pedestrian is recycled mid-transition. */
+  forgetPedestrian(pedestrian: Pedestrian): void {
+    this.pendingEntries = this.pendingEntries.filter((entry) => entry.pedestrian !== pedestrian);
+    for (const [vehicle, exiting] of this.exitingDrivers) {
+      if (exiting === pedestrian) this.exitingDrivers.delete(vehicle);
+    }
+  }
+
   /** Called at the end of the pedestrian's doorway animation. */
   completePedestrianVehicleEntry(pedestrian: Pedestrian, vehicle: Vehicle): void {
     if (!this.pendingEntries.some((entry) => entry.pedestrian === pedestrian)) {
