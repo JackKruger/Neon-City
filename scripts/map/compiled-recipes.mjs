@@ -828,10 +828,11 @@ export function createCompilerContext({ meta, grid, heights, coverage, transport
     }
     return result;
   };
+  const tunnelSurfaceHeightAt = (x, z) => terrainHeightAt(x, z) - TUNNEL_SURFACE_DEPTH;
   return {
     meta, grid, heights, coverage, transport, speed, objectIndex,
     index, codeAt, coverageAt, transportAt, isRoad, cornerRaw,
-    terrainHeightAt, bridgeSurfaceHeightAt, heightAt: terrainHeightAt,
+    terrainHeightAt, bridgeSurfaceHeightAt, tunnelSurfaceHeightAt, heightAt: terrainHeightAt,
   };
 }
 
@@ -863,6 +864,7 @@ const NAV_VEHICLE = 1;
 const NAV_PEDESTRIAN = 2;
 const NAV_TRAM = 4;
 const NAV_TRAIN = 8;
+const TUNNEL_SURFACE_DEPTH = 5;
 
 function navigationFromPaths(context, objects, kx, kz) {
   const nodes = new Map();
@@ -878,15 +880,21 @@ function navigationFromPaths(context, objects, kx, kz) {
   });
   const flagFor = (mode) => mode === 'pedestrian' ? NAV_PEDESTRIAN : mode === 'tram' ? NAV_TRAM : mode === 'train' ? NAV_TRAIN : NAV_VEHICLE;
   const nodeKey = (point, flags) => `${Math.round(point.x * 100)},${Math.round(point.z * 100)},${flags}`;
-  const addNode = (point, flags, speed) => {
+  const addNode = (point, flags, speed, heightAt) => {
     const owned = owner(point.x, point.z);
     if (owned.kx !== kx || owned.kz !== kz) return;
     const key = nodeKey(point, flags);
-    if (!nodes.has(key)) nodes.set(key, { x: rounded(point.x), y: rounded(context.bridgeSurfaceHeightAt(point.x, point.z)), z: rounded(point.z), flags, speed });
+    const y = rounded(heightAt(point.x, point.z));
+    const existing = nodes.get(key);
+    if (!existing) nodes.set(key, { x: rounded(point.x), y, z: rounded(point.z), flags, speed });
+    else existing.y = Math.max(existing.y, y);
   };
   for (const object of objects) {
     if (object.kind !== 'nav-path' || !Array.isArray(object.points) || object.points.length < 2) continue;
     const flags = flagFor(object.mode) | (object.flags ?? 0);
+    const heightAt = object.structure === 'tunnel'
+      ? context.tunnelSurfaceHeightAt
+      : context.bridgeSurfaceHeightAt;
     const source = object.points.map(([x, z]) => ({ x: object.x + x, z: object.z + z }));
     const points = [source[0]];
     for (let i = 1; i < source.length; i++) {
@@ -898,7 +906,7 @@ function navigationFromPaths(context, objects, kx, kz) {
         points.push({ x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t });
       }
     }
-    for (const point of points) addNode(point, flags, object.speed ?? 0);
+    for (const point of points) addNode(point, flags, object.speed ?? 0, heightAt);
     starts.push({ point: points[0], next: points[1], flags, sourceId: object.sourceId });
     ends.push({ point: points.at(-1), previous: points.at(-2), flags, sourceId: object.sourceId });
     for (let i = 0; i + 1 < points.length; i++) {
@@ -1085,7 +1093,9 @@ export function compileChunkRecipe(context, kx, kz) {
       const elevation = object.elevation ?? 0.025;
       const sitsOnBridge = object.structure === 'bridge' ||
         (object.structure !== 'tunnel' && material === 'pavement');
-      const surfaceHeightAt = sitsOnBridge ? context.bridgeSurfaceHeightAt : context.terrainHeightAt;
+      const surfaceHeightAt = object.structure === 'tunnel'
+        ? context.tunnelSurfaceHeightAt
+        : sitsOnBridge ? context.bridgeSurfaceHeightAt : context.terrainHeightAt;
       if (elevation >= 0.1 && ['pavement', 'concrete'].includes(material)) {
         const collision = addRaisedPolygon(buckets.get(material), points, surfaceHeightAt, elevation);
         collisionMeshes.push({ sourceId: object.sourceId, ...collision });

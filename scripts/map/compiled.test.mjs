@@ -367,12 +367,22 @@ test('real transport structures compile as concrete geometry with collision', ()
   const bollard = {
     kind: 'bollard', sourceId: 'bollard:test:bridge', x: 48, z: 48, rotation: 0,
   };
+  const tunnelRail = {
+    kind: 'road-surface', sourceId: 'train:test:tunnel:bed', role: 'train-bed',
+    structure: 'tunnel', surface: 'ballast', elevation: 0.09,
+    x: 72, z: 48, outline: [[-10, -2], [10, -2], [10, 2], [-10, 2]],
+  };
+  const tunnelNavigation = {
+    kind: 'nav-path', sourceId: 'train:test:tunnel:nav', mode: 'train', speed: 80,
+    structure: 'tunnel', x: 72, z: 48, points: [[-10, 0], [10, 0]],
+  };
   const context = createCompilerContext({
     ...base,
-    objectIndex: { chunks: { '0,0': [bridge, bridgeRoad, authoritativeFootpath, bollard, tunnel] } },
+    objectIndex: { chunks: { '0,0': [bridge, bridgeRoad, authoritativeFootpath, bollard, tunnel, tunnelRail, tunnelNavigation] } },
   });
   assert.equal(context.terrainHeightAt(48, 48), 0);
   assert.equal(context.heightAt(48, 48), 0, 'bridge must not replace natural terrain');
+  assert.equal(context.tunnelSurfaceHeightAt(72, 48), -5, 'tunnel deck must remain below the terrain surface');
   assert.equal(context.bridgeSurfaceHeightAt(48, 48), 3);
   assert.equal(context.bridgeSurfaceHeightAt(38, 48), 3, 'surveyed deck should stay level to its end');
   assert.equal(context.bridgeSurfaceHeightAt(41, 48), 3, 'short bridge spans must not contain steep ramps');
@@ -391,6 +401,16 @@ test('real transport structures compile as concrete geometry with collision', ()
   const props = result.primitives.find((primitive) => primitive.material === 'prop');
   assert.ok(props.positions.some((value, index) => index % 3 === 1 && value >= 3),
     'bridge furniture was not placed on the bridge deck');
+  const ballast = result.primitives.find((primitive) => primitive.material === 'ballast');
+  assert.ok(ballast.positions.every((value, index) => index % 3 !== 1 || value < -4.8),
+    'tunnel rail was rendered on top of the terrain');
+  const navigation = result.sections.NAV3;
+  const navigationCount = navigation.readUInt16LE(2);
+  const trainNodeHeights = Array.from({ length: navigationCount }, (_, index) => 8 + index * 16)
+    .filter((offset) => (navigation.readUInt16LE(offset + 12) & 8) !== 0)
+    .map((offset) => navigation.readInt32LE(offset + 4));
+  assert.ok(trainNodeHeights.length > 0 && trainNodeHeights.every((height) => height === -500),
+    'tunnel train navigation was not compiled at tunnel depth');
   assert.equal(result.counts.meshes, 3, 'bridge, carriageway approach, and raised footpath should compile collision meshes');
   assert.equal(result.counts.cuboids, 4, 'tunnel shell and bridge bollard should compile solid cuboids');
   assert.equal(result.recipe.colliderCount, 7);
