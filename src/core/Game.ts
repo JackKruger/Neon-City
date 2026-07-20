@@ -392,12 +392,25 @@ export class Game {
   removeVehicle(v: Drivable): void {
     const vi = this.vehicles.indexOf(v);
     const ei = this.entities.indexOf(v);
+    this.removeVehicleFromGrid(v);
     if (vi < 0 && ei < 0) return;
     this.npcs?.prepareVehicleRemoval(v);
     if (vi >= 0) this.vehicles.splice(vi, 1);
     if (ei >= 0) this.entities.splice(ei, 1);
     if (v instanceof Vehicle) this.city?.forgetVehicle(v);
     v.dispose();
+  }
+
+  /** Evict a vehicle before its Rapier body is freed. The grid is rebuilt at
+   * the start of each fixed step, but NPC recycling can remove vehicles later
+   * in that same step before player and pedestrian queries run. */
+  private removeVehicleFromGrid(vehicle: Drivable): void {
+    for (const column of this.vehicleGrid.values()) {
+      for (const bucket of column.values()) {
+        const index = bucket.indexOf(vehicle);
+        if (index >= 0) bucket.splice(index, 1);
+      }
+    }
   }
 
   /** Attribute a witnessed crime; active police always count as witnesses. */
@@ -642,7 +655,8 @@ export class Game {
           dt,
           look,
           this.settings.values.reducedMotion,
-          p.driving
+          p.driving,
+          !p.driving
         );
       }
       const def = p.inventory.def();

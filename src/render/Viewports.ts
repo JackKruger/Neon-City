@@ -42,6 +42,7 @@ export class ChaseCamera {
   private orbitPitch = 0;
   private recentering = false;
   private lastTargetHeading: number | null = null;
+  private manualOrbitGrace = 0;
 
   constructor(aspect: number, private resolveCollision?: CollisionResolver) {
     this.camera = new THREE.PerspectiveCamera(BASE_FOV, aspect, 0.3, 340);
@@ -52,10 +53,17 @@ export class ChaseCamera {
     dt: number,
     look: CameraInput,
     reducedMotion: boolean,
-    followHeading = true
+    followHeading = true,
+    settleBehind = false
   ): void {
     if (look.recenter) this.recentering = true;
-    if (Math.abs(look.yaw) > 0.0001 || Math.abs(look.pitch) > 0.0001) this.recentering = false;
+    const manualLook = Math.abs(look.yaw) > 0.0001 || Math.abs(look.pitch) > 0.0001;
+    if (manualLook) {
+      this.recentering = false;
+      this.manualOrbitGrace = 0.9;
+    } else {
+      this.manualOrbitGrace = Math.max(0, this.manualOrbitGrace - dt);
+    }
     const targetHeading = target.getHeading();
     if (this.lastTargetHeading !== null && !followHeading && !this.recentering) {
       // On foot, turning the character must not also rotate the movement basis.
@@ -75,6 +83,12 @@ export class ChaseCamera {
         this.orbitPitch = 0;
         this.recentering = false;
       }
+    } else if (settleBehind && this.manualOrbitGrace <= 0) {
+      // On foot, gradually swing behind the character as their facing changes.
+      // This is deliberately gentler than the explicit V/R3 recenter above.
+      const k = 1 - Math.exp(-1.8 * dt);
+      this.orbitYaw *= 1 - k;
+      if (Math.abs(this.orbitYaw) < 0.002) this.orbitYaw = 0;
     }
     target.getFocus(this.tmpFocus);
     const heading = targetHeading + this.orbitYaw;

@@ -241,8 +241,10 @@ export class Character implements Entity {
       this.facing += delta * Math.min(1, 12 * dt);
     }
     if (this.moveSpeed > 0) {
-      // Cadence rises with speed; a full cycle is two steps.
-      this.walkPhase += dt * (3.2 + this.moveSpeed * 1.5);
+      // Cadence rises with speed; a full cycle is two steps. The rig's knee
+      // fold is authored for a decreasing phase so the swing foot travels
+      // forward while the planted foot moves backward beneath the body.
+      this.walkPhase -= dt * (3.2 + this.moveSpeed * 1.5);
     }
     // Ease gait blends so stops/starts and sprint changes don't pop.
     const strideTarget = this.moveSpeed > 0 ? 1 : 0;
