@@ -59,6 +59,17 @@ export class Wanted {
     this.recomputeStars();
   }
 
+  /** Immediately dispose every responder and reset all pursuit/search timers. */
+  reset(): void {
+    for (const cop of this.copPeds) cop.dispose();
+    for (const police of this.police) police.dispose();
+    this.copPeds.length = 0;
+    this.police.length = 0;
+    this.spawnCooldown = 0;
+    this.lastKnown.set(0, 0, 0);
+    this.clear();
+  }
+
   private recomputeStars(): void {
     let s = 0;
     for (const t of STAR_THRESHOLDS) if (this.heat >= t) s++;

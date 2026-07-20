@@ -1,20 +1,26 @@
 import { createHash } from 'node:crypto';
 import { ShapeUtils, Vector2 } from 'three';
 import { stableStringify } from './compiled-format.mjs';
+import {
+  CHUNK_SIZE,
+  CHUNK_TILES,
+  COVERAGE_FLAGS,
+  MAP_SIZE,
+  MAX_CHUNK,
+  MIN_CHUNK,
+  NBCH_SECTIONS,
+  TILE,
+  TRANSPORT_FLAGS,
+} from './contract.mjs';
 
-export const TILE = 12;
-export const CHUNK_TILES = 10;
-export const CHUNK_SIZE = TILE * CHUNK_TILES;
-export const MAP_SIZE = 720;
-export const MIN_CHUNK = -36;
-export const MAX_CHUNK = 35;
+export { CHUNK_SIZE, CHUNK_TILES, MAP_SIZE, MAX_CHUNK, MIN_CHUNK, TILE } from './contract.mjs';
 
-const COVERAGE_BUILDING = 1;
-const COVERAGE_TREE = 2;
-const COVERAGE_PARKING = 4;
-export const COVERAGE_BUILDING_SOURCE = 32;
-const TRANSPORT_BRIDGE = 2;
-const TRANSPORT_TUNNEL = 4;
+const COVERAGE_BUILDING = COVERAGE_FLAGS.Building;
+const COVERAGE_TREE = COVERAGE_FLAGS.Tree;
+const COVERAGE_PARKING = COVERAGE_FLAGS.Parking;
+export const COVERAGE_BUILDING_SOURCE = COVERAGE_FLAGS.BuildingSource;
+const TRANSPORT_BRIDGE = TRANSPORT_FLAGS.Bridge;
+const TRANSPORT_TUNNEL = TRANSPORT_FLAGS.Tunnel;
 const rounded = (value) => Math.round(value * 100) / 100;
 
 export const MATERIALS = [
@@ -412,7 +418,7 @@ function bufferWriter() {
 
 function encodeColliders(cuboids, meshes, sourceIndices) {
   const writer = bufferWriter();
-  writer.u16(1);
+  writer.u16(NBCH_SECTIONS.COL1);
   writer.u16(0);
   writer.u32(cuboids.length);
   writer.u32(meshes.length);
@@ -433,7 +439,7 @@ function encodeColliders(cuboids, meshes, sourceIndices) {
 
 function encodeNavigation(nodes, edges) {
   const writer = bufferWriter();
-  writer.u16(2); writer.u16(nodes.length); writer.u32(edges.length);
+  writer.u16(NBCH_SECTIONS.NAV2); writer.u16(nodes.length); writer.u32(edges.length);
   for (const node of nodes) {
     writer.i32(Math.round(node.x * 100)); writer.i32(Math.round(node.z * 100));
     writer.u16(node.flags); writer.u16(node.speed);
@@ -448,7 +454,7 @@ function encodeNavigation(nodes, edges) {
 
 function encodeGameplay(cells, parked, sources, sourceIndices) {
   const writer = bufferWriter();
-  writer.u16(1); writer.u16(cells.length); writer.u16(parked.length); writer.u16(sources.length);
+  writer.u16(NBCH_SECTIONS.GME1); writer.u16(cells.length); writer.u16(parked.length); writer.u16(sources.length);
   writer.bytes(cells);
   for (const spawn of parked) {
     writer.f32(spawn.x); writer.f32(spawn.z); writer.f32(spawn.rotation);

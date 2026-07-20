@@ -34,15 +34,16 @@ import {
   toWorld,
 } from './geo.mjs';
 import { roadSurfacesFromOverpass } from './roads.mjs';
+import { COVERAGE_FLAGS, TRANSPORT_FLAGS, VERSIONS } from './contract.mjs';
 
 export const TRANSPORT = {
-  ROAD: 1,
-  BRIDGE: 2,
-  TUNNEL: 4,
-  RAIL: 8,
-  TRAM: 16,
-  FOOTPATH: 32,
-  ROUNDABOUT: 64,
+  ROAD: TRANSPORT_FLAGS.Road,
+  BRIDGE: TRANSPORT_FLAGS.Bridge,
+  TUNNEL: TRANSPORT_FLAGS.Tunnel,
+  RAIL: TRANSPORT_FLAGS.Rail,
+  TRAM: TRANSPORT_FLAGS.Tram,
+  FOOTPATH: TRANSPORT_FLAGS.Footpath,
+  ROUNDABOUT: TRANSPORT_FLAGS.Roundabout,
 };
 
 export const LAND_USE = {
@@ -59,12 +60,12 @@ export const LAND_USE = {
 };
 
 export const COVERAGE = {
-  BUILDING: 1,
-  TREE: 2,
-  PARKING: 4,
-  PROP: 8,
-  ADDRESS: 16,
-  BUILDING_SOURCE: 32,
+  BUILDING: COVERAGE_FLAGS.Building,
+  TREE: COVERAGE_FLAGS.Tree,
+  PARKING: COVERAGE_FLAGS.Parking,
+  PROP: COVERAGE_FLAGS.Prop,
+  ADDRESS: COVERAGE_FLAGS.Address,
+  BUILDING_SOURCE: COVERAGE_FLAGS.BuildingSource,
 };
 
 const ODS_ROOT = 'https://data.melbourne.vic.gov.au/api/explore/v2.1/catalog/datasets';
@@ -249,7 +250,7 @@ function addObject(chunks, object) {
 
 /** Rebuild a legacy centroid-owned object index using clipped polygon ownership. */
 export function rechunkObjectIndex(index) {
-  if (index?.version >= 2 && index.ownership === 'clipped-polygons') return index;
+  if (index?.version >= VERSIONS.objectIndex && index.ownership === 'clipped-polygons') return index;
   const chunks = {};
   const seen = new Set();
   for (const object of Object.values(index?.chunks ?? {}).flat()) {
@@ -262,7 +263,7 @@ export function rechunkObjectIndex(index) {
     values.sort((a, b) => a.kind.localeCompare(b.kind) || a.x - b.x || a.z - b.z);
   }
   return {
-    version: 2,
+    version: VERSIONS.objectIndex,
     chunkTiles: CHUNK_TILES,
     ownership: 'clipped-polygons',
     roadSurfaces: index?.roadSurfaces === true,
@@ -1123,7 +1124,7 @@ export async function enrichMelbourneMap({ root, grid, roadSurfaces = [], baseSu
   for (const [name, layer] of Object.entries(layers)) writeLayer(outputDir, name, layer);
   for (const values of Object.values(chunks)) values.sort((a, b) => a.kind.localeCompare(b.kind) || a.x - b.x || a.z - b.z);
   writeFileSync(join(outputDir, 'melbourne.objects.json'), JSON.stringify({
-    version: 2,
+    version: VERSIONS.objectIndex,
     chunkTiles: CHUNK_TILES,
     ownership: 'clipped-polygons',
     roadSurfaces: roadSurfaces.length > 0,

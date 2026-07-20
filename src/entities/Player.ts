@@ -12,9 +12,10 @@ import type { Drivable, DriveCommand } from './Drivable';
 import { Wanted } from '../gameplay/Wanted';
 import { Inventory } from '../gameplay/Inventory';
 import type { CombatTarget } from '../gameplay/Combat';
-import { MeleeDef, PLAYER_HEALTH, VEHICLE_IMPACT, WeaponDef, WeaponId } from '../gameplay/Weapons';
+import { MeleeDef, PLAYER_ARMOUR_MAX, PLAYER_HEALTH, VEHICLE_IMPACT, WeaponDef, WeaponId } from '../gameplay/Weapons';
 import { buildWeaponMesh } from './WeaponMeshes';
 import { cellToWorld, heightAt, nearestRoadCell, worldToCell } from '../world/CityMap';
+import type { PlayerSaveState } from '../save/GameSave';
 
 const ENTER_RADIUS = 3.5;
 const ENTER_VEHICLE_TIME = 0.9;
@@ -102,6 +103,10 @@ export class Player implements Entity, CameraTarget, CombatTarget {
   private vehicleDoorSide: 1 | -1 = 1;
   private respawnCost = 100;
 
+  get canSave(): boolean {
+    return !this.dead && !this.knockedDown && this.ragdoll === null && this.vehicleTransition === null;
+  }
+
   constructor(
     private game: Game,
     readonly index: 0 | 1,
@@ -175,21 +180,8 @@ export class Player implements Entity, CameraTarget, CombatTarget {
 
   private standUp(): void {
     const landing = this.ragdoll?.position() ?? this.character.position();
-    this.ragdoll?.dispose();
-    this.ragdoll = null;
-    this.character.dispose();
-    this.character = new Character(
-      this.game,
-      this.index === 0 ? P1_OUTFIT : P2_OUTFIT,
-      landing.x,
-      landing.z,
-      1,
-      PEDESTRIAN_COLLISION_GROUPS
-    );
-    this.character.rig.setHeldItem(buildWeaponMesh(this.inventory.current));
-    this.heldWeaponId = this.inventory.current;
+    this.rebuildCharacter(landing.x, landing.z, undefined, this.character.getFacing());
     this.character.flinch();
-    this.game.combat.register(this.character.collider, this);
     this.knockedDown = false;
     this.vehicleHitCooldown = 0.8;
   }
@@ -211,21 +203,10 @@ export class Player implements Entity, CameraTarget, CombatTarget {
 
   private respawn(): void {
     const deathPos = this.position();
-    this.ragdoll?.dispose();
-    this.ragdoll = null;
-    this.character.dispose();
     const { cx, cz } = worldToCell(deathPos.x, deathPos.z);
     const cell = nearestRoadCell(cx, cz);
     const spot = cell ? cellToWorld(cell.cx, cell.cz) : { x: deathPos.x, z: deathPos.z };
-    this.character = new Character(
-      this.game,
-      this.index === 0 ? P1_OUTFIT : P2_OUTFIT,
-      spot.x,
-      spot.z,
-      1,
-      PEDESTRIAN_COLLISION_GROUPS
-    );
-    this.game.combat.register(this.character.collider, this);
+    this.rebuildCharacter(spot.x, spot.z, undefined, this.character.getFacing());
     this.health = PLAYER_HEALTH;
     this.armour = 0;
     this.dead = false;
@@ -234,6 +215,82 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     this.balance = Math.max(0, this.balance - this.respawnCost);
     this.inventory.loseReserves();
     this.heldWeaponId = 'fists'; // re-attach the current weapon to the new rig
+  }
+
+  private rebuildCharacter(x: number, z: number, surfaceY?: number, heading = 0): void {
+    this.ragdoll?.dispose();
+    this.ragdoll = null;
+    this.game.combat.unregister(this.character.collider);
+    this.character.dispose();
+    this.character = new Character(
+      this.game,
+      this.index === 0 ? P1_OUTFIT : P2_OUTFIT,
+      x,
+      z,
+      1,
+      PEDESTRIAN_COLLISION_GROUPS
+    );
+    if (surfaceY !== undefined) this.character.teleport(x, surfaceY, z);
+    this.character.setFacing(heading);
+    this.character.rig.setHeldItem(buildWeaponMesh(this.inventory.current));
+    this.heldWeaponId = this.inventory.current;
+    this.game.combat.register(this.character.collider, this);
+  }
+
+  captureSaveState(): PlayerSaveState {
+    if (!this.canSave) throw new Error('Player state is temporarily unsafe to save.');
+    const heading = this.getHeading();
+    const actor = this.vehicle?.body.translation() ?? this.character.body.translation();
+    const x = actor.x;
+    const z = actor.z;
+    const ceilingY = this.vehicle ? actor.y + 0.5 : this.character.position().y + 1.5;
+    const surfaceY = this.game.surfaceHeightBelow(
+      x,
+      z,
+      ceilingY,
+      this.vehicle?.kind === 'helicopter' ? 250 : this.vehicle ? 12 : 4,
+      this.vehicle?.body ?? this.character.body
+    );
+    return {
+      position: { x, z, surfaceY },
+      heading,
+      health: THREE.MathUtils.clamp(this.health, 1, PLAYER_HEALTH),
+      armour: THREE.MathUtils.clamp(this.armour, 0, PLAYER_ARMOUR_MAX),
+      money: Math.max(0, Math.floor(this.balance)),
+      inventory: this.inventory.snapshot(),
+    };
+  }
+
+  restoreSaveState(state: PlayerSaveState): void {
+    const transitionVehicle = this.vehicleTransition?.vehicle;
+    if (transitionVehicle) transitionVehicle.setDoorOpen(this.vehicleTransition!.side, false);
+    if (this.vehicle) {
+      if (this.vehicle.driver === this) this.vehicle.driver = null;
+      this.vehicle.command = transitionCommand(this.vehicle);
+      this.vehicle.setDoorOpen(this.vehicleDoorSide, false);
+    }
+    this.vehicle = null;
+    this.vehicleTransition = null;
+    this.inventory.restore(state.inventory);
+    this.rebuildCharacter(state.position.x, state.position.z, state.position.surfaceY, state.heading);
+    this.character.setEnabled(true);
+    this.health = state.health;
+    this.armour = state.armour;
+    this.balance = state.money;
+    this.dead = false;
+    this.knockedDown = false;
+    this.hudMessage = null;
+    this.prompt = null;
+    this.input = null;
+    this.attackCooldown = 0;
+    this.pendingMelee = null;
+    this.shotHeatCooldown = 0;
+    this.vehicleHitCooldown = 0;
+    this.respawnTimer = 0;
+    this.knockdownTimer = 0;
+    this.respawnCost = 100;
+    this.wanted.reset();
+    this.game.input.clearQueuedInput();
   }
 
   /** Resolve a close-range police arrest, including a star-scaled fine. */

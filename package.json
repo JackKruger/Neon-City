@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "test": "npm run test:runtime && npm run test:map",
+    "test:runtime": "vitest run tests/runtime",
     "test:map": "node --test scripts/map/*.test.mjs",
     "map:build": "node scripts/build-map.mjs --open-data && node scripts/compile-map.mjs --scope=all",
     "map:compile": "node scripts/compile-map.mjs",
@@ -29,6 +31,7 @@
     "proj4": "^2.20.9",
     "shapefile": "^0.6.6",
     "typescript": "^6.0.3",
-    "vite": "^8.1.3"
+    "vite": "^8.1.3",
+    "vitest": "^4.1.10"
   }
 }

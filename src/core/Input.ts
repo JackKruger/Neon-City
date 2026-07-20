@@ -219,6 +219,15 @@ export class Input {
     this.pendingReload[0] = this.pendingReload[1] = false;
   }
 
+  clearQueuedInput(): void {
+    this.clearGameplayEdges();
+    this.pendingPause[0] = this.pendingPause[1] = false;
+    this.pendingMap = false;
+    this.pendingCameraReset[0] = this.pendingCameraReset[1] = false;
+    this.mouseLookX = 0;
+    this.mouseLookY = 0;
+  }
+
   /** True once if any player pressed pause since the last call. */
   consumePause(): boolean {
     const hit = this.pendingPause[0] || this.pendingPause[1];

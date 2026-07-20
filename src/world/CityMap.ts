@@ -1,4 +1,10 @@
 import { TILE } from '../core/const';
+import {
+  CODE_TO_CELL,
+  CoverageFlag,
+  TransportFlag,
+  type Cell,
+} from './MapContract';
 
 /**
  * City layout, queried one cell at a time so any region can be built, thrown
@@ -14,29 +20,7 @@ import { TILE } from '../core/const';
  *   '#' road   'C' commercial lot   'S' suburban lot
  *   'P' park   '.' plaza pavement   '~' water
  */
-export type Cell = '#' | 'C' | 'S' | 'P' | '.' | '~';
-
-/** Byte codes used by authored .bin map files; index = code. */
-export const CODE_TO_CELL: readonly Cell[] = ['.', '#', 'C', 'S', 'P', '~'];
-
-export const TransportFlag = {
-  Road: 1,
-  Bridge: 2,
-  Tunnel: 4,
-  Rail: 8,
-  Tram: 16,
-  Footpath: 32,
-  Roundabout: 64,
-} as const;
-
-export const CoverageFlag = {
-  Building: 1,
-  Tree: 2,
-  Parking: 4,
-  Prop: 8,
-  Address: 16,
-  BuildingSource: 32,
-} as const;
+export { CODE_TO_CELL, CoverageFlag, TransportFlag, type Cell } from './MapContract';
 
 export type AuthoredObject =
   | { kind: 'road-surface'; sourceId?: string; role?: string; elevation?: number; structure?: 'bridge' | 'tunnel'; x: number; z: number; surface: 'asphalt' | 'pavement' | 'marking' | 'rail' | 'concrete' | 'cycleway'; outline: [number, number][] }

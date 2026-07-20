@@ -3,7 +3,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import type { Game } from '../core/Game';
-import { CIVILIAN_CARS, TILE } from '../core/const';
+import { CIVILIAN_CARS } from '../core/const';
 import { Vehicle } from '../entities/Vehicle';
 import type { CityStreamer, CityStreamStats } from './CityStreamer';
 import {
@@ -15,9 +15,8 @@ import {
   validateCompiledManifest,
 } from './CompiledFormat';
 import { CompiledRoadNetwork, setRoadNetwork } from './RoadGraph';
+import { CHUNK_SIZE, CHUNK_TILES, TILE_SIZE as TILE } from './MapContract';
 
-const CHUNK_TILES = 10;
-const CHUNK_SIZE = CHUNK_TILES * TILE;
 const LOAD_RADIUS = 2;
 const UNLOAD_RADIUS = 3;
 const MAX_CONCURRENT_LOADS = 2;

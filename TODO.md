@@ -79,9 +79,12 @@
 
 ## Additional roadmap
 
-- [ ] Add save/load support.
-  - Persist player positions, money, health, armour, inventory, owned vehicles, and settings.
-  - Version save data so future updates can migrate older saves safely.
+- [x] Add save/load support.
+  - Shipped: a validated, versioned single browser slot persists player position,
+    heading, money, health, armour, inventory, and ammunition, with Continue/New
+    Game startup flow, pause-menu Save/Load/Delete, 60-second autosave, and safe
+    on-foot restoration from vehicles. Settings remain separately persisted.
+  - Owned vehicles and dynamic world state are not yet persisted.
 - [ ] Expand NPC behavior and reactions.
   - Add idle activities, conversations, panic, fleeing, self-preservation, and reactions to weapons, crashes, injured NPCs, and police.
   - Keep behavior deterministic and inexpensive enough for dense crowds.

@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
+import { SECTION_TYPES, VERSIONS } from './contract.mjs';
 
-export const MANIFEST_VERSION = 1;
-export const CONTAINER_VERSION = 2;
-export const RUNTIME_VERSION = 2;
+export const MANIFEST_VERSION = VERSIONS.compiledManifest;
+export const CONTAINER_VERSION = VERSIONS.container;
+export const RUNTIME_VERSION = VERSIONS.runtime;
 export const GLTF_VERSION = '2.0';
-export const SECTION_TYPES = ['HGT1', 'COL1', 'NAV2', 'GME1'];
+export { SECTION_TYPES } from './contract.mjs';
+export { NBCH_SECTIONS } from './contract.mjs';
 
 export function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');

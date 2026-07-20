@@ -1,4 +1,5 @@
 import { AuthoredMap, MapLayerName, RoadInfoIndex, setAuthoredMap } from './CityMap';
+import { CHUNK_TILES, MAP_CONTRACT, TILE_SIZE } from './MapContract';
 
 /**
  * Fetch an authored map (produced by scripts/build-map.mjs) from /public/maps
@@ -17,7 +18,7 @@ export async function loadAuthoredMap(
     throw new Error(`failed to load map "${name}": ${metaRes.status}/${binRes.status}`);
   }
   const meta = await metaRes.json();
-  if (meta.formatVersion !== undefined && meta.formatVersion !== 4) {
+  if (meta.formatVersion !== undefined && meta.formatVersion !== MAP_CONTRACT.versions.authoredMap) {
     throw new Error(`map "${name}" uses unsupported format version ${meta.formatVersion}`);
   }
   const grid = new Uint8Array(await binRes.arrayBuffer());
@@ -87,7 +88,7 @@ export async function loadAuthoredMap(
       const response = await fetch(`/maps/${name}.roads.json`);
       if (!response.ok) throw new Error(`${response.status}`);
       const roadInfo = await response.json() as RoadInfoIndex;
-      if (roadInfo.version !== 1 || roadInfo.chunkTiles !== 10 || roadInfo.tileSize !== 12 ||
+      if (roadInfo.version !== MAP_CONTRACT.versions.roadIndex || roadInfo.chunkTiles !== CHUNK_TILES || roadInfo.tileSize !== TILE_SIZE ||
           !Array.isArray(roadInfo.names) || typeof roadInfo.chunks !== 'object') {
         throw new Error('incompatible road information index');
       }
@@ -101,9 +102,9 @@ export async function loadAuthoredMap(
       const response = await fetch(`/maps/${meta.objects}`);
       if (!response.ok) throw new Error(`${response.status}`);
       const objects = await response.json();
-      if (!objects || ![1, 2].includes(objects.version) || typeof objects.chunks !== 'object') throw new Error('invalid object index');
-      if (objects.version === 2 &&
-          (objects.chunkTiles !== 10 || objects.ownership !== 'clipped-polygons')) {
+      if (!objects || ![1, MAP_CONTRACT.versions.objectIndex].includes(objects.version) || typeof objects.chunks !== 'object') throw new Error('invalid object index');
+      if (objects.version === MAP_CONTRACT.versions.objectIndex &&
+          (objects.chunkTiles !== CHUNK_TILES || objects.ownership !== 'clipped-polygons')) {
         throw new Error('incompatible object index');
       }
       map.objectChunks = objects.chunks;

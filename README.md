@@ -24,6 +24,9 @@ npm run dev        # http://localhost:5173
 
 Production build: `npm run build`, then `npm run preview`.
 
+Run all runtime and compiler tests with `npm test`, or only the TypeScript
+runtime suite with `npm run test:runtime`.
+
 ## Roadmap
 
 Current features and fixes are tracked in [TODO.md](TODO.md).
@@ -62,6 +65,13 @@ for expanding the world across Greater Melbourne are documented in
   last-known-position search; close police can arrest and fine the player.
 - Camera sensitivity, inversion, reduced motion, aim assistance, and subtitles
   can be changed from the pause menu and persist in the browser.
+- A single versioned save slot is stored in the browser. A valid slot adds a
+  Continue / New Game screen at startup; the pause menu provides Save, Load,
+  and Delete Save controls. The game also autosaves every 60 seconds of active
+  play and when the page is hidden, whenever the player is in a safe state.
+- Saves restore the player on foot with position, heading, health, armour,
+  money, weapons, and ammunition. Owned vehicles and other dynamic world state
+  are not yet persisted; saving while driving restores on foot at that surface.
 
 ## Project layout
 

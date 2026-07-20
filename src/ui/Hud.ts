@@ -2,6 +2,14 @@ import type { AuthoredMap } from '../world/CityMap';
 import type { InputMethod } from '../core/Input';
 import { Settings } from '../core/Settings';
 import { Minimap } from './Minimap';
+import type { GameSaveV1, SaveResult } from '../save/GameSave';
+
+export interface HudSaveActions {
+  inspect(): SaveResult<GameSaveV1>;
+  save(): SaveResult<GameSaveV1>;
+  load(): Promise<SaveResult<GameSaveV1>>;
+  delete(): SaveResult<undefined>;
+}
 
 export interface HudState {
   speedKmh?: number;
@@ -46,6 +54,7 @@ export class Hud {
   private inputMethods: InputMethod[] = ['keyboard'];
   private caption: HTMLDivElement;
   private captionTimer = 0;
+  private saveActions: HudSaveActions | null = null;
 
   constructor(private container: HTMLElement, private settings: Settings) {
     const style = document.createElement('style');
@@ -119,6 +128,14 @@ export class Hud {
       .hud-settings label { font-size:13px; opacity:.9; }
       .hud-settings input[type="range"] { accent-color:#ff5db1; }
       .hud-settings input[type="checkbox"] { justify-self:start; width:17px; height:17px; accent-color:#5ef3ff; }
+      .hud-save-controls { display:flex; flex-wrap:wrap; justify-content:center; gap:9px; margin:8px 0 3px; }
+      .hud-save-controls button { min-width:116px; padding:9px 13px; border:1px solid #5ef3ff;
+        border-radius:7px; color:#fff; background:rgba(25,16,54,.94); font:700 14px sans-serif;
+        cursor:pointer; box-shadow:0 0 10px rgba(94,243,255,.18); }
+      .hud-save-controls button:hover, .hud-save-controls button:focus-visible { outline:none; border-color:#ff5db1;
+        box-shadow:0 0 12px rgba(255,93,177,.5); }
+      .hud-save-controls button:disabled { cursor:wait; opacity:.45; }
+      .hud-save-status { min-height:1.3em; color:#74ffd1; font-size:13px; text-align:center; }
       .hud-map { position:absolute; inset:0; display:none; overflow:hidden; color:#fff;
         background:rgba(12,4,28,.6); pointer-events:auto; cursor:grab; z-index:20; }
       .hud-map-open .hud-panel, .hud-map-open .hud-hint { visibility:hidden; }
@@ -161,6 +178,10 @@ export class Hud {
     this.captionTimer = window.setTimeout(() => {
       this.caption.style.display = 'none';
     }, 1200);
+  }
+
+  setSaveActions(actions: HudSaveActions): void {
+    this.saveActions = actions;
   }
 
   setInputMethods(methods: InputMethod[]): void {
@@ -245,6 +266,7 @@ export class Hud {
   }
 
   private pauseEl: HTMLDivElement | null = null;
+  private pauseGamepadFrame = 0;
 
   setPaused(paused: boolean): void {
     if (paused && !this.pauseEl) {
@@ -264,6 +286,12 @@ export class Hud {
           <label for="hud-aim-assist">Aim assistance</label><input id="hud-aim-assist" type="checkbox">
           <label for="hud-subtitles">Subtitles</label><input id="hud-subtitles" type="checkbox">
         </div>
+        <div class="hud-save-controls">
+          <button type="button" data-save-action="save">Save Game</button>
+          <button type="button" data-save-action="load">Load Game</button>
+          <button type="button" data-save-action="delete">Delete Save</button>
+        </div>
+        <div class="hud-save-status" role="status" aria-live="polite"></div>
         <p style="margin-top:1em; opacity:.6">Esc / Start to resume</p>
         <p style="margin-top:1.5em; opacity:.45; font-size:12px">Map data © OpenStreetMap contributors (ODbL)</p>`;
       const values = this.settings.values;
@@ -282,11 +310,80 @@ export class Hud {
       reduced.addEventListener('change', () => this.settings.set('reducedMotion', reduced.checked));
       aimAssist.addEventListener('change', () => this.settings.set('aimAssist', aimAssist.checked));
       subtitles.addEventListener('change', () => this.settings.set('subtitles', subtitles.checked));
+      this.bindSaveControls(el);
       this.container.appendChild(el);
       this.pauseEl = el;
+      this.startPauseGamepadNavigation(el);
     } else if (!paused && this.pauseEl) {
+      cancelAnimationFrame(this.pauseGamepadFrame);
       this.pauseEl.remove();
       this.pauseEl = null;
+    }
+  }
+
+  private startPauseGamepadNavigation(el: HTMLDivElement): void {
+    const controls = [...el.querySelectorAll<HTMLElement>('button, input')];
+    let selected = Math.max(0, controls.findIndex((control) => control instanceof HTMLButtonElement));
+    let previousDirection = false;
+    let previousAccept = false;
+    controls[selected]?.focus();
+    const poll = () => {
+      if (this.pauseEl !== el) return;
+      const pad = navigator.getGamepads?.()[0];
+      const vertical = pad ? (pad.axes[1] ?? 0) + (pad.buttons[13]?.pressed ? 1 : 0) - (pad.buttons[12]?.pressed ? 1 : 0) : 0;
+      const horizontal = pad ? (pad.axes[0] ?? 0) + (pad.buttons[15]?.pressed ? 1 : 0) - (pad.buttons[14]?.pressed ? 1 : 0) : 0;
+      const directional = Math.abs(vertical) > 0.6 || Math.abs(horizontal) > 0.6;
+      if (directional && !previousDirection && controls.length > 0) {
+        const active = controls[selected];
+        if (Math.abs(horizontal) > Math.abs(vertical) && active instanceof HTMLInputElement && active.type === 'range') {
+          const step = Number(active.step) || 1;
+          active.value = String(Number(active.value) + Math.sign(horizontal) * step);
+          active.dispatchEvent(new Event('input', { bubbles: true }));
+        } else {
+          selected = (selected + (vertical >= 0 ? 1 : -1) + controls.length) % controls.length;
+          controls[selected].focus();
+        }
+      }
+      const accept = Boolean(pad?.buttons[0]?.pressed);
+      if (accept && !previousAccept) controls[selected]?.click();
+      previousDirection = directional;
+      previousAccept = accept;
+      this.pauseGamepadFrame = requestAnimationFrame(poll);
+    };
+    this.pauseGamepadFrame = requestAnimationFrame(poll);
+  }
+
+  private bindSaveControls(el: HTMLDivElement): void {
+    const actions = this.saveActions;
+    const buttons = [...el.querySelectorAll<HTMLButtonElement>('[data-save-action]')];
+    const status = el.querySelector<HTMLDivElement>('.hud-save-status')!;
+    const slot = actions?.inspect();
+    if (slot?.ok) status.textContent = `Saved ${new Date(slot.value.savedAt).toLocaleString()}`;
+    else if (slot && slot.error.code !== 'missing') status.textContent = slot.error.message;
+    const setBusy = (busy: boolean) => buttons.forEach((button) => { button.disabled = busy; });
+    const show = (result: SaveResult<GameSaveV1> | SaveResult<undefined>, verb: string) => {
+      status.textContent = result.ok
+        ? result.value && 'savedAt' in result.value
+          ? `${verb} ${new Date(result.value.savedAt).toLocaleString()}`
+          : `${verb}.`
+        : result.error.message;
+    };
+    for (const button of buttons) {
+      if (!actions) button.disabled = true;
+      button.addEventListener('click', async () => {
+        if (!actions) return;
+        const kind = button.dataset.saveAction;
+        if (kind === 'load' && !window.confirm('Load the saved game and discard unsaved progress?')) return;
+        if (kind === 'delete' && !window.confirm('Permanently delete the saved game?')) return;
+        setBusy(true);
+        try {
+          if (kind === 'save') show(actions.save(), 'Saved');
+          else if (kind === 'load') show(await actions.load(), 'Loaded');
+          else show(actions.delete(), 'Save deleted');
+        } finally {
+          setBusy(false);
+        }
+      });
     }
   }
 

@@ -1,6 +1,8 @@
-export const COMPILED_MANIFEST_VERSION = 1;
-export const COMPILED_CONTAINER_VERSION = 2;
-export const COMPILED_RUNTIME_VERSION = 2;
+import { MAP_CONTRACT, MAP_ID } from './MapContract';
+
+export const COMPILED_MANIFEST_VERSION = MAP_CONTRACT.versions.compiledManifest;
+export const COMPILED_CONTAINER_VERSION = MAP_CONTRACT.versions.container;
+export const COMPILED_RUNTIME_VERSION = MAP_CONTRACT.versions.runtime;
 
 export interface CompiledChunkManifest {
   kx: number;
@@ -99,9 +101,9 @@ export function validateCompiledManifest(value: unknown): CompiledManifest {
   ensure(typeof value === 'object' && value !== null, 'compiled manifest is not an object');
   const manifest = value as CompiledManifest;
   ensure(manifest.version === COMPILED_MANIFEST_VERSION, `unsupported compiled manifest version ${manifest.version}`);
-  ensure(manifest.mapId === 'melbourne', `unexpected compiled map ${manifest.mapId}`);
-  ensure(manifest.coordinateConvention === 'local-x-east-z-south', 'unsupported compiled coordinate convention');
-  ensure(manifest.tileSize === 12 && manifest.chunkTiles === 10 && manifest.chunkSize === 120, 'unsupported compiled chunk dimensions');
+  ensure(manifest.mapId === MAP_ID, `unexpected compiled map ${manifest.mapId}`);
+  ensure(manifest.coordinateConvention === MAP_CONTRACT.coordinateConvention, 'unsupported compiled coordinate convention');
+  ensure(manifest.tileSize === MAP_CONTRACT.tileSize && manifest.chunkTiles === MAP_CONTRACT.chunkTiles && manifest.chunkSize === MAP_CONTRACT.chunkSize, 'unsupported compiled chunk dimensions');
   ensure(manifest.required?.runtimeVersion === COMPILED_RUNTIME_VERSION, `unsupported compiled runtime version ${manifest.required?.runtimeVersion}`);
   ensure(manifest.required.containerVersion === COMPILED_CONTAINER_VERSION, `unsupported compiled container version ${manifest.required.containerVersion}`);
   ensure(manifest.required.gltfVersion === '2.0', `unsupported compiled glTF version ${manifest.required.gltfVersion}`);
@@ -167,12 +169,12 @@ export function parseCompiledChunk(buffer: ArrayBuffer, expectedKx: number, expe
     const type = new TextDecoder().decode(bytes.slice(offset, offset + 4));
     const sectionOffset = header.getUint32(offset + 4, true);
     const sectionLength = header.getUint32(offset + 8, true);
-    ensure(['HGT1', 'COL1', 'NAV2', 'GME1'].includes(type) && !sections.has(type), `invalid compiled section ${type}`);
+    ensure(type in MAP_CONTRACT.nbchSections && !sections.has(type), `invalid compiled section ${type}`);
     ensure(sectionOffset >= headerSize && sectionOffset % 4 === 0 && sectionOffset >= previousEnd && sectionOffset + sectionLength <= bytes.length, `malformed compiled section ${type}`);
     sections.set(type, bytes.slice(sectionOffset, sectionOffset + sectionLength));
     previousEnd = sectionOffset + sectionLength;
   }
-  for (const type of ['HGT1', 'COL1', 'NAV2', 'GME1']) ensure(sections.has(type), `missing compiled section ${type}`);
+  for (const type of Object.keys(MAP_CONTRACT.nbchSections)) ensure(sections.has(type), `missing compiled section ${type}`);
 
   const heightReader = new Reader(sections.get('HGT1')!);
   const heights = new Int16Array(121);
@@ -180,7 +182,7 @@ export function parseCompiledChunk(buffer: ArrayBuffer, expectedKx: number, expe
   ensure(heightReader.remaining() === 0, 'invalid HGT1 length');
 
   const collisionReader = new Reader(sections.get('COL1')!);
-  ensure(collisionReader.u16() === 1, 'unsupported COL1 version');
+  ensure(collisionReader.u16() === MAP_CONTRACT.nbchSections.COL1, 'unsupported COL1 version');
   collisionReader.u16();
   const cuboidCount = collisionReader.u32();
   const meshCount = collisionReader.u32();
@@ -207,7 +209,7 @@ export function parseCompiledChunk(buffer: ArrayBuffer, expectedKx: number, expe
   ensure(collisionReader.remaining() === 0, 'trailing COL1 data');
 
   const navReader = new Reader(sections.get('NAV2')!);
-  ensure(navReader.u16() === 2, 'unsupported NAV2 version');
+  ensure(navReader.u16() === MAP_CONTRACT.nbchSections.NAV2, 'unsupported NAV2 version');
   const nodeCount = navReader.u16();
   const edgeCount = navReader.u32();
   const navNodes: CompiledNavNode[] = [];
@@ -226,7 +228,7 @@ export function parseCompiledChunk(buffer: ArrayBuffer, expectedKx: number, expe
   ensure(navReader.remaining() === 0, 'trailing NAV2 data');
 
   const gameReader = new Reader(sections.get('GME1')!);
-  ensure(gameReader.u16() === 1, 'unsupported GME1 version');
+  ensure(gameReader.u16() === MAP_CONTRACT.nbchSections.GME1, 'unsupported GME1 version');
   const cellCount = gameReader.u16();
   const parkedCount = gameReader.u16();
   const sourceCount = gameReader.u16();

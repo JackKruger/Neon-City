@@ -38,6 +38,9 @@ import { randomRoadCellNear } from '../world/RoadGraph';
 import { Settings } from './Settings';
 import { WorldLighting } from '../world/WorldLighting';
 import { DevStats, type DevStatsSnapshot } from './DevStats';
+import { restoreAtomically, SaveController } from '../save/SaveController';
+import { createGameSave, type GameSaveV1, type SaveResult } from '../save/GameSave';
+import { SaveStorage } from '../save/SaveStorage';
 
 export interface Entity {
   update(dt: number): void;
@@ -53,6 +56,11 @@ interface FixedUpdateTiming {
   postPhysicsMs: number;
 }
 
+interface SimulationTiming extends FixedUpdateTiming {
+  simulationMs: number;
+  fixedSteps: number;
+}
+
 export class Game {
   readonly scene = new THREE.Scene();
   readonly renderer: THREE.WebGLRenderer;
@@ -66,6 +74,8 @@ export class Game {
   readonly lighting: WorldLighting;
   readonly devStats: DevStats;
   readonly mapOverlay: MapOverlay | null;
+  readonly saveStorage: SaveStorage;
+  readonly saveController: SaveController;
   readonly entities: Entity[] = [];
 
   private clock = new THREE.Clock();
@@ -86,7 +96,11 @@ export class Game {
   npcs!: Npcs;
   paused = false;
 
-  static async create(container: HTMLElement): Promise<Game> {
+  static async create(
+    container: HTMLElement,
+    initialSave?: GameSaveV1,
+    saveStorage = SaveStorage.browser()
+  ): Promise<Game> {
     const [assets] = await Promise.all([
       (async () => {
         const a = new Assets();
@@ -96,13 +110,14 @@ export class Game {
       RAPIER.init(),
       loadAuthoredMap('melbourne', { loadObjects: false }),
     ]);
-    const game = new Game(container, assets);
-    await game.initialize();
+    const game = new Game(container, assets, saveStorage);
+    await game.initialize(initialSave);
     return game;
   }
 
-  private constructor(container: HTMLElement, assets: Assets) {
+  private constructor(container: HTMLElement, assets: Assets, saveStorage: SaveStorage) {
     this.assets = assets;
+    this.saveStorage = saveStorage;
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -122,6 +137,12 @@ export class Game {
       this.resolveCameraCollision(target, focus, desired, out);
     });
     this.hud = new Hud(container, this.settings);
+    this.hud.setSaveActions({
+      inspect: () => this.saveStorage.read(),
+      save: () => this.saveNow(),
+      load: () => this.loadSave(),
+      delete: () => this.saveStorage.delete(),
+    });
     this.audio.onCaption = (text) => this.hud.showCaption(text);
     const map = getAuthoredMap();
     const mapCanvas = map ? buildMapCanvas(map) : null;
@@ -131,13 +152,18 @@ export class Game {
 
     this.lighting = this.setupEnvironment();
     this.city = new CompiledCity(this);
+    this.saveController = new SaveController(
+      () => this.players[0]?.canSave === true,
+      () => { this.saveNow(); }
+    );
+    window.addEventListener('pagehide', () => { this.saveController.saveForPageHide(); });
   }
 
-  private async initialize(): Promise<void> {
+  private async initialize(initialSave?: GameSaveV1): Promise<void> {
     const map = getAuthoredMap();
-    const requestedSpawn = map?.spawn ?? { x: 0, z: 0 };
+    const requestedSpawn = initialSave?.player.position ?? map?.spawn ?? { x: 0, z: 0 };
     const requestedCell = worldToCell(requestedSpawn.x, requestedSpawn.z);
-    const safeSpawnCell = nearestRoadCell(requestedCell.cx, requestedCell.cz);
+    const safeSpawnCell = initialSave ? null : nearestRoadCell(requestedCell.cx, requestedCell.cz);
     const spawn = safeSpawnCell
       ? cellToWorld(safeSpawnCell.cx, safeSpawnCell.cz)
       : requestedSpawn;
@@ -149,12 +175,42 @@ export class Game {
     const p1 = new Player(this, 0, spawn.x, spawn.z);
     this.players.push(p1);
     this.entities.push(p1);
+    if (initialSave) p1.restoreSaveState(initialSave.player);
 
     this.npcs = new Npcs(this);
 
     this.spawnStarterPickups(spawn.x, spawn.z);
     this.spawnHelicopter(spawn.x, spawn.z);
     this.applyDebugParams();
+  }
+
+  saveNow(): SaveResult<GameSaveV1> {
+    const player = this.players[0];
+    if (!player?.canSave) {
+      return { ok: false, error: { code: 'unsafe', message: 'Cannot save while dead, downed, or entering/exiting a vehicle.' } };
+    }
+    try {
+      const save = createGameSave(player.captureSaveState(), Math.max(0, Math.floor(this.saveStorage.clock.now())));
+      return this.saveStorage.write(save);
+    } catch (error) {
+      return { ok: false, error: { code: 'unsafe', message: error instanceof Error ? error.message : 'The game is temporarily unsafe to save.' } };
+    }
+  }
+
+  async loadSave(): Promise<SaveResult<GameSaveV1>> {
+    return restoreAtomically(
+      () => this.saveStorage.read(),
+      (save) => this.city.prewarm(save.player.position.x, save.player.position.z),
+      (save) => {
+        this.players[0].restoreSaveState(save.player);
+        this.accumulator = 0;
+        this.city.update(this.playerPositions());
+        this.mapOverlay?.close();
+        this.paused = true;
+        this.hud.setPaused(true);
+        document.exitPointerLock?.();
+      }
+    );
   }
 
   /** Player XZ positions, for chunk streaming and spawn-ring sampling. */
@@ -181,7 +237,13 @@ export class Game {
 
   /** Highest fixed world surface below a nearby actor. Unlike `heightAt`, this
    * can resolve a bridge deck without turning the terrain beneath it solid. */
-  surfaceHeightBelow(x: number, z: number, ceilingY: number, maxDistance = 16): number {
+  surfaceHeightBelow(
+    x: number,
+    z: number,
+    ceilingY: number,
+    maxDistance = 16,
+    excludeBody?: RAPIER.RigidBody
+  ): number {
     const ray = new RAPIER.Ray(
       new RAPIER.Vector3(x, ceilingY, z),
       new RAPIER.Vector3(0, -1, 0)
@@ -190,7 +252,10 @@ export class Game {
       ray,
       maxDistance,
       true,
-      RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC
+      RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC,
+      undefined,
+      undefined,
+      excludeBody
     );
     return hit ? ceilingY - hit.timeOfImpact : heightAt(x, z);
   }
@@ -350,17 +415,16 @@ export class Game {
     const frameStarted = performance.now();
     const frameMs = frameStarted - this.previousFrameStart;
     this.previousFrameStart = frameStarted;
-    let simulationMs = 0;
-    let npcMs = 0;
-    let actorMs = 0;
-    let physicsMs = 0;
-    let postPhysicsMs = 0;
-    let fixedSteps = 0;
     const dt = Math.min(this.clock.getDelta(), 0.1);
     this.input.poll();
-    this.mapOverlay?.setPlayers(
-      this.playerPositions().map((pos, i) => ({ ...pos, heading: this.players[i].getHeading() }))
-    );
+    this.handlePauseAndMapInput();
+    const simulation = this.advanceFixedSteps(dt);
+    const { positions, streamingMs } = this.updateStreamingAndEnvironment(dt);
+    this.updateCamerasAndHud(dt, positions);
+    this.renderAndRecord(frameStarted, frameMs, streamingMs, simulation);
+  }
+
+  private handlePauseAndMapInput(): void {
     const pausePressed = this.input.consumePause();
     const mapPressed = this.input.consumeMapToggle();
     if (pausePressed) {
@@ -382,6 +446,15 @@ export class Game {
     }
     // Clicks and presses made while browsing the map shouldn't fire weapons.
     if (this.mapOverlay?.isOpen) this.input.clearGameplayEdges();
+  }
+
+  private advanceFixedSteps(dt: number): SimulationTiming {
+    let simulationMs = 0;
+    let npcMs = 0;
+    let actorMs = 0;
+    let physicsMs = 0;
+    let postPhysicsMs = 0;
+    let fixedSteps = 0;
     if (!this.paused) {
       this.accumulator += dt;
       while (this.accumulator >= STEP && fixedSteps < MAX_FIXED_STEPS_PER_FRAME) {
@@ -399,7 +472,12 @@ export class Game {
       // gameplay still advances in fixed STEP increments; excess wall time is
       // deliberately dropped after the bounded catch-up attempt.
       if (this.accumulator >= STEP) this.accumulator %= STEP;
+      this.saveController.update(dt);
     }
+    return { simulationMs, npcMs, actorMs, physicsMs, postPhysicsMs, fixedSteps };
+  }
+
+  private updateStreamingAndEnvironment(dt: number): { positions: { x: number; z: number }[]; streamingMs: number } {
     const positions = this.playerPositions();
     const streamingStarted = performance.now();
     this.city.update(positions);
@@ -413,6 +491,10 @@ export class Game {
     );
     const pan = this.input.mapPanAxes();
     this.mapOverlay?.update(dt, pan.x, pan.y);
+    return { positions, streamingMs };
+  }
+
+  private updateCamerasAndHud(dt: number, positions: { x: number; z: number }[]): void {
     for (let i = 0; i < this.players.length; i++) {
       const p = this.players[i];
       const pos = positions[i];
@@ -459,6 +541,14 @@ export class Game {
       });
     }
     this.hud.setInputMethods(this.players.map((player) => this.input.inputMethod(player.index)));
+  }
+
+  private renderAndRecord(
+    frameStarted: number,
+    frameMs: number,
+    streamingMs: number,
+    simulation: SimulationTiming
+  ): void {
     const renderStarted = performance.now();
     this.viewports.render(this.scene);
     const renderMs = performance.now() - renderStarted;
@@ -470,14 +560,14 @@ export class Game {
       {
         frameMs,
         cpuMs: performance.now() - frameStarted,
-        simulationMs,
-        npcMs,
-        actorMs,
-        physicsMs,
-        postPhysicsMs,
+        simulationMs: simulation.simulationMs,
+        npcMs: simulation.npcMs,
+        actorMs: simulation.actorMs,
+        physicsMs: simulation.physicsMs,
+        postPhysicsMs: simulation.postPhysicsMs,
         streamingMs,
         renderMs,
-        fixedSteps,
+        fixedSteps: simulation.fixedSteps,
       },
       {
         stream: this.city.stats(),

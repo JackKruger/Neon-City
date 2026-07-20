@@ -1,4 +1,5 @@
 import { CHUNK_TILES, TILE, chunkKeyForWorld, inMap, toWorld } from './geo.mjs';
+import { VERSIONS } from './contract.mjs';
 
 const MAX_PATH_LENGTH = 90;
 const MAX_SEGMENT_LENGTH = 30;
@@ -239,7 +240,7 @@ export function roadInfoFromOverpass(data) {
   for (const key of Object.keys(chunks).sort()) {
     sortedChunks[key] = chunks[key].sort((a, b) => a[3] - b[3] || a[2] - b[2] || a[0] - b[0]);
   }
-  return { version: 1, chunkTiles: CHUNK_TILES, tileSize: TILE, names: nameList, chunks: sortedChunks };
+  return { version: VERSIONS.roadIndex, chunkTiles: CHUNK_TILES, tileSize: TILE, names: nameList, chunks: sortedChunks };
 }
 
 function laneCounts(tags) {

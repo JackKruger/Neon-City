@@ -1,7 +1,5 @@
-export const TILE = 12;
-export const MAP_SIZE = 720;
-export const MAP_CENTER = { lat: -37.835, lon: 144.96 };
-export const CHUNK_TILES = 10;
+export { TILE, MAP_SIZE, MAP_CENTER, CHUNK_TILES } from './contract.mjs';
+import { TILE, MAP_SIZE, MAP_CENTER, CHUNK_TILES } from './contract.mjs';
 
 const M_PER_DEG_LAT = 111320;
 const M_PER_DEG_LON = M_PER_DEG_LAT * Math.cos((MAP_CENTER.lat * Math.PI) / 180);

@@ -1,4 +1,5 @@
 import { WEAPONS, WEAPON_ORDER, WeaponDef, WeaponId } from './Weapons';
+import type { InventorySaveState } from '../save/GameSave';
 
 /** Owned weapons plus per-gun magazine and reserve ammo for one character. */
 export class Inventory {
@@ -8,6 +9,23 @@ export class Inventory {
   current: WeaponId = 'fists';
   /** Seconds left on the current weapon's reload, 0 when idle. */
   reloading = 0;
+
+  snapshot(): InventorySaveState {
+    return {
+      current: this.current,
+      weapons: WEAPON_ORDER
+        .filter((id) => this.owned.has(id))
+        .map((id) => ({ id, magazine: this.mag.get(id) ?? 0, reserve: this.reserve.get(id) ?? 0 })),
+    };
+  }
+
+  restore(snapshot: InventorySaveState): void {
+    this.owned = new Set(snapshot.weapons.map((weapon) => weapon.id));
+    this.mag = new Map(snapshot.weapons.map((weapon) => [weapon.id, weapon.magazine]));
+    this.reserve = new Map(snapshot.weapons.map((weapon) => [weapon.id, weapon.reserve]));
+    this.current = snapshot.current;
+    this.reloading = 0;
+  }
 
   def(): WeaponDef {
     return WEAPONS[this.current];

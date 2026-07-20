@@ -11,6 +11,7 @@ import {
   stableStringify,
 } from './map/compiled-format.mjs';
 import { CHUNK_SIZE, CHUNK_TILES, MAX_CHUNK, MIN_CHUNK, TILE } from './map/compiled-recipes.mjs';
+import { MAP_CONTRACT, MAP_ID, NBCH_SECTIONS } from './map/contract.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -47,7 +48,7 @@ function validateGlbDocument(bytes, gltf, key) {
 }
 
 function decodeNavigation(section, entry, nodes, edges) {
-  ensure(section.length >= 8 && section.readUInt16LE(0) === 2, `chunk ${chunkKey(entry.kx, entry.kz)} has invalid NAV2 header`);
+  ensure(section.length >= 8 && section.readUInt16LE(0) === NBCH_SECTIONS.NAV2, `chunk ${chunkKey(entry.kx, entry.kz)} has invalid NAV2 header`);
   const nodeCount = section.readUInt16LE(2);
   const edgeCount = section.readUInt32LE(4);
   ensure(section.length === 8 + nodeCount * 12 + edgeCount * 20, `chunk ${chunkKey(entry.kx, entry.kz)} has invalid NAV2 length`);
@@ -87,7 +88,7 @@ export function validateCompiledMap(outputRoot = join(ROOT, 'public', 'maps')) {
   ensure(existsSync(provenancePath), `compiler provenance not found: ${provenancePath}`);
   const provenance = JSON.parse(readFileSync(provenancePath, 'utf8'));
   ensure(manifest.version === MANIFEST_VERSION, `unsupported manifest version ${manifest.version}`);
-  ensure(manifest.mapId === 'melbourne' && manifest.required?.containerVersion === CONTAINER_VERSION, 'incompatible compiled manifest requirements');
+  ensure(manifest.mapId === MAP_ID && manifest.coordinateConvention === MAP_CONTRACT.coordinateConvention && manifest.required?.containerVersion === CONTAINER_VERSION, 'incompatible compiled manifest requirements');
   ensure(manifest.tileSize === TILE && manifest.chunkTiles === CHUNK_TILES && manifest.chunkSize === CHUNK_SIZE, 'compiled map dimensions are incompatible');
   ensure(manifest.validChunkBounds.minX === MIN_CHUNK && manifest.validChunkBounds.maxX === MAX_CHUNK && manifest.validChunkBounds.minZ === MIN_CHUNK && manifest.validChunkBounds.maxZ === MAX_CHUNK, 'compiled map bounds are incompatible');
   ensure(Array.isArray(manifest.chunks) && manifest.chunks.length > 0, 'compiled manifest has no chunks');
@@ -128,8 +129,8 @@ export function validateCompiledMap(outputRoot = join(ROOT, 'public', 'maps')) {
     validateGlbDocument(glb, gltf, key);
     const container = parseChunkContainer(bin, entry);
     ensure(container.sections.get('HGT1').length === 121 * 2, `chunk ${key} HGT1 length mismatch`);
-    ensure(container.sections.get('COL1').length >= 12 && container.sections.get('COL1').readUInt16LE(0) === 1, `chunk ${key} COL1 is invalid`);
-    ensure(container.sections.get('GME1').length >= 8 && container.sections.get('GME1').readUInt16LE(0) === 1, `chunk ${key} GME1 is invalid`);
+    ensure(container.sections.get('COL1').length >= 12 && container.sections.get('COL1').readUInt16LE(0) === NBCH_SECTIONS.COL1, `chunk ${key} COL1 is invalid`);
+    ensure(container.sections.get('GME1').length >= 8 && container.sections.get('GME1').readUInt16LE(0) === NBCH_SECTIONS.GME1, `chunk ${key} GME1 is invalid`);
     decodeNavigation(container.sections.get('NAV2'), entry, nodes, edges);
     entries.set(key, entry);
     expectedFiles.add(glbName);

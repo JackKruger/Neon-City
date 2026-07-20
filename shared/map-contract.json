@@ -1,0 +1,45 @@
+{
+  "mapId": "melbourne",
+  "coordinateConvention": "local-x-east-z-south",
+  "origin": "map-center",
+  "center": { "lat": -37.835, "lon": 144.96 },
+  "tileSize": 12,
+  "mapSize": 720,
+  "chunkTiles": 10,
+  "chunkSize": 120,
+  "validChunkBounds": { "minX": -36, "maxX": 35, "minZ": -36, "maxZ": 35 },
+  "cellCodes": { ".": 0, "#": 1, "C": 2, "S": 3, "P": 4, "~": 5 },
+  "transportFlags": {
+    "Road": 1,
+    "Bridge": 2,
+    "Tunnel": 4,
+    "Rail": 8,
+    "Tram": 16,
+    "Footpath": 32,
+    "Roundabout": 64
+  },
+  "coverageFlags": {
+    "Building": 1,
+    "Tree": 2,
+    "Parking": 4,
+    "Prop": 8,
+    "Address": 16,
+    "BuildingSource": 32
+  },
+  "versions": {
+    "authoredMap": 4,
+    "objectIndex": 2,
+    "roadIndex": 1,
+    "compiledManifest": 1,
+    "compiler": 1,
+    "runtime": 2,
+    "container": 2,
+    "provenance": 1
+  },
+  "nbchSections": {
+    "HGT1": 1,
+    "COL1": 1,
+    "NAV2": 2,
+    "GME1": 1
+  }
+}

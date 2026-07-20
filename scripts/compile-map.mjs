@@ -39,6 +39,7 @@ import {
   MIN_CHUNK,
   TILE,
 } from './map/compiled-recipes.mjs';
+import { MAP_CONTRACT, MAP_CONTRACT_PATH, MAP_ID, VERSIONS } from './map/contract.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE_MAP_DIR = join(ROOT, 'public', 'maps');
@@ -142,7 +143,7 @@ export async function compileMelbourne({ scope = 'all', outputRoot = join(ROOT, 
   const objectIndex = JSON.parse(readBytes('melbourne.objects.json'));
   if (grid.length !== MAP_SIZE ** 2 || coverage.length !== grid.length || transport.length !== grid.length || speed.length !== grid.length) throw new Error('Melbourne source layers have incompatible lengths');
   if (heights.length !== (MAP_SIZE + 1) ** 2) throw new Error('Melbourne height lattice has incompatible dimensions');
-  if (objectIndex.version !== 2 || objectIndex.chunkTiles !== CHUNK_TILES || objectIndex.ownership !== 'clipped-polygons') throw new Error('Melbourne object index requires clipped-polygons version 2');
+  if (objectIndex.version !== VERSIONS.objectIndex || objectIndex.chunkTiles !== CHUNK_TILES || objectIndex.ownership !== 'clipped-polygons') throw new Error(`Melbourne object index requires clipped-polygons version ${VERSIONS.objectIndex}`);
 
   const sourcePaths = [
     'melbourne.json', 'melbourne.bin', 'melbourne-height.bin', 'melbourne.coverage.bin',
@@ -151,6 +152,8 @@ export async function compileMelbourne({ scope = 'all', outputRoot = join(ROOT, 
     'melbourne.sources.json',
   ].map((name) => join(SOURCE_MAP_DIR, name));
   const compilerPaths = [
+    fileURLToPath(MAP_CONTRACT_PATH),
+    join(ROOT, 'scripts', 'map', 'contract.mjs'),
     join(ROOT, 'scripts', 'compile-map.mjs'),
     join(ROOT, 'scripts', 'map', 'compiled-format.mjs'),
     join(ROOT, 'scripts', 'map', 'compiled-recipes.mjs'),
@@ -218,10 +221,10 @@ export async function compileMelbourne({ scope = 'all', outputRoot = join(ROOT, 
     manifestChunks.sort((a, b) => a.kz - b.kz || a.kx - b.kx);
     const manifest = {
       version: MANIFEST_VERSION,
-      mapId: 'melbourne',
+      mapId: MAP_ID,
       buildId,
-      compilerVersion: 1,
-      coordinateConvention: 'local-x-east-z-south',
+      compilerVersion: VERSIONS.compiler,
+      coordinateConvention: MAP_CONTRACT.coordinateConvention,
       tileSize: TILE,
       chunkTiles: CHUNK_TILES,
       chunkSize: CHUNK_SIZE,
@@ -240,8 +243,8 @@ export async function compileMelbourne({ scope = 'all', outputRoot = join(ROOT, 
       chunks: manifestChunks,
     };
     const provenance = {
-      version: 1,
-      mapId: 'melbourne',
+      version: VERSIONS.provenance,
+      mapId: MAP_ID,
       buildId,
       scope,
       dependencyHashes,

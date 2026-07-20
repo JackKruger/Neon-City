@@ -32,7 +32,8 @@ import {
   openDataInputsPresent,
   rechunkObjectIndex,
 } from './map/open-data.mjs';
-import { CHUNK_TILES } from './map/geo.mjs';
+import { CHUNK_TILES, MAP_CENTER, MAP_SIZE, TILE, toGrid, toWorld } from './map/geo.mjs';
+import { CELL_CODES as CODES, MAP_CONTRACT, MAP_ID, VERSIONS } from './map/contract.mjs';
 import { roadInfoFromOverpass, roadSurfacesFromOverpass } from './map/roads.mjs';
 import {
   HEIGHT_SCALE,
@@ -42,18 +43,14 @@ import {
 } from './map/terrain.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const TILE = 12; // keep in sync with src/core/const.ts
-
-/** Cell byte codes; keep in sync with src/world/CityMap.ts CODE_TO_CELL. */
-const CODES = { '.': 0, '#': 1, C: 2, S: 3, P: 4, '~': 5 };
-const MAP_FORMAT_VERSION = 4;
-const OBJECT_INDEX_VERSION = 2;
+const MAP_FORMAT_VERSION = VERSIONS.authoredMap;
+const OBJECT_INDEX_VERSION = VERSIONS.objectIndex;
 
 const MAP = {
-  name: 'melbourne',
+  name: MAP_ID,
   /** Grid size in cells (world spans size*TILE meters, centered on `center`). */
-  size: 720,
-  center: { lat: -37.835, lon: 144.96 },
+  size: MAP_SIZE,
+  center: MAP_CENTER,
   /** Downtown ellipse forced to commercial (Hoddle Grid + Southbank). */
   cbd: { lat: -37.8155, lon: 144.9615, radiusM: 1400 },
   /** Spawn near Flinders Street Station. */
@@ -74,22 +71,6 @@ const MAP = {
 const M_PER_DEG_LAT = 111320;
 const mPerDegLon = M_PER_DEG_LAT * Math.cos((MAP.center.lat * Math.PI) / 180);
 const HALF = (MAP.size * TILE) / 2;
-
-/** lat/lon -> world meters (x east, z south, origin at map center). */
-function toWorld(lat, lon) {
-  return {
-    x: (lon - MAP.center.lon) * mPerDegLon,
-    z: (MAP.center.lat - lat) * M_PER_DEG_LAT,
-  };
-}
-
-/** World meters -> grid index, or null when outside. Cell centers at TILE multiples. */
-function toGrid(x, z) {
-  const gx = Math.round(x / TILE) + MAP.size / 2;
-  const gz = Math.round(z / TILE) + MAP.size / 2;
-  if (gx < 0 || gz < 0 || gx >= MAP.size || gz >= MAP.size) return null;
-  return { gx, gz };
-}
 
 function bbox() {
   const dLat = HALF / M_PER_DEG_LAT;
@@ -423,7 +404,7 @@ function installFormatManifest(meta, hasObjects) {
     version: 1,
     tiles: CHUNK_TILES,
     size: CHUNK_TILES * TILE,
-    coordinates: 'local-x-east-z-south',
+    coordinates: MAP_CONTRACT.coordinateConvention,
     origin: 'map-center',
     ownership: 'clipped-polygons',
   };

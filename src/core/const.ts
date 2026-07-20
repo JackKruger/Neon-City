@@ -2,7 +2,7 @@
 export const STEP = 1 / 60;
 
 /** World size of one city tile in meters. */
-export const TILE = 12;
+export { TILE_SIZE as TILE } from '../world/MapContract';
 
 /** Gravity (m/s^2). */
 export const GRAVITY = -20;
