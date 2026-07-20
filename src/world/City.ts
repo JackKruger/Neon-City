@@ -11,6 +11,8 @@ import {
   CoverageFlag,
   TransportFlag,
   authoredObjectsForChunk,
+  bridgeProfileHeightAt,
+  bridgeSurfaceHeightAt,
   cellAt,
   cellHash,
   cellToWorld,
@@ -21,6 +23,7 @@ import {
   isRoad,
   padHeight,
   roadMask,
+  terrainHeightAt,
   transportAt,
   worldToCell,
 } from './CityMap';
@@ -253,6 +256,68 @@ function buildRoofGeometry(feature: BuildingFeature, eaveY: number, ridgeY: numb
   }
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+type BridgeFeature = Extract<AuthoredObject, { kind: 'transport-structure' }>;
+
+/** Thin, graded bridge slab. Top and underside share the same longitudinal
+ * profile, leaving natural terrain and a usable clearance volume underneath. */
+function buildProfiledBridgeSlab(feature: BridgeFeature, thickness: number): THREE.BufferGeometry {
+  const points = feature.outline.map(([x, z]) => new THREE.Vector2(feature.x + x, feature.z + z));
+  const positions: number[] = [];
+  const top = (point: THREE.Vector2): [number, number, number] =>
+    [point.x, bridgeProfileHeightAt(point.x, point.y, feature), point.y];
+  const bottom = (point: THREE.Vector2): [number, number, number] => {
+    const value = top(point);
+    value[1] -= thickness;
+    return value;
+  };
+  const triangle = (a: number[], b: number[], c: number[], upward: boolean): void => {
+    const crossY = (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]);
+    if ((crossY >= 0) === upward) positions.push(...a, ...b, ...c);
+    else positions.push(...a, ...c, ...b);
+  };
+  const subdivide = (a: THREE.Vector2, b: THREE.Vector2, c: THREE.Vector2, depth = 0): void => {
+    const ab = a.distanceToSquared(b);
+    const bc = b.distanceToSquared(c);
+    const ca = c.distanceToSquared(a);
+    const longest = Math.max(ab, bc, ca);
+    if (longest > 8 ** 2 && depth < 7) {
+      if (longest === ab) {
+        const midpoint = a.clone().add(b).multiplyScalar(0.5);
+        subdivide(a, midpoint, c, depth + 1); subdivide(midpoint, b, c, depth + 1);
+      } else if (longest === bc) {
+        const midpoint = b.clone().add(c).multiplyScalar(0.5);
+        subdivide(a, b, midpoint, depth + 1); subdivide(a, midpoint, c, depth + 1);
+      } else {
+        const midpoint = c.clone().add(a).multiplyScalar(0.5);
+        subdivide(a, b, midpoint, depth + 1); subdivide(midpoint, b, c, depth + 1);
+      }
+      return;
+    }
+    triangle(top(a), top(b), top(c), true);
+    triangle(bottom(a), bottom(b), bottom(c), false);
+  };
+  for (const face of THREE.ShapeUtils.triangulateShape(points, [])) {
+    subdivide(points[face[0]], points[face[1]], points[face[2]]);
+  }
+  for (let index = 0; index < points.length; index++) {
+    const start = points[index];
+    const end = points[(index + 1) % points.length];
+    const parts = Math.max(1, Math.ceil(start.distanceTo(end) / 8));
+    for (let part = 0; part < parts; part++) {
+      const a = start.clone().lerp(end, part / parts);
+      const b = start.clone().lerp(end, (part + 1) / parts);
+      const topA = top(a); const topB = top(b);
+      const bottomA = bottom(a); const bottomB = bottom(b);
+      positions.push(...bottomA, ...bottomB, ...topB, ...bottomA, ...topB, ...topA);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array((positions.length / 3) * 2), 2));
   geometry.computeVertexNormals();
   return geometry;
 }
@@ -638,7 +703,7 @@ export class City implements CityStreamer {
     coarse.translate(feature.x, feature.elevation ?? 0.018, feature.z);
     const geometry = this.subdivideForTerrain(coarse);
     coarse.dispose();
-    this.displaceTerrain(geometry);
+    this.displaceHeight(geometry, feature.structure === 'bridge' ? bridgeSurfaceHeightAt : terrainHeightAt);
     this.bucket(this.groundMats[feature.surface], geometry, buckets);
   }
 
@@ -652,15 +717,20 @@ export class City implements CityStreamer {
       return;
     }
     if (feature.outline.length < 3) return;
-    const sampledTop = Math.max(
-      heightAt(feature.x, feature.z),
-      ...feature.outline.map(([x, z]) => heightAt(feature.x + x, feature.z + z))
-    );
-    const topY = Number.isFinite(feature.topY) ? Math.max(sampledTop, feature.topY as number) : sampledTop + 0.1;
+    const terrain = terrainHeightAt(feature.x, feature.z);
+    const topY = Number.isFinite(feature.topY) ? feature.topY as number : terrain + 0.1;
     const sourceBase = Number.isFinite(feature.baseY) ? feature.baseY as number : topY - 0.8;
-    const baseY = feature.roadDeck
-      ? topY - Math.max(0.45, Math.min(1.5, topY - sourceBase))
-      : Math.min(sourceBase, topY - 0.25);
+    if (feature.roadDeck) {
+      const thickness = Math.max(0.45, Math.min(1.5, topY - sourceBase));
+      const geometry = buildProfiledBridgeSlab(feature, thickness);
+      const position = geometry.getAttribute('position');
+      const vertices = Float32Array.from(position.array);
+      const indices = Uint32Array.from({ length: position.count }, (_, index) => index);
+      this.game.world.createCollider(RAPIER.ColliderDesc.trimesh(vertices, indices), body);
+      this.bucket(this.groundMats.concrete, geometry, buckets);
+      return;
+    }
+    const baseY = Math.min(sourceBase, topY - 0.25);
     const shape = new THREE.Shape();
     for (let i = 0; i < feature.outline.length; i++) {
       const [x, z] = feature.outline[i];
@@ -1253,9 +1323,13 @@ export class City implements CityStreamer {
 
   /** Add the shared terrain lattice height to world-space geometry vertices. */
   private displaceTerrain(geometry: THREE.BufferGeometry): void {
+    this.displaceHeight(geometry, terrainHeightAt);
+  }
+
+  private displaceHeight(geometry: THREE.BufferGeometry, sample: (x: number, z: number) => number): void {
     const position = geometry.getAttribute('position');
     for (let i = 0; i < position.count; i++) {
-      position.setY(i, position.getY(i) + heightAt(position.getX(i), position.getZ(i)));
+      position.setY(i, position.getY(i) + sample(position.getX(i), position.getZ(i)));
     }
     position.needsUpdate = true;
   }

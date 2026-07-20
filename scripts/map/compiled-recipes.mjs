@@ -229,6 +229,93 @@ function addPrism(bucket, points, baseY, height) {
   return triangles;
 }
 
+function pointInOutline(x, z, object) {
+  let inside = false;
+  for (let i = 0, j = object.outline.length - 1; i < object.outline.length; j = i++) {
+    const ax = object.x + object.outline[i][0];
+    const az = object.z + object.outline[i][1];
+    const bx = object.x + object.outline[j][0];
+    const bz = object.z + object.outline[j][1];
+    if ((az > z) !== (bz > z) && x < ((bx - ax) * (z - az)) / (bz - az) + ax) inside = !inside;
+  }
+  return inside;
+}
+
+function bridgeProfileHeightAt(x, z, object, terrainHeightAt) {
+  const alongWidth = object.width >= object.depth;
+  const c = Math.cos(object.rotation ?? 0);
+  const s = Math.sin(object.rotation ?? 0);
+  const axisX = alongWidth ? c : s;
+  const axisZ = alongWidth ? -s : c;
+  const halfLength = Math.max(object.width, object.depth) / 2;
+  const along = (x - object.x) * axisX + (z - object.z) * axisZ;
+  const side = along < 0 ? -1 : 1;
+  const edgeY = terrainHeightAt(
+    object.x + axisX * halfLength * side,
+    object.z + axisZ * halfLength * side
+  );
+  const centerGround = terrainHeightAt(object.x, object.z);
+  const sourceDeck = Number.isFinite(object.topY) ? object.topY : centerGround + 0.8;
+  const deckY = Math.max(sourceDeck, centerGround + 0.45);
+  const transition = Math.min(30, Math.max(6, halfLength * 0.32));
+  const t = Math.max(0, Math.min(1, Math.max(0, halfLength - Math.abs(along)) / transition));
+  const blend = t * t * (3 - 2 * t);
+  return edgeY + (deckY - edgeY) * blend;
+}
+
+function profiledSlabTriangles(points, topAt, thickness) {
+  const positions = [];
+  const indices = [];
+  const emit = (a, b, c, upward) => {
+    const crossY = (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]);
+    const values = (crossY >= 0) === upward ? [a, b, c] : [a, c, b];
+    const start = positions.length / 3;
+    positions.push(...values[0], ...values[1], ...values[2]);
+    indices.push(start, start + 1, start + 2);
+  };
+  const top = ([x, z]) => [x, topAt(x, z), z];
+  const bottom = (point) => {
+    const value = top(point);
+    value[1] -= thickness;
+    return value;
+  };
+  const face = (a, b, c) => {
+    emit(top(a), top(b), top(c), true);
+    emit(bottom(a), bottom(b), bottom(c), false);
+  };
+  for (const triangle of triangulate(points)) {
+    subdivideTerrainFace(points[triangle[0]], points[triangle[1]], points[triangle[2]], face);
+  }
+  for (let index = 0; index < points.length; index++) {
+    const start = points[index];
+    const end = points[(index + 1) % points.length];
+    const parts = Math.max(1, Math.ceil(Math.hypot(end[0] - start[0], end[1] - start[1]) / 8));
+    for (let part = 0; part < parts; part++) {
+      const at = (t) => [start[0] + (end[0] - start[0]) * t, start[1] + (end[1] - start[1]) * t];
+      const a = at(part / parts);
+      const b = at((part + 1) / parts);
+      const topA = top(a); const topB = top(b);
+      const bottomA = bottom(a); const bottomB = bottom(b);
+      emit(bottomA, bottomB, topB, true);
+      emit(bottomA, topB, topA, true);
+    }
+  }
+  return { positions, indices };
+}
+
+function addProfiledSlab(bucket, points, topAt, thickness) {
+  const triangles = profiledSlabTriangles(points, topAt, thickness);
+  for (let index = 0; index < triangles.positions.length; index += 9) {
+    addTriangle(
+      bucket,
+      triangles.positions.slice(index, index + 3),
+      triangles.positions.slice(index + 3, index + 6),
+      triangles.positions.slice(index + 6, index + 9)
+    );
+  }
+  return triangles;
+}
+
 // Roof types that get a pitched cap; everything else stays flat-topped.
 const PITCHED_ROOFS = new Set(['gable', 'hip', 'pyramid', 'shed']);
 
@@ -422,28 +509,23 @@ export function createCompilerContext({ meta, grid, heights, coverage, transport
       ? a + tx * (d - c) + tz * (c - a)
       : a + tx * (b - a) + tz * (d - b);
   };
-  const pointInOutline = (x, z, object) => {
-    let inside = false;
-    for (let i = 0, j = object.outline.length - 1; i < object.outline.length; j = i++) {
-      const ax = object.x + object.outline[i][0];
-      const az = object.z + object.outline[i][1];
-      const bx = object.x + object.outline[j][0];
-      const bz = object.z + object.outline[j][1];
-      if ((az > z) !== (bz > z) && x < ((bx - ax) * (z - az)) / (bz - az) + ax) inside = !inside;
-    }
-    return inside;
-  };
-  const heightAt = (x, z) => {
+  const bridgeSurfaceHeightAt = (x, z) => {
     let result = terrainHeightAt(x, z);
     const cx = Math.round(x / TILE);
     const cz = Math.round(z / TILE);
     for (const object of objectIndex.chunks[`${Math.floor(cx / CHUNK_TILES)},${Math.floor(cz / CHUNK_TILES)}`] ?? []) {
       if (object.kind !== 'transport-structure' || object.structure !== 'bridge' || !object.roadDeck || !Number.isFinite(object.topY)) continue;
-      if (pointInOutline(x, z, object)) result = Math.max(result, object.topY);
+      if (pointInOutline(x, z, object)) {
+        result = Math.max(result, bridgeProfileHeightAt(x, z, object, terrainHeightAt));
+      }
     }
     return result;
   };
-  return { meta, grid, heights, coverage, transport, speed, objectIndex, index, codeAt, coverageAt, transportAt, isRoad, cornerRaw, heightAt };
+  return {
+    meta, grid, heights, coverage, transport, speed, objectIndex,
+    index, codeAt, coverageAt, transportAt, isRoad, cornerRaw,
+    terrainHeightAt, bridgeSurfaceHeightAt, heightAt: terrainHeightAt,
+  };
 }
 
 function normalizeObjects(context, kx, kz) {
@@ -656,29 +738,35 @@ export function compileChunkRecipe(context, kx, kz) {
       const points = object.outline.map(([x, z]) => [object.x + x, object.z + z]);
       const material = MATERIALS.some((entry) => entry.name === object.surface) ? object.surface : 'asphalt';
       const elevation = object.elevation ?? 0.025;
+      const surfaceHeightAt = object.structure === 'bridge' ? context.bridgeSurfaceHeightAt : context.terrainHeightAt;
       if (elevation >= 0.1 && ['pavement', 'concrete'].includes(material)) {
-        const collision = addRaisedPolygon(buckets.get(material), points, context.heightAt, elevation);
+        const collision = addRaisedPolygon(buckets.get(material), points, surfaceHeightAt, elevation);
         collisionMeshes.push({ sourceId: object.sourceId, ...collision });
       } else {
-        addPolygonTop(buckets.get(material), points, ([x, z]) => context.heightAt(x, z) + elevation);
+        addPolygonTop(buckets.get(material), points, ([x, z]) => surfaceHeightAt(x, z) + elevation);
       }
     } else if (object.kind === 'transport-structure') {
       if (object.structure === 'bridge' && Array.isArray(object.outline) && object.outline.length >= 3) {
         const points = object.outline.map(([x, z]) => [object.x + x, object.z + z]);
-        const sampledTop = Math.max(context.heightAt(object.x, object.z), ...points.map(([x, z]) => context.heightAt(x, z)));
-        const topY = Number.isFinite(object.topY) ? Math.max(sampledTop, object.topY) : sampledTop + 0.1;
+        const terrain = context.terrainHeightAt(object.x, object.z);
+        const topY = Number.isFinite(object.topY) ? object.topY : terrain + 0.1;
         const sourceBase = Number.isFinite(object.baseY) ? object.baseY : topY - 0.8;
-        const baseY = object.roadDeck
-          ? topY - Math.max(0.45, Math.min(1.5, topY - sourceBase))
-          : Math.min(sourceBase, topY - 0.25);
-        addPrism(buckets.get('concrete'), points, baseY, topY - baseY);
-        collisionMeshes.push({ sourceId: object.sourceId, ...prismTriangles(points, baseY, topY - baseY) });
+        if (object.roadDeck) {
+          const thickness = Math.max(0.45, Math.min(1.5, topY - sourceBase));
+          const profile = (x, z) => bridgeProfileHeightAt(x, z, object, context.terrainHeightAt);
+          const collision = addProfiledSlab(buckets.get('concrete'), points, profile, thickness);
+          collisionMeshes.push({ sourceId: object.sourceId, ...collision });
+        } else {
+          const baseY = Math.min(sourceBase, topY - 0.25);
+          addPrism(buckets.get('concrete'), points, baseY, topY - baseY);
+          collisionMeshes.push({ sourceId: object.sourceId, ...prismTriangles(points, baseY, topY - baseY) });
+        }
       } else if (object.structure === 'tunnel' && object.roadDeck) {
         const alongWidth = object.width >= object.depth;
         const length = Math.max(object.width, object.depth);
         const outerWidth = Math.max(5, Math.min(24, Math.min(object.width, object.depth)));
         const rotation = (object.rotation ?? 0) + (alongWidth ? 0 : Math.PI / 2);
-        const floorY = context.heightAt(object.x, object.z);
+        const floorY = context.terrainHeightAt(object.x, object.z);
         const measuredTop = Number.isFinite(object.topY) ? object.topY : floorY + 5;
         const clearance = Math.max(3.6, Math.min(6.5, measuredTop - floorY));
         const wall = 0.38;

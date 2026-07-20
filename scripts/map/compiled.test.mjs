@@ -198,11 +198,26 @@ test('real transport structures compile as concrete geometry with collision', ()
     x: 72, z: 48, rotation: 0, width: 20, depth: 8, baseY: 0, topY: 5,
     outline: [[-10, -4], [10, -4], [10, 4], [-10, 4]],
   };
-  const result = compileChunkRecipe(createCompilerContext({
+  const bridgeRoad = {
+    kind: 'road-surface', sourceId: 'road:test:bridge', role: 'carriageway',
+    structure: 'bridge', surface: 'asphalt', elevation: 0.06,
+    x: 48, z: 48, outline: [[-10, -3], [10, -3], [10, 3], [-10, 3]],
+  };
+  const context = createCompilerContext({
     ...base,
-    objectIndex: { chunks: { '0,0': [bridge, tunnel] } },
-  }), 0, 0);
+    objectIndex: { chunks: { '0,0': [bridge, bridgeRoad, tunnel] } },
+  });
+  assert.equal(context.terrainHeightAt(48, 48), 0);
+  assert.equal(context.heightAt(48, 48), 0, 'bridge must not replace natural terrain');
+  assert.equal(context.bridgeSurfaceHeightAt(48, 48), 3);
+  assert.equal(context.bridgeSurfaceHeightAt(38, 48), 0, 'bridge end should meet natural ground');
+  assert.ok(context.bridgeSurfaceHeightAt(41, 48) > 0 && context.bridgeSurfaceHeightAt(41, 48) < 3,
+    'bridge approach should ease between terrain and deck');
+  const result = compileChunkRecipe(context, 0, 0);
   assert.ok(result.primitives.some((primitive) => primitive.material === 'concrete'));
+  const asphalt = result.primitives.find((primitive) => primitive.material === 'asphalt');
+  assert.ok(asphalt.positions.some((value, index) => index % 3 === 1 && value > 3),
+    'bridge-tagged road was not draped over the deck profile');
   assert.equal(result.counts.meshes, 1, 'bridge outline should compile to one collision mesh');
   assert.equal(result.counts.cuboids, 3, 'tunnel shell should compile to a ceiling and two walls');
   assert.equal(result.recipe.colliderCount, 4);

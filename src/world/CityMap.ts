@@ -304,7 +304,7 @@ export function cornerHeight(ix: number, iz: number): number {
   return authored.heights[gx + gz * (authored.width + 1)] * authored.heightScale;
 }
 
-function terrainHeightAt(x: number, z: number): number {
+export function terrainHeightAt(x: number, z: number): number {
   const fx = x / TILE + 0.5;
   const fz = z / TILE + 0.5;
   const ix = Math.floor(fx);
@@ -334,7 +334,42 @@ function pointInOutline(x: number, z: number, object: Extract<AuthoredObject, { 
 }
 
 /** Real bridge decks override the terrain surface without changing its lattice. */
-function bridgeDeckHeightAt(x: number, z: number, fallback: number): number {
+function clampedSmoothstep(value: number): number {
+  const t = Math.max(0, Math.min(1, value));
+  return t * t * (3 - 2 * t);
+}
+
+/** Deck profile for one real bridge footprint. The middle honours the source
+ * elevation while each end eases back to natural ground inside the footprint. */
+export function bridgeProfileHeightAt(
+  x: number,
+  z: number,
+  object: Extract<AuthoredObject, { kind: 'transport-structure' }>
+): number {
+  const alongWidth = object.width >= object.depth;
+  const c = Math.cos(object.rotation);
+  const s = Math.sin(object.rotation);
+  const axisX = alongWidth ? c : s;
+  const axisZ = alongWidth ? -s : c;
+  const halfLength = Math.max(object.width, object.depth) / 2;
+  const along = (x - object.x) * axisX + (z - object.z) * axisZ;
+  const side = along < 0 ? -1 : 1;
+  const edgeX = object.x + axisX * halfLength * side;
+  const edgeZ = object.z + axisZ * halfLength * side;
+  const edgeY = terrainHeightAt(edgeX, edgeZ);
+  const centerGround = terrainHeightAt(object.x, object.z);
+  const sourceDeck = Number.isFinite(object.topY) ? object.topY as number : centerGround + 0.8;
+  const deckY = Math.max(sourceDeck, centerGround + 0.45);
+  const transition = Math.min(30, Math.max(6, halfLength * 0.32));
+  const distanceFromEnd = Math.max(0, halfLength - Math.abs(along));
+  const blend = clampedSmoothstep(distanceFromEnd / transition);
+  return edgeY + (deckY - edgeY) * blend;
+}
+
+/** Elevated road surface at a bridge point. Natural terrain is deliberately
+ * not replaced: callers opt into this only for bridge roads and deck meshes. */
+export function bridgeSurfaceHeightAt(x: number, z: number): number {
+  const fallback = terrainHeightAt(x, z);
   if (!authored?.objectChunks) return fallback;
   // Keep synchronized with authored/compiled chunk ownership (10 cells).
   const cx = Math.round(x / TILE);
@@ -343,15 +378,15 @@ function bridgeDeckHeightAt(x: number, z: number, fallback: number): number {
   let result = fallback;
   for (const object of objects) {
     if (object.kind !== 'transport-structure' || object.structure !== 'bridge' || !object.roadDeck || !Number.isFinite(object.topY)) continue;
-    if (pointInOutline(x, z, object)) result = Math.max(result, object.topY as number);
+    if (pointInOutline(x, z, object)) result = Math.max(result, bridgeProfileHeightAt(x, z, object));
   }
   return result;
 }
 
-/** Render/gameplay surface height, including real bridge deck elevations. */
+/** Natural terrain height. Elevated surfaces are separate so the same X/Z can
+ * represent both the ground beneath a bridge and its drivable deck. */
 export function heightAt(x: number, z: number): number {
-  const terrain = terrainHeightAt(x, z);
-  return bridgeDeckHeightAt(x, z, terrain);
+  return terrainHeightAt(x, z);
 }
 
 export function cellCornerHeights(cx: number, cz: number): [number, number, number, number] {
