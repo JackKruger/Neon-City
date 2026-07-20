@@ -21,6 +21,11 @@ const COVERAGE_PARKING = COVERAGE_FLAGS.Parking;
 export const COVERAGE_BUILDING_SOURCE = COVERAGE_FLAGS.BuildingSource;
 const TRANSPORT_BRIDGE = TRANSPORT_FLAGS.Bridge;
 const TRANSPORT_TUNNEL = TRANSPORT_FLAGS.Tunnel;
+
+/** Resolve the authored cell represented by an encoded centimetre coordinate. */
+export function navigationCellFromCentimeters(value) {
+  return Math.round(value / (TILE * 100));
+}
 const rounded = (value) => Math.round(value * 100) / 100;
 
 export const MATERIALS = [
@@ -553,8 +558,11 @@ function navigationFromPaths(objects, kx, kz) {
   const starts = [];
   const ends = [];
   const owner = (x, z) => ({
-    kx: Math.floor(Math.round(x / TILE) / CHUNK_TILES),
-    kz: Math.floor(Math.round(z / TILE) / CHUNK_TILES),
+    // Ownership must use the same centimetre precision written to NAV2.
+    // Otherwise rounding a negative half-cell can move the encoded node into
+    // a neighboring chunk after ownership has already been decided.
+    kx: Math.floor(navigationCellFromCentimeters(Math.round(x * 100)) / CHUNK_TILES),
+    kz: Math.floor(navigationCellFromCentimeters(Math.round(z * 100)) / CHUNK_TILES),
   });
   const flagFor = (mode) => mode === 'pedestrian' ? NAV_PEDESTRIAN : mode === 'tram' ? NAV_TRAM : NAV_VEHICLE;
   const nodeKey = (point, flags) => `${Math.round(point.x * 100)},${Math.round(point.z * 100)},${flags}`;

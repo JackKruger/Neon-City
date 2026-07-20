@@ -10,7 +10,14 @@ import {
   sha256,
   stableStringify,
 } from './map/compiled-format.mjs';
-import { CHUNK_SIZE, CHUNK_TILES, MAX_CHUNK, MIN_CHUNK, TILE } from './map/compiled-recipes.mjs';
+import {
+  CHUNK_SIZE,
+  CHUNK_TILES,
+  MAX_CHUNK,
+  MIN_CHUNK,
+  TILE,
+  navigationCellFromCentimeters,
+} from './map/compiled-recipes.mjs';
 import { MAP_CONTRACT, MAP_ID, NBCH_SECTIONS } from './map/contract.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -21,6 +28,13 @@ function ensure(condition, message) {
 
 function chunkKey(kx, kz) {
   return `${kx},${kz}`;
+}
+
+export function navigationChunkFromCentimeters(xcm, zcm) {
+  return {
+    kx: Math.floor(navigationCellFromCentimeters(xcm) / CHUNK_TILES),
+    kz: Math.floor(navigationCellFromCentimeters(zcm) / CHUNK_TILES),
+  };
 }
 
 function validateGlbDocument(bytes, gltf, key) {
@@ -57,8 +71,8 @@ function decodeNavigation(section, entry, nodes, edges) {
     const xcm = section.readInt32LE(offset);
     const zcm = section.readInt32LE(offset + 4);
     const flags = section.readUInt16LE(offset + 8);
-    const cx = Math.round((xcm / 100) / TILE);
-    const cz = Math.round((zcm / 100) / TILE);
+    const cx = navigationCellFromCentimeters(xcm);
+    const cz = navigationCellFromCentimeters(zcm);
     ensure(Math.floor(cx / CHUNK_TILES) === entry.kx && Math.floor(cz / CHUNK_TILES) === entry.kz, `navigation node ${xcm},${zcm} has wrong owner`);
     ensure((flags & 7) !== 0, `navigation node ${xcm},${zcm} has no travel mode`);
     const key = `${xcm},${zcm},${flags & 7}`;
@@ -141,11 +155,12 @@ export function validateCompiledMap(outputRoot = join(ROOT, 'public', 'maps')) {
 
   for (const edge of edges) {
     ensure(nodes.has(`${edge.fromX},${edge.fromZ},${edge.flags}`), `dangling navigation edge source ${edge.fromX},${edge.fromZ}`);
-    const targetChunk = chunkKey(
-      Math.floor(Math.round((edge.toX / 100) / TILE) / CHUNK_TILES),
-      Math.floor(Math.round((edge.toZ / 100) / TILE) / CHUNK_TILES),
-    );
-    if (entries.has(targetChunk) || !manifest.partial) ensure(nodes.has(`${edge.toX},${edge.toZ},${edge.flags}`), `dangling navigation edge target ${edge.toX},${edge.toZ}`);
+    const target = navigationChunkFromCentimeters(edge.toX, edge.toZ);
+    const targetChunk = chunkKey(target.kx, target.kz);
+    const targetInBounds = target.kx >= MIN_CHUNK && target.kx <= MAX_CHUNK &&
+      target.kz >= MIN_CHUNK && target.kz <= MAX_CHUNK;
+    if (!manifest.partial && targetInBounds) ensure(entries.has(targetChunk), `full manifest is missing navigation target chunk ${targetChunk}`);
+    if (entries.has(targetChunk)) ensure(nodes.has(`${edge.toX},${edge.toZ},${edge.flags}`), `dangling navigation edge target ${edge.toX},${edge.toZ}`);
   }
   const actualFiles = new Set(readdirSync(chunkDirectory).filter((name) => name.endsWith('.glb') || name.endsWith('.bin')));
   ensure(actualFiles.size === expectedFiles.size && [...actualFiles].every((name) => expectedFiles.has(name)), 'compiled chunk directory contains stale or orphan assets');

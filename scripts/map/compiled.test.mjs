@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { compileMelbourne, publishCompiledMap } from '../compile-map.mjs';
-import { validateCompiledMap } from '../validate-compiled-map.mjs';
+import { navigationChunkFromCentimeters, validateCompiledMap } from '../validate-compiled-map.mjs';
 import {
   encodeChunkContainer,
   parseChunkContainer,
@@ -162,6 +162,37 @@ test('compiled road polygons are subdivided and stay clear of curved terrain', (
       assert.ok(sample.y > context.heightAt(sample.x, sample.z), `terrain rises through road triangle at ${sample.x},${sample.z}`);
     }
   }
+});
+
+test('negative boundary navigation ownership follows encoded centimetres', () => {
+  const path = {
+    kind: 'nav-path', sourceId: 'nav:negative-boundary', mode: 'vehicle', speed: 40,
+    x: -1447.73, z: -3126.004, points: [[0, 0], [0, -1]],
+  };
+  const context = createCompilerContext({
+    meta: {},
+    grid: new Uint8Array(MAP_SIZE ** 2),
+    heights: new Int16Array((MAP_SIZE + 1) ** 2),
+    coverage: new Uint8Array(MAP_SIZE ** 2),
+    transport: new Uint8Array(MAP_SIZE ** 2),
+    speed: new Uint8Array(MAP_SIZE ** 2),
+    objectIndex: { chunks: { '-13,-27': [path], '-13,-26': [path] } },
+  });
+  const coordinates = (kz) => {
+    const nav = compileChunkRecipe(context, -13, kz).sections.NAV2;
+    const count = nav.readUInt16LE(2);
+    return Array.from({ length: count }, (_, index) => {
+      const offset = 8 + index * 12;
+      return [nav.readInt32LE(offset), nav.readInt32LE(offset + 4)];
+    });
+  };
+  assert.ok(coordinates(-26).some(([x, z]) => x === -144773 && z === -312600));
+  assert.ok(!coordinates(-27).some(([x, z]) => x === -144773 && z === -312600));
+  assert.deepEqual(
+    navigationChunkFromCentimeters(-429113, -432741),
+    { kx: -36, kz: -37 },
+    'an edge beyond the south boundary must remain outside the full-city manifest'
+  );
 });
 
 test('pitched roofs cap the render mesh at the ridge while collision stays flat', () => {
