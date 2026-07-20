@@ -13,9 +13,7 @@ export class AudioSys {
   private skidGain: GainNode | null = null;
   private sirenGain: GainNode | null = null;
   private sirenOsc: OscillatorNode | null = null;
-  private ambienceGain: GainNode | null = null;
   private rainGain: GainNode | null = null;
-  private nightGain: GainNode | null = null;
   private sirenTime = 0;
   private footstepTime = 0;
   private raining = false;
@@ -75,18 +73,7 @@ export class AudioSys {
     noise.connect(skidFilter).connect(this.skidGain).connect(master);
     noise.start();
 
-    // A second pair of shared noise loops supplies distant city wash and rain.
-    const ambience = ctx.createBufferSource();
-    ambience.buffer = noiseBuf;
-    ambience.loop = true;
-    const ambienceFilter = ctx.createBiquadFilter();
-    ambienceFilter.type = 'lowpass';
-    ambienceFilter.frequency.value = 360;
-    this.ambienceGain = ctx.createGain();
-    this.ambienceGain.gain.value = 0.012;
-    ambience.connect(ambienceFilter).connect(this.ambienceGain).connect(master);
-    ambience.start();
-
+    // A shared noise loop supplies weather ambience only while it is raining.
     const rain = ctx.createBufferSource();
     rain.buffer = noiseBuf;
     rain.loop = true;
@@ -97,14 +84,6 @@ export class AudioSys {
     this.rainGain.gain.value = 0;
     rain.connect(rainFilter).connect(this.rainGain).connect(master);
     rain.start();
-
-    const night = ctx.createOscillator();
-    night.type = 'sine';
-    night.frequency.value = 3650;
-    this.nightGain = ctx.createGain();
-    this.nightGain.gain.value = 0;
-    night.connect(this.nightGain).connect(master);
-    night.start();
 
     // Siren: two-tone triangle.
     this.sirenOsc = ctx.createOscillator();
@@ -276,9 +255,7 @@ export class AudioSys {
     this.engineGain!.gain.setTargetAtTime(0, t, 0.1);
     this.skidGain!.gain.setTargetAtTime(0, t, 0.08);
     this.sirenGain!.gain.setTargetAtTime(0, t, 0.15);
-    this.ambienceGain!.gain.setTargetAtTime(0, t, 0.2);
     this.rainGain!.gain.setTargetAtTime(0, t, 0.2);
-    this.nightGain!.gain.setTargetAtTime(0, t, 0.2);
   }
 
   /**
@@ -295,7 +272,6 @@ export class AudioSys {
     sirenDist: number,
     walking = false,
     running = false,
-    darkness = 0,
     rain = 0,
     engineActive = false
   ): void {
@@ -315,10 +291,7 @@ export class AudioSys {
     const vol = sirenDist === Infinity ? 0 : Math.min(0.14, 6 / Math.max(sirenDist, 8));
     this.sirenGain!.gain.setTargetAtTime(vol, t, 0.15);
 
-    this.ambienceGain!.gain.setTargetAtTime(0.008 + (1 - rain) * 0.008, t, 0.8);
     this.rainGain!.gain.setTargetAtTime(rain * 0.13, t, 0.6);
-    // A restrained high nighttime bed reads as insects without becoming a UI beep.
-    this.nightGain!.gain.setTargetAtTime(darkness * (1 - rain) * 0.006, t, 1.2);
     if (rain > 0.35 && !this.raining) this.onCaption?.('Rain falling');
     this.raining = rain > 0.2;
 

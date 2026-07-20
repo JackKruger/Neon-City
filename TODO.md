@@ -131,7 +131,7 @@
   - Support remappable keyboard/gamepad controls, per-player controller assignment, vibration, and disconnected-controller recovery.
 - [x] Add ambient audio and combat feedback.
   - Add city ambience, footsteps, impacts, vehicle collisions, weapon sounds, and positional reactions to nearby events.
-  - Shipped: procedural city/night/rain beds, walk/run footsteps, door and repair cues, metallic
+  - Shipped: procedural rain ambience, walk/run footsteps, door and repair cues, metallic
     crashes, thunder, explosions, impacts, reloads, pickups, firearms, distance falloff, subtitles,
     and nearby civilian danger reactions require no sampled assets.
 - [ ] Establish performance budgets and diagnostics.

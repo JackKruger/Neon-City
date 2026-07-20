@@ -25,6 +25,7 @@ export class Character implements Entity {
   private facing = 0;
   private moveDir = new THREE.Vector3();
   private moveSpeed = 0;
+  private landingSpeed = 0;
   private walkPhase = 0;
   private stride = 0; // smoothed 0..1 idle->stride blend
   private runBlend = 0; // smoothed 0..1 walk->run gait
@@ -111,6 +112,7 @@ export class Character implements Entity {
     this.grounded = false;
     this.moveDir.set(0, 0, 0);
     this.moveSpeed = 0;
+    this.landingSpeed = 0;
     this.body.setEnabled(false);
     this.root.visible = visible;
   }
@@ -140,8 +142,21 @@ export class Character implements Entity {
   teleport(x: number, y: number, z: number): void {
     this.body.setTranslation(new RAPIER.Vector3(x, y + HALF_HEIGHT + GROUND_CLEARANCE, z), true);
     this.vy = 0;
+    this.landingSpeed = 0;
     this.grounded = false;
     if (!this.snapToGround(1.5, 8)) this.lastSafeGround.set(x, y, z);
+    this.syncVisuals();
+  }
+
+  /** Place the character in midair before handing its pose to a ragdoll. */
+  launch(position: THREE.Vector3, velocity: THREE.Vector3): void {
+    this.body.setTranslation(
+      new RAPIER.Vector3(position.x, position.y + HALF_HEIGHT + GROUND_CLEARANCE, position.z),
+      true
+    );
+    this.vy = THREE.MathUtils.clamp(velocity.y, -30, JUMP_SPEED);
+    this.landingSpeed = 0;
+    this.grounded = false;
     this.syncVisuals();
   }
 
@@ -153,6 +168,7 @@ export class Character implements Entity {
       true
     );
     this.vy = 0;
+    this.landingSpeed = 0;
     this.grounded = false;
     this.snapToGround(1.5, 8);
     this.syncVisuals();
@@ -165,6 +181,13 @@ export class Character implements Entity {
 
   getFacing(): number {
     return this.facing;
+  }
+
+  /** Return the latest downward landing speed once, then clear it. */
+  consumeLandingSpeed(): number {
+    const speed = this.landingSpeed;
+    this.landingSpeed = 0;
+    return speed;
   }
 
   /** Begin an attack swing overlay. @returns false if one is already playing. */
@@ -207,7 +230,9 @@ export class Character implements Entity {
       this.recoverInvalidPlacement();
     }
 
+    const wasGrounded = this.grounded;
     this.vy = Math.max(this.vy - 20 * dt, -30);
+    const downwardSpeed = Math.max(0, -this.vy);
     const desired = new RAPIER.Vector3(
       this.moveDir.x * this.moveSpeed * dt,
       this.vy * dt,
@@ -221,6 +246,7 @@ export class Character implements Entity {
     );
     this.grounded = this.controller.computedGrounded();
     if (this.grounded) {
+      if (!wasGrounded) this.landingSpeed = downwardSpeed;
       if (this.vy < 0) this.vy = 0;
       this.lastSafeGround.set(
         t.x + move.x,

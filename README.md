@@ -44,7 +44,7 @@ for expanding the world across Greater Melbourne are documented in
 | Orbit camera   | Mouse (click game to capture) | Right stick              |
 | Recenter camera | V                         | R3                          |
 | Sprint         | Shift                      | A (hold)                    |
-| Enter/exit car | E                          | Y                           |
+| Enter/exit vehicle | E                      | Y                           |
 | Helicopter up/down | Space / Shift          | A / B                       |
 | Pause          | Esc                        | Start                       |
 | Test menu (development) | F4                 | —                           |
@@ -57,6 +57,8 @@ for expanding the world across Greater Melbourne are documented in
 - Crashed traffic cars get abandoned by their drivers — free wheels.
 - Every weapon and a flyable helicopter spawn nearby. Helicopters use W/S
   for forward/back, A/D to yaw, and Space/Shift (A/B) to climb/descend.
+  Press E/Y to jump out in flight and enter a physics ragdoll; hard landings
+  deal damage and sufficiently severe falls are fatal.
 - The world clock follows local time when a session starts and then advances at
   two in-game minutes per real second. Use `?time=22` to preview night lighting;
   `?weather=clear`, `rain`, `fog`, or `storm` locks a weather preview.

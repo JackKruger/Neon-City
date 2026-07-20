@@ -94,7 +94,10 @@ export class Game {
   readonly players: Player[] = [];
   readonly audio = new AudioSys();
   readonly combat = new Combat(this);
-  readonly fx = new Fx(this.scene);
+  readonly fx = new Fx(
+    this.scene,
+    (x, z, ceilingY) => this.surfaceHeightBelow(x, z, ceilingY, 12)
+  );
   readonly pickups: Pickup[] = [];
   /** Chance a spawned pedestrian fights back when attacked (debug: ?brawlers). */
   pedBraveChance = 0.25;
@@ -830,7 +833,6 @@ export class Game {
       sirenDist,
       walking,
       running,
-      this.lighting.darknessAmount,
       this.lighting.rainAmount,
       engineActive
     );

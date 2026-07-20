@@ -31,7 +31,8 @@ export class Ragdoll {
   constructor(
     private game: Game,
     rig: HumanRig,
-    impact: THREE.Vector3
+    impact: THREE.Vector3,
+    initialVelocity = false
   ) {
     game.scene.add(this.group);
     // Held weapons are not part of the ragdoll parts; drop them first so the
@@ -53,7 +54,9 @@ export class Ragdoll {
           .setRotation(quat)
           .setLinvel(
             impact.x + (Math.random() - 0.5),
-            impact.y + 2 + Math.random() * 1.5,
+            impact.y + (
+              initialVelocity ? (Math.random() - 0.5) * 0.4 : 2 + Math.random() * 1.5
+            ),
             impact.z + (Math.random() - 0.5)
           )
           .setAngvel({
@@ -131,6 +134,11 @@ export class Ragdoll {
   position(): THREE.Vector3 {
     const t = this.pieces[0].body.translation();
     return new THREE.Vector3(t.x, t.y, t.z);
+  }
+
+  /** Vertical velocity of the pelvis, used to classify airborne landings. */
+  verticalSpeed(): number {
+    return this.pieces[0]?.body.linvel().y ?? 0;
   }
 
   dispose(): void {

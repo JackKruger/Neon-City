@@ -23,6 +23,8 @@ const ENTER_VEHICLE_TIME = 0.9;
 const EXIT_VEHICLE_TIME = 0.75;
 const CARJACK_TIME = 1.6;
 const KNOCKDOWN_TIME = 2.6;
+const FALL_RAGDOLL_SPEED = 13;
+const FALL_FATAL_SPEED = 25;
 
 interface VehicleTransition {
   kind: 'enter' | 'exit' | 'carjack';
@@ -101,6 +103,8 @@ export class Player implements Entity, CameraTarget, CombatTarget {
   private respawnTimer = 0;
   private knockdownTimer = 0;
   private ragdoll: Ragdoll | null = null;
+  private airborneRagdoll = false;
+  private airborneFallSpeed = 0;
   private vehicleTransition: VehicleTransition | null = null;
   private vehicleDoorSide: 1 | -1 = 1;
   private respawnCost = 100;
@@ -172,12 +176,14 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     this.die(away.normalize());
   }
 
-  private knockDown(impact: THREE.Vector3): void {
+  private knockDown(impact: THREE.Vector3, initialVelocity = false): void {
     this.knockedDown = true;
     this.knockdownTimer = KNOCKDOWN_TIME;
+    this.airborneRagdoll = false;
+    this.airborneFallSpeed = 0;
     this.pendingMelee = null;
     this.game.combat.unregister(this.character.collider);
-    this.ragdoll = new Ragdoll(this.game, this.character.rig, impact);
+    this.ragdoll = new Ragdoll(this.game, this.character.rig, impact, initialVelocity);
     this.character.setEnabled(false);
   }
 
@@ -186,6 +192,8 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     this.rebuildCharacter(landing.x, landing.z, undefined, this.character.getFacing());
     this.character.flinch();
     this.knockedDown = false;
+    this.airborneRagdoll = false;
+    this.airborneFallSpeed = 0;
     this.vehicleHitCooldown = 0.8;
   }
 
@@ -193,13 +201,15 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     this.dead = true;
     this.health = 0;
     this.knockedDown = false;
+    this.airborneRagdoll = false;
+    this.airborneFallSpeed = 0;
     this.hudMessage = 'WASTED';
     this.respawnCost = 100;
     this.respawnTimer = 4;
     this.game.combat.unregister(this.character.collider);
-    // The ragdoll steals the rig's meshes (and drops any held weapon).
+    // Reuse an airborne ragdoll; otherwise it steals the rig's meshes here.
     const impact = impactDir.clone().setY(0).normalize().multiplyScalar(5);
-    this.ragdoll = new Ragdoll(this.game, this.character.rig, impact);
+    if (!this.ragdoll) this.ragdoll = new Ragdoll(this.game, this.character.rig, impact);
     this.character.setEnabled(false);
     this.wanted.clear();
   }
@@ -371,6 +381,10 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     }
     if (this.knockedDown) {
       this.ragdoll?.update();
+      if (this.airborneRagdoll) {
+        this.updateAirborneRagdoll();
+        return;
+      }
       this.knockdownTimer -= dt;
       if (this.knockdownTimer <= 0) this.standUp();
       return;
@@ -393,7 +407,7 @@ export class Player implements Entity, CameraTarget, CombatTarget {
         const interact = this.game.input.interactLabel(this.index);
         this.prompt = this.vehicle.canExit()
           ? `Space / A ascend · Shift / B descend · ${interact} exit`
-          : 'Space ascend · Shift descend · land to exit';
+          : `Space / A ascend · Shift / B descend · ${interact} jump out`;
       } else if (this.vehicle instanceof Vehicle && !this.vehicle.burning &&
           this.vehicle.getSpeed() < 1.2 && this.vehicle.healthFraction < 0.98) {
         const repair = this.game.input.inputMethod(this.index) === 'gamepad' ? 'X' : 'R';
@@ -423,6 +437,8 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     if (input.jump) this.character.jump();
     this.updateCombat(input, dt);
     this.character.update(dt);
+    this.handleLandingImpact(this.character.consumeLandingSpeed());
+    if (this.dead || this.knockedDown) return;
 
     const nearest = this.nearestVehicle();
     if (nearest) {
@@ -512,6 +528,43 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     }
   }
 
+  /** Damage and ragdoll hard landings; extreme impact is immediately fatal. */
+  private handleLandingImpact(speed: number, alreadyRagdolled = false): void {
+    if (this.invincible || speed < FALL_RAGDOLL_SPEED) {
+      if (alreadyRagdolled) this.knockdownTimer = KNOCKDOWN_TIME;
+      return;
+    }
+    const damage = Math.round((speed - 10) * 5);
+    this.health = Math.max(0, this.health - damage);
+    this.game.audio.thwack();
+    if (speed >= FALL_FATAL_SPEED || this.health <= 0) {
+      this.die(new THREE.Vector3());
+      return;
+    }
+    if (alreadyRagdolled) this.knockdownTimer = KNOCKDOWN_TIME;
+    else this.knockDown(new THREE.Vector3(0, -Math.min(speed * 0.25, 7), 0));
+  }
+
+  /** Hold an airborne ragdoll until it reaches a fixed surface, then score the impact. */
+  private updateAirborneRagdoll(): void {
+    const ragdoll = this.ragdoll;
+    if (!ragdoll) return;
+    const velocityY = ragdoll.verticalSpeed();
+    this.airborneFallSpeed = Math.max(this.airborneFallSpeed, -velocityY);
+    const position = ragdoll.position();
+    const surfaceY = this.game.surfaceHeightBelow(
+      position.x,
+      position.z,
+      position.y + 0.5,
+      250
+    );
+    if (position.y - surfaceY > 1.25 || velocityY < -3) return;
+    const landingSpeed = this.airborneFallSpeed;
+    this.airborneRagdoll = false;
+    this.airborneFallSpeed = 0;
+    this.handleLandingImpact(landingSpeed, true);
+  }
+
   private nearestVehicle(): Drivable | null {
     const pos = this.character.position();
     let best: Drivable | null = null;
@@ -570,6 +623,10 @@ export class Player implements Entity, CameraTarget, CombatTarget {
   exitVehicle(): void {
     const v = this.vehicle;
     if (!v || this.vehicleTransition) return;
+    if (v.kind === 'helicopter' && !v.canExit()) {
+      this.jumpFromHelicopter(v);
+      return;
+    }
     if (!v.canExit()) return;
     // Handbrake only: `brake` acts as reverse throttle once nearly stopped,
     // which would make the abandoned car creep backwards.
@@ -587,6 +644,31 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     };
     this.character.beginVehicleTransition(false);
     this.game.audio.carDoor();
+  }
+
+  /** Immediately abandon an airborne helicopter and carry its momentum into freefall. */
+  private jumpFromHelicopter(v: Drivable): void {
+    const outside = v.doorPosition(this.vehicleDoorSide, 1.35);
+    const side = new THREE.Vector3(this.vehicleDoorSide, 0, 0)
+      .applyQuaternion(v.quaternion())
+      .setY(0)
+      .normalize();
+    const bodyVelocity = v.body.linvel();
+    const velocity = new THREE.Vector3(bodyVelocity.x, bodyVelocity.y + 1.5, bodyVelocity.z)
+      .addScaledVector(side, 2.5);
+
+    v.command = transitionCommand(v);
+    v.driver = null;
+    v.setDoorOpen(this.vehicleDoorSide, false);
+    this.vehicle = null;
+    this.pendingMelee = null;
+    this.vehicleHitCooldown = Math.max(this.vehicleHitCooldown, 0.8);
+    this.character.setEnabled(true);
+    this.character.setFacing(v.getHeading());
+    this.character.launch(outside, velocity);
+    this.knockDown(velocity, true);
+    this.airborneRagdoll = true;
+    this.airborneFallSpeed = Math.max(0, -velocity.y);
   }
 
   /** Emergency exit used immediately before an occupied vehicle's blast. */

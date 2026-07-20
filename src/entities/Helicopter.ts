@@ -85,7 +85,14 @@ export class Helicopter implements Drivable {
     this.tailRotor.rotation.x += this.rotorSpeed * 1.8 * dt;
 
     if (!occupied) {
-      this.park();
+      if (this.flying && !this.canExit()) {
+        // An abandoned aircraft keeps its momentum and drops under gravity.
+        // Once it reaches a low, slow state, park() settles it in place.
+        this.parkedAnchor = null;
+        this.body.setGravityScale(1, true);
+      } else {
+        this.park();
+      }
       this.model.rotation.x *= Math.exp(-6 * dt);
       this.model.rotation.z *= Math.exp(-6 * dt);
       return;

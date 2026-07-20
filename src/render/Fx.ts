@@ -77,11 +77,19 @@ const MAT: Record<FxKind, THREE.MeshBasicMaterial> = {
 
 const MID = new THREE.Vector3();
 const SPRAY = new THREE.Vector3();
+const STAIN_ORIGIN = new THREE.Vector3();
+const STAIN_NORMAL = new THREE.Vector3();
+const STAIN_LOCAL_NORMAL = new THREE.Vector3(0, 0, 1);
+const STAIN_DOWN = new THREE.Vector3(0, -1, 0);
+const STAIN_NORMAL_MATRIX = new THREE.Matrix3();
 const MAX_STAINS = 72;
 const STAIN_LIFE = 24;
+type SurfaceHeightResolver = (x: number, z: number, ceilingY: number) => number;
 
 export class Fx {
   private active: FxItem[] = [];
+  private surfaceRoots: THREE.Object3D[] = [];
+  private stainRay = new THREE.Raycaster(STAIN_ORIGIN, STAIN_DOWN, 0, 12);
   private free: Record<FxKind, FxItem[]> = {
     tracer: [],
     flash: [],
@@ -94,7 +102,20 @@ export class Fx {
     debris: [],
   };
 
-  constructor(private scene: THREE.Scene) {}
+  constructor(
+    private scene: THREE.Scene,
+    private surfaceHeight: SurfaceHeightResolver = (x, z) => heightAt(x, z)
+  ) {}
+
+  /** Register a streamed render root as a valid surface for persistent stains. */
+  registerSurfaceRoot(root: THREE.Object3D): void {
+    if (!this.surfaceRoots.includes(root)) this.surfaceRoots.push(root);
+  }
+
+  unregisterSurfaceRoot(root: THREE.Object3D): void {
+    const index = this.surfaceRoots.indexOf(root);
+    if (index >= 0) this.surfaceRoots.splice(index, 1);
+  }
 
   private spawn(
     kind: FxKind,
@@ -177,6 +198,7 @@ export class Fx {
     this.stain(
       pos.x + SPRAY.x * lead + (Math.random() - 0.5) * 0.35,
       pos.z + SPRAY.z * lead + (Math.random() - 0.5) * 0.35,
+      pos.y + 0.75,
       (0.22 + Math.random() * 0.18) * intensity,
       0.55 + Math.random() * 0.65
     );
@@ -187,16 +209,36 @@ export class Fx {
       this.stain(
         pos.x + Math.cos(angle) * distance + SPRAY.x * lead,
         pos.z + Math.sin(angle) * distance + SPRAY.z * lead,
+        pos.y + 0.75,
         0.035 + Math.random() * 0.07 * intensity,
         0.7 + Math.random() * 0.6
       );
     }
   }
 
-  private stain(x: number, z: number, radius: number, stretch: number): void {
+  private stain(x: number, z: number, ceilingY: number, radius: number, stretch: number): void {
     const item = this.spawn('stain', STAIN_LIFE, false);
-    item.mesh.position.set(x, heightAt(x, z) + 0.018, z);
-    item.mesh.rotation.set(-Math.PI / 2, 0, Math.random() * Math.PI * 2);
+    const angle = Math.random() * Math.PI * 2;
+    STAIN_ORIGIN.set(x, ceilingY, z);
+    this.stainRay.set(STAIN_ORIGIN, STAIN_DOWN);
+    const surface = this.stainRay.intersectObjects(this.surfaceRoots, true).find((hit) => {
+      if (!hit.face) return false;
+      STAIN_NORMAL.copy(hit.face.normal).applyNormalMatrix(
+        STAIN_NORMAL_MATRIX.getNormalMatrix(hit.object.matrixWorld)
+      );
+      return STAIN_NORMAL.y > 0.55;
+    });
+    if (surface?.face) {
+      STAIN_NORMAL.copy(surface.face.normal).applyNormalMatrix(
+        STAIN_NORMAL_MATRIX.getNormalMatrix(surface.object.matrixWorld)
+      ).normalize();
+      item.mesh.position.copy(surface.point).addScaledVector(STAIN_NORMAL, 0.012);
+      item.mesh.quaternion.setFromUnitVectors(STAIN_LOCAL_NORMAL, STAIN_NORMAL);
+      item.mesh.rotateZ(angle);
+    } else {
+      item.mesh.position.set(x, this.surfaceHeight(x, z, ceilingY) + 0.02, z);
+      item.mesh.rotation.set(-Math.PI / 2, 0, angle);
+    }
     item.mesh.scale.set(radius * stretch, radius, 1);
     item.mesh.renderOrder = 1;
   }

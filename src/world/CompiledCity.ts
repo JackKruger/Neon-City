@@ -206,6 +206,7 @@ export class CompiledCity implements CityStreamer {
     const body = this.createPhysics(data);
     const root = gltf.scene;
     this.game.scene.add(root);
+    this.game.fx.registerSurfaceRoot(root);
     this.game.lighting.registerWetSurfaces(root);
     this.spawnVehicles(data);
     this.roadNetwork.registerChunk(key, data.navNodes, data.navEdges);
@@ -277,6 +278,7 @@ export class CompiledCity implements CityStreamer {
     const key = chunkKey(chunk.kx, chunk.kz);
     this.roadNetwork.unregisterChunk(key);
     this.game.lighting.unregisterWetSurfaces(chunk.root);
+    this.game.fx.unregisterSurfaceRoot(chunk.root);
     this.game.scene.remove(chunk.root);
     this.disposeObject(chunk.root);
     this.game.world.removeRigidBody(chunk.body);
