@@ -350,6 +350,15 @@ export class Game {
     this.entities.push(v);
   }
 
+  /** Check the actual oriented chassis bounds before materialising a car. */
+  vehicleSpawnIsClear(x: number, z: number, heading: number): boolean {
+    return this.vehicles.every((vehicle) => {
+      if (vehicle instanceof Vehicle) return !vehicle.overlapsSpawnFootprint(x, z, heading);
+      const position = vehicle.body.translation();
+      return Math.hypot(position.x - x, position.z - z) >= 7;
+    });
+  }
+
   /** Fill `out` with vehicles whose chassis origins lie within `radius`.
    * The fixed-step spatial index keeps local AI queries independent of the
    * total number of parked cars in streamed chunks. */

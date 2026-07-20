@@ -65,10 +65,46 @@ const BALLAST_DENSITY = 500;
 const MAX_HEALTH = 200;
 const FIRE_HEALTH = 40;
 const BURN_DURATION = 6;
+const WRECK_FIRE_DURATION = 7;
 const IMPACT_DAMAGE_SPEED = 5.5;
-const CHARRED = new THREE.Color(0x17151a);
+const CHARRED = new THREE.Color(0x09080b);
+const SPAWN_HALF_WIDTH = 1.15;
+const SPAWN_HALF_LENGTH = 2.45;
 // Identical lamp meshes share one immutable vertex buffer across every car.
 const HEADLIGHT_GEOMETRY = new THREE.BoxGeometry(0.28, 0.12, 0.06);
+
+export interface VehicleFootprint {
+  x: number;
+  z: number;
+  heading: number;
+  halfWidth: number;
+  halfLength: number;
+}
+
+/** Two-dimensional separating-axis test used to keep fresh vehicles apart. */
+export function vehicleFootprintsOverlap(
+  a: VehicleFootprint,
+  b: VehicleFootprint,
+  padding = 0
+): boolean {
+  const axes = [
+    { x: Math.cos(a.heading), z: -Math.sin(a.heading) },
+    { x: Math.sin(a.heading), z: Math.cos(a.heading) },
+    { x: Math.cos(b.heading), z: -Math.sin(b.heading) },
+    { x: Math.sin(b.heading), z: Math.cos(b.heading) },
+  ];
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  const projectRadius = (footprint: VehicleFootprint, axis: { x: number; z: number }) => {
+    const right = { x: Math.cos(footprint.heading), z: -Math.sin(footprint.heading) };
+    const forward = { x: Math.sin(footprint.heading), z: Math.cos(footprint.heading) };
+    return footprint.halfWidth * Math.abs(axis.x * right.x + axis.z * right.z) +
+      footprint.halfLength * Math.abs(axis.x * forward.x + axis.z * forward.z);
+  };
+  return axes.every((axis) =>
+    Math.abs(dx * axis.x + dz * axis.z) <= projectRadius(a, axis) + projectRadius(b, axis) + padding
+  );
+}
 
 export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
   readonly kind = 'car' as const;
@@ -92,6 +128,7 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
   private impactCooldown = 0;
   private fireFxCooldown = 0;
   private burnTime = 0;
+  private wreckFireTime = 0;
   private parkedTime = 0;
   private lastAttacker: Player | null = null;
   private parkingAnchor: { x: number; z: number; rotation: RAPIER.Rotation } | null = null;
@@ -262,6 +299,25 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     return new THREE.Quaternion(r.x, r.y, r.z, r.w);
   }
 
+  /** True when a normal car footprint at this pose would overlap the chassis. */
+  overlapsSpawnFootprint(x: number, z: number, heading: number, padding = 0.65): boolean {
+    const t = this.body.translation();
+    const q = this.quaternion();
+    const center = new THREE.Vector3(this.chassisCenter.x, 0, this.chassisCenter.z)
+      .applyQuaternion(q);
+    return vehicleFootprintsOverlap(
+      {
+        x: t.x + center.x,
+        z: t.z + center.z,
+        heading: this.getHeading(),
+        halfWidth: this.chassisHalfSize.x,
+        halfLength: this.chassisHalfSize.z,
+      },
+      { x, z, heading, halfWidth: SPAWN_HALF_WIDTH, halfLength: SPAWN_HALF_LENGTH },
+      padding
+    );
+  }
+
   /** World-space point beside the front door, with its Y on the terrain. */
   doorPosition(side: 1 | -1, clearance: number, out = new THREE.Vector3()): THREE.Vector3 {
     const t = this.body.translation();
@@ -332,6 +388,7 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     this.preStepVelocity.set(before.x, before.y, before.z);
     this.hasPreStepVelocity = true;
     this.updateBurning(dt);
+    this.updateWreckFire(dt);
     if (this.destroyed) {
       this.command = { steer: 0, throttle: 0, brake: 0, handbrake: true };
     }
@@ -418,7 +475,7 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
       this.body.applyImpulse(new RAPIER.Vector3(0, -df, 0), true);
     }
 
-    this.updateFlipRecovery(dt);
+    if (!this.destroyed) this.updateFlipRecovery(dt);
     this.controller.updateVehicle(dt);
   }
 
@@ -576,10 +633,29 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     this.burnTime += dt;
     this.fireFxCooldown -= dt;
     if (this.fireFxCooldown <= 0) {
-      this.fireFxCooldown = 0.065 + Math.random() * 0.055;
+      this.fireFxCooldown = 0.045 + Math.random() * 0.04;
       this.game.fx.vehicleFire(this.effectPosition(), 0.8 + this.burnTime / BURN_DURATION);
     }
     if (this.burnTime >= BURN_DURATION) this.explode();
+  }
+
+  /** Keep a strong, short-lived engine fire on the wreck after the blast. */
+  private updateWreckFire(dt: number): void {
+    if (!this.destroyed || this.wreckFireTime <= 0) return;
+    this.wreckFireTime = Math.max(0, this.wreckFireTime - dt);
+    this.fireFxCooldown -= dt;
+    if (this.fireFxCooldown > 0) return;
+    this.fireFxCooldown = 0.04 + Math.random() * 0.035;
+    const position = this.effectPosition();
+    this.game.fx.vehicleFire(position, 1.65);
+    if (Math.random() < 0.62) {
+      const offset = new THREE.Vector3(
+        (Math.random() - 0.5) * this.chassisHalfSize.x * 1.2,
+        0,
+        (Math.random() - 0.5) * this.chassisHalfSize.z * 0.9
+      ).applyQuaternion(this.quaternion());
+      this.game.fx.vehicleFire(position.add(offset), 1.25);
+    }
   }
 
   private effectPosition(out = new THREE.Vector3()): THREE.Vector3 {
@@ -596,12 +672,15 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     if (this.destroyed) return;
     this.destroyed = true;
     this.burning = false;
+    this.wreckFireTime = WRECK_FIRE_DURATION;
+    this.fireFxCooldown = 0;
     this.health = 0;
     this.command = { steer: 0, throttle: 0, brake: 0, handbrake: true };
     this.parkingAnchor = null;
     this.updateDamageAppearance();
     const origin = this.effectPosition();
     this.game.fx.explosion(origin);
+    this.detachWreckParts(origin);
     const nearest = Math.min(...this.game.playerPositions().map((position) =>
       Math.hypot(position.x - origin.x, position.z - origin.z)
     ));
@@ -622,8 +701,12 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
   private updateDamageAppearance(): void {
     const damage = this.destroyed ? 1 : 1 - this.health / MAX_HEALTH;
     for (const entry of this.damageMaterials) {
-      entry.material.color.copy(entry.original).lerp(CHARRED, damage * 0.88);
+      entry.material.color.copy(entry.original).lerp(CHARRED, this.destroyed ? 0.98 : damage * 0.88);
       entry.material.roughness = Math.min(1, entry.roughness + damage * 0.18);
+    }
+    if (this.destroyed) {
+      this.headlightMaterial.color.copy(CHARRED);
+      this.headlightMaterial.emissive.set(0x000000);
     }
     // The body shell progressively shortens at the nose while wheels and the
     // physics chassis keep their stable dimensions. This gives three readable
@@ -631,6 +714,25 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     const stage = damage < 0.28 ? 0 : damage < 0.62 ? 0.5 : 1;
     this.model.scale.z = CAR_SCALE * (1 - stage * 0.06);
     this.model.position.z = -this.chassisHalfSize.z * stage * 0.06;
+  }
+
+  /** Remove visible wheels from the shell and throw recognisable wreck pieces. */
+  private detachWreckParts(origin: THREE.Vector3): void {
+    this.root.updateMatrixWorld(true);
+    const candidates = this.wheels.filter((_, index) => index % 2 === 0);
+    for (const wheel of candidates) {
+      const position = wheel.node.getWorldPosition(new THREE.Vector3());
+      const rotation = wheel.node.getWorldQuaternion(new THREE.Quaternion());
+      wheel.node.visible = false;
+      this.game.fx.wreckWheel(position, rotation, origin.y - 1.15);
+    }
+    this.game.fx.wreckPanels(
+      origin,
+      this.quaternion(),
+      this.chassisHalfSize.x,
+      this.chassisHalfSize.z,
+      origin.y - 1.15
+    );
   }
 
   /** Apply post-step parking constraints, then render the final physics pose. */

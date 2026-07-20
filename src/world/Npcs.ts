@@ -4,7 +4,7 @@ import type { Game } from '../core/Game';
 import { CIVILIAN_CARS } from '../core/const';
 import { Pedestrian } from '../entities/Pedestrian';
 import type { Outfit } from '../entities/HumanRig';
-import { TrafficCar } from '../entities/TrafficCar';
+import { TrafficCar, trafficSpawnPose } from '../entities/TrafficCar';
 import type { Drivable } from '../entities/Drivable';
 import { Vehicle } from '../entities/Vehicle';
 import {
@@ -138,11 +138,16 @@ export class Npcs {
   }
 
   private spawnTraffic(): void {
-    const edge = this.randomSpawnEdge('vehicle');
-    if (!edge) return;
-    const model = CIVILIAN_CARS[Math.floor(Math.random() * CIVILIAN_CARS.length)];
-    const profile = { outfit: randomOutfit(), heightScale: 0.94 + Math.random() * 0.1 };
-    this.traffic.push(new TrafficCar(this.game, model, edge.from, edge.to, profile));
+    for (let tries = 0; tries < 8; tries++) {
+      const edge = this.randomSpawnEdge('vehicle');
+      if (!edge) return;
+      const spawn = trafficSpawnPose(edge.from, edge.to);
+      if (!this.game.vehicleSpawnIsClear(spawn.x, spawn.z, spawn.heading)) continue;
+      const model = CIVILIAN_CARS[Math.floor(Math.random() * CIVILIAN_CARS.length)];
+      const profile = { outfit: randomOutfit(), heightScale: 0.94 + Math.random() * 0.1 };
+      this.traffic.push(new TrafficCar(this.game, model, edge.from, edge.to, profile));
+      return;
+    }
   }
 
   /** Alternating virtual signals at junctions; roads without a junction stay green. */

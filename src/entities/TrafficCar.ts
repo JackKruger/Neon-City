@@ -8,6 +8,26 @@ import type { Drivable } from './Drivable';
 
 const TURN_SPEED = 4;
 
+export interface TrafficSpawnPose {
+  x: number;
+  z: number;
+  heading: number;
+}
+
+/** Exact chassis pose used by a new traffic wrapper. */
+export function trafficSpawnPose(from: CellRef, to: CellRef): TrafficSpawnPose {
+  const waypoint = lanePoint(from, to, 0.18);
+  const a = pointWorld(from);
+  const b = pointWorld(to);
+  const dir = { x: b.x - a.x, z: b.z - a.z };
+  const length = Math.hypot(dir.x, dir.z) || 1;
+  return {
+    x: waypoint.x - (dir.x / length) * 6,
+    z: waypoint.z - (dir.z / length) * 6,
+    heading: Math.atan2(dir.x, dir.z),
+  };
+}
+
 /** AI driver that follows the road lane grid using the physics Vehicle. */
 export class TrafficCar implements Entity {
   readonly vehicle: Vehicle;
@@ -38,16 +58,8 @@ export class TrafficCar implements Entity {
     // Adjacent compiled lane nodes routinely fall in the same tile, so cell
     // indices collapse to (0,0); derive heading and setback from exact world
     // positions so cars enter aligned with the lane instead of facing south.
-    const a = pointWorld(from);
-    const b = pointWorld(to);
-    const dir = { x: b.x - a.x, z: b.z - a.z };
-    const length = Math.hypot(dir.x, dir.z) || 1;
-    const startPos = {
-      x: this.waypoint.x - (dir.x / length) * 6,
-      z: this.waypoint.z - (dir.z / length) * 6,
-    };
-    const heading = Math.atan2(dir.x, dir.z);
-    this.vehicle = existingVehicle ?? new Vehicle(game, model, startPos.x, startPos.z, heading);
+    const spawn = trafficSpawnPose(from, to);
+    this.vehicle = existingVehicle ?? new Vehicle(game, model, spawn.x, spawn.z, spawn.heading);
     this.vehicle.driver = this;
     if (!existingVehicle) game.addVehicle(this.vehicle);
   }

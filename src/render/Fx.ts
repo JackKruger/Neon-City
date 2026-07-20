@@ -8,7 +8,8 @@ import { heightAt } from '../world/CityMap';
  * of being disposed.
  */
 
-type FxKind = 'tracer' | 'flash' | 'blood' | 'stain' | 'spark' | 'fire' | 'smoke' | 'explosion' | 'debris';
+type FxKind = 'tracer' | 'flash' | 'blood' | 'stain' | 'spark' | 'fire' | 'smoke' |
+  'explosion' | 'debris' | 'wreckPanel' | 'wreckWheel';
 
 interface FxItem {
   kind: FxKind;
@@ -16,8 +17,10 @@ interface FxItem {
   life: number;
   maxLife: number;
   velocity: THREE.Vector3 | null;
+  angularVelocity: THREE.Vector3;
   gravity: number;
   growth: number;
+  floorY: number | null;
 }
 
 function makeSplatGeometry(): THREE.BufferGeometry {
@@ -52,6 +55,8 @@ const GEO: Record<FxKind, THREE.BufferGeometry> = {
   smoke: new THREE.SphereGeometry(0.22, 7, 5),
   explosion: new THREE.SphereGeometry(0.5, 12, 8),
   debris: new THREE.BoxGeometry(0.1, 0.06, 0.16),
+  wreckPanel: new THREE.BoxGeometry(1, 0.1, 1),
+  wreckWheel: new THREE.CylinderGeometry(0.34, 0.34, 0.2, 8).rotateZ(Math.PI / 2),
 };
 
 const MAT: Record<FxKind, THREE.MeshBasicMaterial> = {
@@ -73,6 +78,8 @@ const MAT: Record<FxKind, THREE.MeshBasicMaterial> = {
   smoke: new THREE.MeshBasicMaterial({ color: 0x28232f, transparent: true, opacity: 0.62, depthWrite: false }),
   explosion: new THREE.MeshBasicMaterial({ color: 0xffb321, transparent: true, opacity: 0.82, depthWrite: false }),
   debris: new THREE.MeshBasicMaterial({ color: 0x29242d }),
+  wreckPanel: new THREE.MeshBasicMaterial({ color: 0x100e13 }),
+  wreckWheel: new THREE.MeshBasicMaterial({ color: 0x08070a }),
 };
 
 const MID = new THREE.Vector3();
@@ -100,6 +107,8 @@ export class Fx {
     smoke: [],
     explosion: [],
     debris: [],
+    wreckPanel: [],
+    wreckWheel: [],
   };
 
   constructor(
@@ -138,8 +147,10 @@ export class Fx {
         life: 0,
         maxLife,
         velocity: null,
+        angularVelocity: new THREE.Vector3(),
         gravity,
         growth,
+        floorY: null,
       };
     }
     item.life = 0;
@@ -147,6 +158,8 @@ export class Fx {
     item.velocity = withVelocity ? item.velocity ?? new THREE.Vector3() : null;
     item.gravity = gravity;
     item.growth = growth;
+    item.angularVelocity.set(0, 0, 0);
+    item.floorY = null;
     item.mesh.scale.setScalar(1);
     item.mesh.rotation.set(0, 0, 0);
     this.scene.add(item.mesh);
@@ -258,15 +271,22 @@ export class Fx {
 
   /** A small flame and intermittent soot puff attached to a burning vehicle. */
   vehicleFire(pos: THREE.Vector3, intensity = 1): void {
-    const flame = this.spawn('fire', 0.22 + Math.random() * 0.18, true, 1.2, 0.7);
-    flame.mesh.position.copy(pos);
-    flame.mesh.scale.setScalar(0.75 + Math.random() * 0.75 * intensity);
-    flame.velocity!.set(
-      (Math.random() - 0.5) * 0.8,
-      1.4 + Math.random() * 1.2,
-      (Math.random() - 0.5) * 0.8
-    );
-    if (Math.random() < 0.42) {
+    const count = intensity >= 1.2 ? 2 : 1;
+    for (let i = 0; i < count; i++) {
+      const flame = this.spawn('fire', 0.28 + Math.random() * 0.24, true, 1.2, 0.85);
+      flame.mesh.position.copy(pos).add(new THREE.Vector3(
+        (Math.random() - 0.5) * 0.38,
+        Math.random() * 0.2,
+        (Math.random() - 0.5) * 0.38
+      ));
+      flame.mesh.scale.setScalar(0.9 + Math.random() * 0.9 * intensity);
+      flame.velocity!.set(
+        (Math.random() - 0.5) * 1.05,
+        1.6 + Math.random() * 1.5,
+        (Math.random() - 0.5) * 1.05
+      );
+    }
+    if (Math.random() < 0.58) {
       const smoke = this.spawn('smoke', 1.1 + Math.random() * 0.8, true, 0.45, 0.55);
       smoke.mesh.position.copy(pos);
       smoke.mesh.scale.setScalar(0.7 + Math.random() * 0.5 * intensity);
@@ -305,13 +325,70 @@ export class Fx {
       );
     }
     for (let i = 0; i < 16; i++) {
-      const debris = this.spawn('debris', 1.2 + Math.random() * 1.2, true);
+      const debris = this.spawn('debris', 4 + Math.random() * 3, true);
       debris.mesh.position.copy(pos);
+      debris.mesh.scale.set(1.5 + Math.random() * 2.8, 1.2 + Math.random() * 2, 1.5 + Math.random() * 2.8);
       debris.mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+      debris.angularVelocity.set(
+        (Math.random() - 0.5) * 9,
+        (Math.random() - 0.5) * 9,
+        (Math.random() - 0.5) * 9
+      );
+      debris.floorY = pos.y - 1.15;
       debris.velocity!.set(
         (Math.random() - 0.5) * 13,
         3 + Math.random() * 8,
         (Math.random() - 0.5) * 13
+      );
+    }
+  }
+
+  /** A detached wheel that tumbles away and remains beside the wreck briefly. */
+  wreckWheel(pos: THREE.Vector3, rotation: THREE.Quaternion, floorY: number): void {
+    const wheel = this.spawn('wreckWheel', 16 + Math.random() * 5, true);
+    wheel.mesh.position.copy(pos);
+    wheel.mesh.quaternion.copy(rotation);
+    wheel.angularVelocity.set(
+      (Math.random() - 0.5) * 9,
+      (Math.random() - 0.5) * 7,
+      (Math.random() - 0.5) * 9
+    );
+    wheel.floorY = floorY + 0.34;
+    wheel.velocity!.set(
+      (Math.random() - 0.5) * 7,
+      3.5 + Math.random() * 4,
+      (Math.random() - 0.5) * 7
+    );
+  }
+
+  /** Throw dark hood, boot, and side-panel chunks from the vehicle shell. */
+  wreckPanels(
+    origin: THREE.Vector3,
+    rotation: THREE.Quaternion,
+    halfWidth: number,
+    halfLength: number,
+    floorY: number
+  ): void {
+    const sizes = [
+      [halfWidth * 1.55, 1, halfLength * 0.58],
+      [halfWidth * 1.4, 1, halfLength * 0.48],
+      [halfWidth * 0.42, 1, halfLength * 1.05],
+    ];
+    for (let i = 0; i < sizes.length; i++) {
+      const panel = this.spawn('wreckPanel', 15 + Math.random() * 6, true);
+      panel.mesh.position.copy(origin);
+      panel.mesh.quaternion.copy(rotation);
+      panel.mesh.scale.set(sizes[i][0], 1, sizes[i][2]);
+      panel.angularVelocity.set(
+        (Math.random() - 0.5) * 8,
+        (Math.random() - 0.5) * 8,
+        (Math.random() - 0.5) * 8
+      );
+      panel.floorY = floorY + 0.08;
+      panel.velocity!.set(
+        (Math.random() - 0.5) * 9,
+        4 + Math.random() * 5,
+        (Math.random() - 0.5) * 9
       );
     }
   }
@@ -323,6 +400,22 @@ export class Fx {
       if (item.velocity) {
         item.velocity.y += item.gravity * dt;
         item.mesh.position.addScaledVector(item.velocity, dt);
+        item.mesh.rotation.x += item.angularVelocity.x * dt;
+        item.mesh.rotation.y += item.angularVelocity.y * dt;
+        item.mesh.rotation.z += item.angularVelocity.z * dt;
+        if (item.floorY !== null && item.mesh.position.y <= item.floorY && item.velocity.y < 0) {
+          item.mesh.position.y = item.floorY;
+          if (Math.abs(item.velocity.y) > 1.4) {
+            item.velocity.y *= -0.2;
+            item.velocity.x *= 0.55;
+            item.velocity.z *= 0.55;
+            item.angularVelocity.multiplyScalar(0.6);
+          } else {
+            item.velocity.set(0, 0, 0);
+            item.angularVelocity.set(0, 0, 0);
+            item.gravity = 0;
+          }
+        }
       }
       if (item.growth !== 0) item.mesh.scale.addScalar(item.growth * dt);
       if (item.life >= item.maxLife) {

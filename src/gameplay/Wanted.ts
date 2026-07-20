@@ -201,6 +201,7 @@ export class Wanted {
       // a bridge, beside the road, or inside nearby scenery.
       const { x, z } = pointWorld(cell);
       const heading = Math.atan2(pos.x - x, pos.z - z) + (roadblock ? Math.PI / 2 : 0);
+      if (!this.game.vehicleSpawnIsClear(x, z, heading)) continue;
       this.police.push(new PoliceCar(this.game, this.player, x, z, heading, roadblock));
       return;
     }

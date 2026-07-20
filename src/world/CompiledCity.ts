@@ -20,7 +20,6 @@ import { CHUNK_SIZE, CHUNK_TILES, TILE_SIZE as TILE } from './MapContract';
 const LOAD_RADIUS = 2;
 const UNLOAD_RADIUS = 3;
 const MAX_CONCURRENT_LOADS = 2;
-const PARKED_CAR_CLEARANCE = 4.5;
 
 interface LoadedChunk {
   kx: number;
@@ -243,10 +242,7 @@ export class CompiledCity implements CityStreamer {
   private spawnVehicles(data: CompiledChunkData): void {
     const owner = chunkKey(data.kx, data.kz);
     for (const spawn of data.parked) {
-      if (this.game.vehicles.some((vehicle) => {
-        const position = vehicle.body.translation();
-        return Math.hypot(position.x - spawn.x, position.z - spawn.z) < PARKED_CAR_CLEARANCE;
-      })) continue;
+      if (!this.game.vehicleSpawnIsClear(spawn.x, spawn.z, spawn.rotation)) continue;
       const model = CIVILIAN_CARS[spawn.seed % CIVILIAN_CARS.length];
       const vehicle = new Vehicle(this.game, model, spawn.x, spawn.z, spawn.rotation);
       this.game.addVehicle(vehicle);
