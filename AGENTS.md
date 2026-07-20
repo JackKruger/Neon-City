@@ -2,13 +2,13 @@
 
 ## Project overview
 
-Neon Bay is a browser-based, low-poly open-world game set in Melbourne. It uses TypeScript, Three.js, Rapier, and Vite. The game supports local split-screen, authored Melbourne data, an offline compiled-map pilot, and an unbounded procedural regression mode.
+Neon Bay is a browser-based, low-poly open-world game set in Melbourne. It uses TypeScript, Three.js, Rapier, and Vite. The single-player runtime streams an offline compiled-map pilot backed by authored Melbourne data.
 
 This file applies to the entire repository.
 
 ## Start here
 
-- Read `README.md` for the product overview and runtime modes.
+- Read `README.md` for the product overview and runtime constraints.
 - Read `TODO.md` before expanding scope or implementing roadmap work.
 - Read `docs/open-data.md` before changing Melbourne source ingestion.
 - Use Node/npm versions compatible with the checked-in lockfile; install with `npm install`.
@@ -17,7 +17,7 @@ This file applies to the entire repository.
 ## Repository map
 
 - `src/core/`: game loop, input, assets, audio, and shared constants.
-- `src/world/`: map queries, legacy/procedural builders, compiled streaming, navigation, and NPC management.
+- `src/world/`: map queries, compiled streaming, navigation, lighting, and NPC management.
 - `src/entities/`: players, characters, vehicles, traffic, pedestrians, police, and pickups.
 - `src/gameplay/`: combat, weapons, inventory, and wanted-state systems.
 - `src/render/`: viewports, cameras, and effects.
@@ -29,8 +29,8 @@ This file applies to the entire repository.
 
 ## Development rules
 
-- Preserve all three map modes: `?map=legacy`, `?map=compiled`, and `?map=procedural`.
-- Keep split-screen behavior in mind. World state is shared, but the scene is rendered once per viewport.
+- Keep the browser runtime compiled-map-only; source ingestion and compilation remain build-time tools.
+- Local split-screen is disabled. Do not add a second render viewport without a new performance budget and explicit product decision.
 - Physics runs at a fixed 60 Hz. Avoid frame-rate-dependent movement, damage, or timers.
 - Dispose Three.js geometries/materials and Rapier bodies/colliders when streamed objects or entities are removed.
 - Prefer deterministic seeded placement for world content. Do not introduce time, iteration-order, or network-dependent compiler output.
@@ -77,7 +77,7 @@ Run checks proportional to the change:
 - Regenerated compiled chunks: also run `npm run map:validate`.
 - Compiler determinism or format change: run the byte-identical compiler tests and compile the spawn pilot twice if the existing test does not cover the new path.
 
-For meaningful runtime changes, smoke-test the affected map mode in a browser. For streaming, navigation, or shared-world changes, also verify the other two modes. Check browser console errors, spawn safety, chunk loading/unloading, traffic/pedestrian movement, and split-screen if camera or viewport code changed.
+For meaningful runtime changes, smoke-test the compiled map in a browser. Check browser console errors, spawn safety, chunk loading/unloading, traffic/pedestrian movement, and the F3 diagnostics panel when performance may be affected.
 
 ## Testing expectations
 

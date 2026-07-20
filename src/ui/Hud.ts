@@ -25,7 +25,7 @@ export interface HudState {
   vehicleHealth?: number;
 }
 
-/** DOM overlay HUD, one panel per viewport (left/right half in split screen). */
+/** DOM overlay HUD. */
 export class Hud {
   private panels: {
     root: HTMLDivElement;
@@ -255,7 +255,6 @@ export class Hud {
         <p><b>Keyboard:</b> WASD drive/walk/fly · mouse orbit · V recenter · Space jump/handbrake/ascend · Shift sprint/descend · E enter/exit</p>
         <p><b>Combat:</b> LMB / F attack · RMB aim · Q / C (Tab) switch weapon · R reload</p>
         <p><b>Gamepad:</b> left stick steer/walk · right stick orbit · R3 recenter · RT gas/fire · LT brake/aim · A jump/ascend · B descend · Y enter/exit · LB/RB weapon · X reload</p>
-        <p><b>P2:</b> press Start on a second gamepad to join split-screen</p>
         <p><b>Map:</b> M / Back opens the city map</p>
         <div class="hud-settings">
           <h2>CAMERA &amp; ACCESSIBILITY</h2>

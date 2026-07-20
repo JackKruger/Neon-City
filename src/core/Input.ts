@@ -63,9 +63,8 @@ function emptyInput(): PlayerInput {
 }
 
 /**
- * Keyboard always drives player 1 (a gamepad can also claim P1 by pressing
- * A/B/X/Y while unclaimed). Pressing Start on an unclaimed gamepad requests
- * a player-2 join, which Game picks up via `p2JoinRequested`.
+ * Keyboard drives the player. An unclaimed gamepad can take over by pressing
+ * A/B/X/Y; local split-screen input is intentionally disabled.
  */
 export class Input {
   private keys = new Set<string>();
@@ -87,8 +86,6 @@ export class Input {
   private methods: [InputMethod, InputMethod] = ['keyboard', 'gamepad'];
 
   p1Pad: number | null = null;
-  p2Pad: number | null = null;
-  p2JoinRequested = false;
 
   constructor() {
     window.addEventListener('keydown', (e) => {
@@ -119,7 +116,6 @@ export class Input {
     });
     window.addEventListener('gamepaddisconnected', (e) => {
       if (this.p1Pad === e.gamepad.index) this.p1Pad = null;
-      if (this.p2Pad === e.gamepad.index) this.p2Pad = null;
     });
   }
 
@@ -138,16 +134,13 @@ export class Input {
       const pressed = pad.buttons.map((b) => b.pressed);
       const just = (i: number) => pressed[i] && !prev[i];
 
-      const claimed = pad.index === this.p1Pad || pad.index === this.p2Pad;
+      const claimed = pad.index === this.p1Pad;
       if (!claimed) {
-        if (just(9) && this.p2Pad === null) {
-          this.p2Pad = pad.index;
-          this.p2JoinRequested = true;
-        } else if ((just(0) || just(1) || just(2) || just(3)) && this.p1Pad === null) {
+        if ((just(0) || just(1) || just(2) || just(3)) && this.p1Pad === null) {
           this.p1Pad = pad.index;
         }
       } else {
-        const player = pad.index === this.p1Pad ? 0 : 1;
+        const player = 0;
         if (just(0)) this.pendingJump[player] = true;
         if (just(3)) this.pendingInteract[player] = true;
         if (just(9)) this.pendingPause[player] = true;
@@ -191,7 +184,7 @@ export class Input {
       pitch += this.mouseLookY * 0.002 * sensitivity;
     }
     if (enabled) {
-      const padIndex = player === 0 ? this.p1Pad : this.p2Pad;
+      const padIndex = player === 0 ? this.p1Pad : null;
       const pad = padIndex === null ? null : navigator.getGamepads()[padIndex];
       if (pad) {
         yaw += dz(pad.axes[2] ?? 0) * 2.4 * dt * sensitivity;
@@ -244,7 +237,7 @@ export class Input {
   mapPanAxes(): { x: number; y: number } {
     let x = (this.keys.has('ArrowRight') ? 1 : 0) - (this.keys.has('ArrowLeft') ? 1 : 0);
     let y = (this.keys.has('ArrowDown') ? 1 : 0) - (this.keys.has('ArrowUp') ? 1 : 0);
-    for (const padIndex of [this.p1Pad, this.p2Pad]) {
+    for (const padIndex of [this.p1Pad]) {
       if (padIndex === null) continue;
       const pad = navigator.getGamepads()[padIndex];
       if (!pad) continue;
@@ -258,7 +251,7 @@ export class Input {
   read(player: 0 | 1): PlayerInput {
     const input = emptyInput();
     if (player === 0) this.readKeyboard(input);
-    const padIndex = player === 0 ? this.p1Pad : this.p2Pad;
+    const padIndex = player === 0 ? this.p1Pad : null;
     if (padIndex !== null) {
       const pad = navigator.getGamepads()[padIndex];
       if (pad) this.readPad(pad, input);

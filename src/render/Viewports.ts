@@ -109,44 +109,25 @@ export class ChaseCamera {
   }
 }
 
-/** Renders one or two viewports with scissor-test split screen. */
+/** Owns the single active chase camera and full-canvas viewport. */
 export class Viewports {
-  readonly cameras: ChaseCamera[] = [];
+  readonly cameras: ChaseCamera[];
 
   constructor(private renderer: THREE.WebGLRenderer, private resolveCollision?: CollisionResolver) {
-    this.renderer.setScissorTest(true);
-  }
-
-  setPlayerCount(count: 1 | 2): void {
-    while (this.cameras.length < count) {
-      this.cameras.push(new ChaseCamera(this.aspectFor(count), this.resolveCollision));
-    }
-    this.cameras.length = count;
-    this.updateAspects();
-  }
-
-  private aspectFor(count: number): number {
     const size = this.renderer.getSize(new THREE.Vector2());
-    return count === 2 ? size.x / 2 / size.y : size.x / size.y;
+    this.cameras = [new ChaseCamera(size.x / size.y, this.resolveCollision)];
   }
 
   updateAspects(): void {
-    const aspect = this.aspectFor(this.cameras.length);
-    for (const c of this.cameras) {
-      c.camera.aspect = aspect;
-      c.camera.updateProjectionMatrix();
-    }
+    const size = this.renderer.getSize(new THREE.Vector2());
+    this.cameras[0].camera.aspect = size.x / size.y;
+    this.cameras[0].camera.updateProjectionMatrix();
   }
 
   render(scene: THREE.Scene): void {
     const size = this.renderer.getSize(new THREE.Vector2());
-    const n = this.cameras.length;
-    for (let i = 0; i < n; i++) {
-      const w = n === 2 ? Math.floor(size.x / 2) : size.x;
-      const x = i === 0 ? 0 : size.x - w;
-      this.renderer.setViewport(x, 0, w, size.y);
-      this.renderer.setScissor(x, 0, w, size.y);
-      this.renderer.render(scene, this.cameras[i].camera);
-    }
+    this.renderer.setViewport(0, 0, size.x, size.y);
+    this.renderer.info.reset();
+    this.renderer.render(scene, this.cameras[0].camera);
   }
 }

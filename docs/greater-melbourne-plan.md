@@ -34,14 +34,14 @@ The completed system must:
   confidence recorded per region and feature class;
 - preserve correct left-hand vehicle lanes and coherent pedestrian, vehicle, rail,
   and tram navigation generated from the same street geometry as rendering;
-- support two players being far apart without duplicating the entire world or
-  breaking streaming ownership;
+- support one active player with bounded streaming ownership; local split-screen
+  remains deferred until it has an explicit performance budget;
 - keep map data completely offline at runtime;
 - produce deterministic, content-addressed builds that can be validated and
   incrementally rebuilt;
 - support low-detail regional views and full-map routing without loading detailed
   physics and render geometry for distant suburbs;
-- retain `?map=legacy`, `?map=compiled`, and `?map=procedural` throughout the
+- keep the browser runtime on the versioned compiled format throughout the
   migration;
 - make source dates, licences, attribution, fallbacks, and manual corrections
   inspectable.

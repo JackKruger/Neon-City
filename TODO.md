@@ -2,11 +2,11 @@
 
 ## Offline compiled Melbourne map
 
-- [ ] Complete the full-city rollout of the versioned, offline-compiled chunk pipeline (the 5×5 spawn pilot and runtime cutover are implemented).
+- [ ] Complete the full-city rollout of the versioned, offline-compiled chunk pipeline (the compiled-only runtime and 5×5 spawn pilot are implemented).
   - Treat OSM, Melbourne open data, SRTM elevation, and semantic layers as source inputs; compile terrain, roads, buildings, static props, physics, and navigation into deterministic per-chunk assets.
   - Use a manifest to define coordinate space, format versions, chunk bounds, dependencies, and compatibility. Render chunks should ultimately be optimized GLBs, with compact companion files for heightfields, simple colliders, road/navigation graphs, and gameplay metadata.
   - Correct source data before baking it: flatten complete authored building footprints with blended terrain pads, clip cross-boundary roads and buildings into every affected chunk, retain stable source IDs, and keep parked vehicles stationary on slopes.
-  - The spawn-area pilot is committed and verified through both paths. Compile and exercise all of Melbourne before changing the default from `?map=legacy`; keep `?map=procedural` as the lightweight regression mode.
+  - The spawn-area pilot is committed and is now the only runtime map. Compile and exercise all of Melbourne before treating travel outside the pilot as supported.
   - Add small synthetic compiler tests for projection, source-tile selection, terrain sampling, shoreline treatment, building pads, road grades, quantization, chunk clipping, and manifest compatibility.
 
 ## Characters and physics
@@ -132,5 +132,6 @@
     crashes, thunder, explosions, impacts, reloads, pickups, firearms, distance falloff, subtitles,
     and nearby civilian danger reactions require no sampled assets.
 - [ ] Establish performance budgets and diagnostics.
-  - Track frame time, physics cost, active NPCs, draw calls, dynamic lights, and streamed chunks.
-  - Add scalable crowd, traffic, shadow, lighting, and effects settings for split-screen and lower-end hardware.
+  - Shipped: an F3 developer panel tracks rolling frame/CPU/simulation/physics/render time, hitches, active actors, draw calls, triangles, GPU resources, Rapier counts, dynamic lights, and streamed chunks.
+  - Add repeatable driving/combat/streaming scenarios, saved JSON baselines, and CI regression thresholds.
+  - Add scalable crowd, traffic, shadow, lighting, and effects settings for lower-end hardware.

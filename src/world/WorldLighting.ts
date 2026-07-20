@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { PALETTE, TILE } from '../core/const';
 import { heightAt, worldToCell } from './CityMap';
-import { streetlightPlacements } from './City';
+import { streetlightPlacements } from './Streetlights';
 
 const MAX_DYNAMIC_LIGHTS = 8;
 const SEARCH_RADIUS_CELLS = 5;
@@ -18,7 +18,7 @@ interface Lamp {
   bulb: THREE.Mesh;
 }
 
-/** Shared clock, sky lighting, and a split-screen-safe pool of nearby lamps. */
+/** Shared clock, sky lighting, weather, and a bounded pool of nearby lamps. */
 export class WorldLighting {
   private timeOfDay: number;
   private lamps: Lamp[] = [];
@@ -109,7 +109,7 @@ export class WorldLighting {
     this.surfaceRefreshTimer -= dt;
     if (this.surfaceRefreshTimer <= 0) {
       this.surfaceRefreshTimer = 1;
-      this.updateWetSurfaces();
+      this.applyWetSurfaces();
     }
   }
 
@@ -123,6 +123,10 @@ export class WorldLighting {
 
   get weatherKind(): WeatherKind {
     return this.weather;
+  }
+
+  get activeLightCount(): number {
+    return this.lamps.filter((lamp) => lamp.light.visible).length;
   }
 
   private applyEnvironment(): void {
@@ -205,29 +209,52 @@ export class WorldLighting {
     (this.rain[0].material as THREE.PointsMaterial).opacity = 0.25 + this.precipitation * 0.48;
   }
 
-  private updateWetSurfaces(): void {
-    const seen = new Set<THREE.MeshStandardMaterial>();
-    this.scene.traverse((object) => {
+  /** Register asphalt once when a compiled chunk enters the scene. */
+  registerWetSurfaces(root: THREE.Object3D): void {
+    root.traverse((object) => {
       const mesh = object as THREE.Mesh;
       if (!mesh.isMesh) return;
       for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
         if (!(material instanceof THREE.MeshStandardMaterial) || material.name.toLowerCase() !== 'asphalt') continue;
-        seen.add(material);
         if (!this.wetMaterials.has(material)) {
           this.wetMaterials.set(material, { roughness: material.roughness, metalness: material.metalness });
         }
-        const dry = this.wetMaterials.get(material)!;
-        material.roughness = THREE.MathUtils.lerp(dry.roughness, 0.24, this.precipitation);
-        material.metalness = THREE.MathUtils.lerp(dry.metalness, 0.12, this.precipitation);
-        material.needsUpdate = true;
       }
     });
+    this.applyWetSurfaces();
+  }
+
+  /** Restore and forget materials before their streamed chunk is disposed. */
+  unregisterWetSurfaces(root: THREE.Object3D): void {
+    root.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+        if (!(material instanceof THREE.MeshStandardMaterial)) continue;
+        const dry = this.wetMaterials.get(material);
+        if (!dry) continue;
+        material.roughness = dry.roughness;
+        material.metalness = dry.metalness;
+        this.wetMaterials.delete(material);
+      }
+    });
+  }
+
+  /** Update only known road materials; avoids traversing the full scene every second. */
+  private applyWetSurfaces(): void {
     for (const [material, dry] of this.wetMaterials) {
-      if (seen.has(material)) continue;
+      material.roughness = THREE.MathUtils.lerp(dry.roughness, 0.24, this.precipitation);
+      material.metalness = THREE.MathUtils.lerp(dry.metalness, 0.12, this.precipitation);
+      material.needsUpdate = true;
+    }
+  }
+
+  dispose(): void {
+    for (const [material, dry] of this.wetMaterials) {
       material.roughness = dry.roughness;
       material.metalness = dry.metalness;
-      this.wetMaterials.delete(material);
     }
+    this.wetMaterials.clear();
   }
 
   private placeNearbyLamps(players: { x: number; z: number }[]): void {

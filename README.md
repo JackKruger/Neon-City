@@ -1,7 +1,7 @@
 # Neon Bay
 
-A browser-based, 3D, Vice-City-flavored open-world sandbox with local
-split-screen co-op. Steal cars, cruise the streets of **Melbourne**, dodge
+A browser-based, 3D, Vice-City-flavored open-world sandbox. Steal cars,
+cruise the streets of **Melbourne**, dodge
 the police — all in the browser, no install.
 
 The city is a fixed ~8.6 × 8.6 km map of inner Melbourne — the Hoddle
@@ -34,7 +34,7 @@ for expanding the world across Greater Melbourne are documented in
 
 ## How to play
 
-|                | Player 1 (keyboard)        | Gamepad (either player)     |
+|                | Keyboard                   | Gamepad                     |
 | -------------- | -------------------------- | --------------------------- |
 | Drive / walk   | WASD                       | Left stick + RT gas, LT brake |
 | Jump / handbrake | Space                    | A                           |
@@ -45,9 +45,7 @@ for expanding the world across Greater Melbourne are documented in
 | Helicopter up/down | Space / Shift          | A / B                       |
 | Pause          | Esc                        | Start                       |
 
-- **Player 2**: press **Start** on a second gamepad to join — the screen
-  splits vertically.
-- A gamepad can also drive Player 1: press any face button on an
+- A gamepad can take over from the keyboard: press any face button on an
   unclaimed pad.
 - Run over pedestrians or ram traffic and your **wanted stars** rise;
   police cruisers will hunt you down. Shake them off (stay >45 m away)
@@ -70,12 +68,11 @@ for expanding the world across Greater Melbourne are documented in
 ```
 src/
   core/       game loop, input (keyboard + gamepads), asset cache, audio
-  world/      global map queries, legacy/procedural builder, compiled chunk
-              streamer, road graph, NPC manager
+  world/      global map queries, compiled chunk streamer, road graph, NPC manager
   entities/   Vehicle (raycast car physics), Character, Player, Pedestrian,
               TrafficCar, PoliceCar
   gameplay/   wanted system
-  render/     split-screen viewports + chase cameras
+  render/     viewport, chase camera, and effects
   ui/         DOM HUD (speed, stars, prompts, pause)
 scripts/
   build-map.mjs    source ingestion (writes global data under public/maps/)
@@ -104,12 +101,13 @@ The `.png` is a preview of the generated grid (roads, water, parks,
 commercial/suburban lots); tweak the `MAP` constants at the top of the
 script to move the bounding box or spawn point.
 
-Split-screen renders the one shared scene twice per frame with scissored
-viewports; physics steps at a fixed 60 Hz. Audio is fully procedural
+Physics steps at a fixed 60 Hz. Audio is fully procedural
 (Web Audio oscillators/noise) — engine, skids, and sirens, no samples.
 
-Map modes are explicit: `?map=compiled` streams offline Melbourne GLB/NBCH
-pairs, `?map=legacy` runs the authored browser-side builder, and
-`?map=procedural` keeps the unbounded deterministic sandbox. The default is
-legacy while the committed compiled snapshot is limited to the spawn pilot.
-Both streamers own 120 m chunks and unload resources beyond a hysteresis ring.
+The runtime streams offline Melbourne GLB/NBCH pairs exclusively. The committed
+compiled snapshot is currently a 5×5 spawn pilot, so travel beyond that area will
+not have detailed world chunks until the full-city compile is published. Compiled
+chunks are 120 m and unload beyond a hysteresis ring.
+
+Development builds show rolling performance diagnostics while playing. Press F3
+to toggle the panel; production builds can opt in with `?dev`.

@@ -5,7 +5,7 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import type { Game } from '../core/Game';
 import { CIVILIAN_CARS, TILE } from '../core/const';
 import { Vehicle } from '../entities/Vehicle';
-import type { CityStreamer } from './CityStreamer';
+import type { CityStreamer, CityStreamStats } from './CityStreamer';
 import {
   hashBuffer,
   parseCompiledChunk,
@@ -60,6 +60,7 @@ export class CompiledCity implements CityStreamer {
   private disposed = false;
   private failure: Error | null = null;
   private safetyBody: RAPIER.RigidBody;
+  private recentLoadMs: number[] = [];
 
   constructor(private game: Game, private mapName = 'melbourne') {
     setRoadNetwork(this.roadNetwork);
@@ -72,6 +73,26 @@ export class CompiledCity implements CityStreamer {
 
   loadedChunkCount(): number {
     return this.chunks.size;
+  }
+
+  stats(): CityStreamStats {
+    let loadedBytes = 0;
+    for (const chunk of this.chunks.values()) loadedBytes += chunk.renderBytes + chunk.dataBytes;
+    const missingChunks = [...this.wanted].filter((key) => !this.entries.has(key)).length;
+    const lastLoadMs = this.recentLoadMs.at(-1) ?? 0;
+    return {
+      loadedChunks: this.chunks.size,
+      pendingChunks: this.pending.size,
+      wantedChunks: this.wanted.size,
+      missingChunks,
+      loadedBytes,
+      lastLoadMs,
+      averageLoadMs: this.recentLoadMs.length > 0
+        ? this.recentLoadMs.reduce((sum, value) => sum + value, 0) / this.recentLoadMs.length
+        : 0,
+      scope: this.manifest?.scope ?? 'loading',
+      partial: this.manifest?.partial ?? true,
+    };
   }
 
   async prewarm(x: number, z: number): Promise<void> {
@@ -147,6 +168,7 @@ export class CompiledCity implements CityStreamer {
     while (this.pending.size < MAX_CONCURRENT_LOADS && candidates.length > 0) {
       const entry = candidates.shift();
       if (!entry) {
+        if (this.manifest.partial) return;
         const missing = [...this.wanted].find((key) => !this.entries.has(key));
         if (missing) this.reportFailure(new Error(`compiled map has no chunk ${missing}; scope=${this.manifest.scope}`));
         return;
@@ -188,10 +210,13 @@ export class CompiledCity implements CityStreamer {
     const body = this.createPhysics(data);
     const root = gltf.scene;
     this.game.scene.add(root);
+    this.game.lighting.registerWetSurfaces(root);
     const vehicles = this.spawnVehicles(data);
     this.roadNetwork.registerChunk(key, data.navNodes, data.navEdges);
     this.chunks.set(key, { kx: entry.kx, kz: entry.kz, root, body, vehicles, renderBytes: entry.renderBytes, dataBytes: entry.dataBytes });
     const elapsed = performance.now() - started;
+    this.recentLoadMs.push(elapsed);
+    if (this.recentLoadMs.length > 32) this.recentLoadMs.shift();
     console.info(`[map] chunk ${key}: ${Math.round(entry.renderBytes / 1024)} KiB GLB + ${Math.round(entry.dataBytes / 1024)} KiB data in ${elapsed.toFixed(1)} ms`);
   }
 
@@ -236,6 +261,7 @@ export class CompiledCity implements CityStreamer {
   private unloadChunk(chunk: LoadedChunk): void {
     const key = chunkKey(chunk.kx, chunk.kz);
     this.roadNetwork.unregisterChunk(key);
+    this.game.lighting.unregisterWetSurfaces(chunk.root);
     this.game.scene.remove(chunk.root);
     this.disposeObject(chunk.root);
     this.game.world.removeRigidBody(chunk.body);

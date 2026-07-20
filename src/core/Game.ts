@@ -8,9 +8,7 @@ import { buildMapCanvas } from '../ui/Minimap';
 import { MapOverlay } from '../ui/MapOverlay';
 import { AudioSys } from './AudioSys';
 import { CIVILIAN_CARS, GRAVITY, PALETTE, STEP } from './const';
-import { CITY_ASSETS, City } from '../world/City';
 import { CompiledCity } from '../world/CompiledCity';
-import type { CityStreamer } from '../world/CityStreamer';
 import {
   cellAt,
   bridgeSurfaceHeightAt,
@@ -19,7 +17,6 @@ import {
   heightAt,
   nearestRoadCell,
   roadInfoAt,
-  setAuthoredMap,
   speedLimitAt,
   suburbNameAt,
   TransportFlag,
@@ -40,14 +37,13 @@ import { WEAPONS, WEAPON_ORDER, type WeaponId } from '../gameplay/Weapons';
 import { randomRoadCellNear } from '../world/RoadGraph';
 import { Settings } from './Settings';
 import { WorldLighting } from '../world/WorldLighting';
+import { DevStats, type DevStatsSnapshot } from './DevStats';
 
 export interface Entity {
   update(dt: number): void;
 }
 
 const ACTOR_ASSETS = [...CIVILIAN_CARS, 'cars/police', 'cars/debris-door-window'];
-const LEGACY_ASSETS = [...ACTOR_ASSETS, ...CITY_ASSETS];
-type MapMode = 'procedural' | 'legacy' | 'compiled';
 
 export class Game {
   readonly scene = new THREE.Scene();
@@ -60,11 +56,13 @@ export class Game {
   readonly viewports: Viewports;
   readonly hud: Hud;
   readonly lighting: WorldLighting;
+  readonly devStats: DevStats;
   readonly mapOverlay: MapOverlay | null;
   readonly entities: Entity[] = [];
 
   private clock = new THREE.Clock();
   private accumulator = 0;
+  private previousFrameStart = performance.now();
   private debugCam = false;
   private suburbCache: { cx: number; cz: number; name: string | null }[] = [];
 
@@ -76,36 +74,32 @@ export class Game {
   readonly pickups: Pickup[] = [];
   /** Chance a spawned pedestrian fights back when attacked (debug: ?brawlers). */
   pedBraveChance = 0.25;
-  readonly city: CityStreamer;
+  readonly city: CompiledCity;
   npcs!: Npcs;
   paused = false;
 
   static async create(container: HTMLElement): Promise<Game> {
-    const requestedMode = new URLSearchParams(location.search).get('map');
-    const mode: MapMode = requestedMode === 'procedural' || requestedMode === 'compiled' || requestedMode === 'legacy'
-      ? requestedMode
-      : 'legacy';
-    if (mode === 'procedural') setAuthoredMap(null);
     const [assets] = await Promise.all([
       (async () => {
         const a = new Assets();
-        await a.preload(mode === 'compiled' ? ACTOR_ASSETS : LEGACY_ASSETS);
+        await a.preload(ACTOR_ASSETS);
         return a;
       })(),
       RAPIER.init(),
-      mode === 'procedural' ? Promise.resolve(null) : loadAuthoredMap('melbourne', { loadObjects: mode === 'legacy' }),
+      loadAuthoredMap('melbourne', { loadObjects: false }),
     ]);
-    const game = new Game(container, assets, mode);
+    const game = new Game(container, assets);
     await game.initialize();
     return game;
   }
 
-  private constructor(container: HTMLElement, assets: Assets, mode: MapMode) {
+  private constructor(container: HTMLElement, assets: Assets) {
     this.assets = assets;
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     container.appendChild(this.renderer.domElement);
+    this.devStats = new DevStats(container, this.renderer);
     this.input.attachPointerLock(this.renderer.domElement);
 
     window.addEventListener('resize', () => {
@@ -119,7 +113,6 @@ export class Game {
     this.viewports = new Viewports(this.renderer, (target, focus, desired, out) => {
       this.resolveCameraCollision(target, focus, desired, out);
     });
-    this.viewports.setPlayerCount(1);
     this.hud = new Hud(container, this.settings);
     this.audio.onCaption = (text) => this.hud.showCaption(text);
     const map = getAuthoredMap();
@@ -129,12 +122,7 @@ export class Game {
     this.mapOverlay = map && mapCanvas ? new MapOverlay(container, map, mapCanvas) : null;
 
     this.lighting = this.setupEnvironment();
-    // The Kenney asphalt is nearly sand-colored; darken it well below the
-    // pavement gray so streets read as streets against the sidewalks.
-    for (const name of CITY_ASSETS) {
-      if (name.startsWith('roads/road-')) this.assets.tint(name, 0x666c7c);
-    }
-    this.city = mode === 'compiled' ? new CompiledCity(this) : new City(this);
+    this.city = new CompiledCity(this);
   }
 
   private async initialize(): Promise<void> {
@@ -176,6 +164,11 @@ export class Game {
   /** Terrain query exposed on window.__game for verification tooling. */
   heightAt(x: number, z: number): number {
     return heightAt(x, z);
+  }
+
+  /** Rolling diagnostics exposed for browser tooling and benchmark capture. */
+  performanceSnapshot(): DevStatsSnapshot {
+    return this.devStats.snapshot();
   }
 
   /** Highest fixed world surface below a nearby actor. Unlike `heightAt`, this
@@ -279,20 +272,6 @@ export class Game {
     if (deltaV > 9) this.npcs.reactToDanger(origin, Math.min(32, 16 + deltaV));
   }
 
-  /** Split the screen and drop player 2 next to player 1. */
-  joinPlayer2(): void {
-    if (this.players.length >= 2) return;
-    const p1 = this.players[0];
-    const pos = p1.driving
-      ? new THREE.Vector3().copy(p1.vehicle!.root.position)
-      : p1.position();
-    const p2 = new Player(this, 1, pos.x + 2.5, pos.z + 2.5);
-    this.players.push(p2);
-    this.entities.push(p2);
-    this.viewports.setPlayerCount(2);
-    this.hud.setPlayerCount(2);
-  }
-
   /** Every usable weapon, arranged in a deterministic ring around spawn. */
   private spawnStarterPickups(x: number, z: number): void {
     const wanted = WEAPON_ORDER.filter(
@@ -326,7 +305,6 @@ export class Game {
       const s = getAuthoredMap()?.spawn ?? { x: 3, z: 24 };
       this.addVehicle(new Vehicle(this, 'cars/taxi', s.x, s.z + 12, 0));
     }
-    if (params.has('p2')) this.joinPlayer2();
     if (params.has('arsenal')) {
       for (const p of this.players) p.inventory.giveAll();
     }
@@ -356,19 +334,22 @@ export class Game {
   }
 
   start(): void {
+    this.previousFrameStart = performance.now();
     this.renderer.setAnimationLoop(() => this.frame());
   }
 
   private frame(): void {
+    const frameStarted = performance.now();
+    const frameMs = frameStarted - this.previousFrameStart;
+    this.previousFrameStart = frameStarted;
+    let simulationMs = 0;
+    let physicsMs = 0;
+    let fixedSteps = 0;
     const dt = Math.min(this.clock.getDelta(), 0.1);
     this.input.poll();
     this.mapOverlay?.setPlayers(
       this.playerPositions().map((pos, i) => ({ ...pos, heading: this.players[i].getHeading() }))
     );
-    if (this.input.p2JoinRequested) {
-      this.input.p2JoinRequested = false;
-      this.joinPlayer2();
-    }
     const pausePressed = this.input.consumePause();
     const mapPressed = this.input.consumeMapToggle();
     if (pausePressed) {
@@ -393,12 +374,17 @@ export class Game {
     if (!this.paused) {
       this.accumulator += dt;
       while (this.accumulator >= STEP) {
-        this.fixedUpdate();
+        const simulationStarted = performance.now();
+        physicsMs += this.fixedUpdate();
+        simulationMs += performance.now() - simulationStarted;
+        fixedSteps++;
         this.accumulator -= STEP;
       }
     }
     const positions = this.playerPositions();
+    const streamingStarted = performance.now();
     this.city.update(positions);
+    const streamingMs = performance.now() - streamingStarted;
     this.lighting.update(this.paused ? 0 : dt, positions);
     if (!this.paused) this.fx.update(dt);
     if (this.paused) this.audio.duck();
@@ -454,7 +440,36 @@ export class Game {
       });
     }
     this.hud.setInputMethods(this.players.map((player) => this.input.inputMethod(player.index)));
+    const renderStarted = performance.now();
     this.viewports.render(this.scene);
+    const renderMs = performance.now() - renderStarted;
+    const police = this.players.reduce(
+      (sum, player) => sum + player.wanted.police.length + player.wanted.copPeds.length,
+      0
+    );
+    this.devStats.record(
+      {
+        frameMs,
+        cpuMs: performance.now() - frameStarted,
+        simulationMs,
+        physicsMs,
+        streamingMs,
+        renderMs,
+        fixedSteps,
+      },
+      {
+        stream: this.city.stats(),
+        pedestrians: this.npcs.peds.length,
+        traffic: this.npcs.traffic.length,
+        vehicles: this.vehicles.length,
+        police,
+        pickups: this.pickups.length,
+        dynamicLights: this.lighting.activeLightCount,
+        weather: this.lighting.weatherKind,
+        bodies: this.world.bodies.len(),
+        colliders: this.world.colliders.len(),
+      }
+    );
   }
 
   /** Pull the chase camera in front of the first wall/terrain obstruction. */
@@ -540,7 +555,7 @@ export class Game {
     );
   }
 
-  private fixedUpdate(): void {
+  private fixedUpdate(): number {
     for (const p of this.players) {
       p.input = this.input.read(p.index);
       p.cameraYaw = this.viewports.cameras[p.index]?.yaw() ?? 0;
@@ -551,8 +566,11 @@ export class Game {
       this.pickups[i].update(STEP);
       if (this.pickups[i].collected) this.pickups.splice(i, 1);
     }
+    const physicsStarted = performance.now();
     this.world.step(this.eventQueue);
+    const physicsMs = performance.now() - physicsStarted;
     for (const vehicle of this.vehicles) vehicle.afterPhysics();
     this.npcs.afterPhysics();
+    return physicsMs;
   }
 }

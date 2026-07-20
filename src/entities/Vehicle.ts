@@ -90,6 +90,7 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
   private impactCooldown = 0;
   private fireFxCooldown = 0;
   private burnTime = 0;
+  private parkedTime = 0;
   private lastAttacker: Player | null = null;
   private parkingAnchor: { x: number; z: number; rotation: RAPIER.Rotation } | null = null;
   private headlightMaterial = new THREE.MeshStandardMaterial({
@@ -329,10 +330,21 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     this.updateDoors(dt);
     this.updateHeadlights();
     const { steer, throttle, brake, handbrake } = this.command;
-    this.pinWhileParked(
+    const parked =
       !this.destroyed && !this.burning &&
-      this.driver === null && handbrake && steer === 0 && throttle === 0 && brake === 0
-    );
+      this.driver === null && handbrake && steer === 0 && throttle === 0 && brake === 0;
+    this.pinWhileParked(parked);
+    if (parked) {
+      this.parkedTime += dt;
+      // Let suspension settle, then stop four wheel raycasts per parked car
+      // on every fixed step. Driver assignment wakes the chassis below.
+      if (this.parkedTime >= 1) {
+        if (!this.body.isSleeping()) this.body.sleep();
+        return;
+      }
+    } else {
+      this.parkedTime = 0;
+    }
     const mass = this.body.mass();
     const speed = this.forwardSpeed();
     const sliding = handbrake && Math.abs(speed) > 2;
