@@ -7,7 +7,7 @@ import { Hud } from '../ui/Hud';
 import { buildMapCanvas } from '../ui/Minimap';
 import { MapOverlay } from '../ui/MapOverlay';
 import { AudioSys } from './AudioSys';
-import { CIVILIAN_CARS, GRAVITY, PALETTE, STEP } from './const';
+import { BULLDOZER_MODEL, CIVILIAN_CARS, GRAVITY, PALETTE, STEP } from './const';
 import { CompiledCity } from '../world/CompiledCity';
 import {
   cellAt,
@@ -32,7 +32,12 @@ import { Combat } from '../gameplay/Combat';
 import { Fx } from '../render/Fx';
 import { Pickup } from '../entities/Pickup';
 import { WEAPONS, WEAPON_ORDER, type WeaponId } from '../gameplay/Weapons';
-import { nearestRoadPoint, pointWorld, randomRoadCellNear } from '../world/RoadGraph';
+import {
+  nearestClearRoadPose,
+  nearestRoadPoint,
+  pointWorld,
+  randomRoadCellNear,
+} from '../world/RoadGraph';
 import { Settings } from './Settings';
 import { WorldLighting, type WeatherKind } from '../world/WorldLighting';
 import { DevStats, type DevStatsSnapshot } from './DevStats';
@@ -45,7 +50,12 @@ export interface Entity {
   update(dt: number): void;
 }
 
-const ACTOR_ASSETS = [...CIVILIAN_CARS, 'cars/police', 'cars/debris-door-window'];
+const ACTOR_ASSETS = [
+  ...CIVILIAN_CARS,
+  BULLDOZER_MODEL,
+  'cars/police',
+  'cars/debris-door-window',
+];
 const MAX_FIXED_STEPS_PER_FRAME = 3;
 const VEHICLE_GRID_CELL_SIZE = 24;
 
@@ -252,6 +262,7 @@ export class Game {
 
     this.spawnStarterPickups(spawn.x, spawn.z);
     this.spawnHelicopter(spawn.x, spawn.z);
+    this.spawnBulldozer(spawn.x, spawn.z);
     this.applyDebugParams();
   }
 
@@ -527,6 +538,22 @@ export class Game {
     }
     const spot = cell ? pointWorld(cell) : { x: x + 12, z };
     this.addVehicle(new Helicopter(this, spot.x, spot.z, 0));
+  }
+
+  /** Park the heavy construction vehicle on a clear lane beside spawn. */
+  private spawnBulldozer(x: number, z: number): void {
+    const pose = nearestClearRoadPose(
+      x,
+      z,
+      8,
+      24,
+      (px, pz, heading) => this.vehicleSpawnIsClear(px, pz, heading)
+    );
+    if (!pose) {
+      console.warn('[spawn] no clear vehicle lane found for bulldozer');
+      return;
+    }
+    this.addVehicle(new Vehicle(this, BULLDOZER_MODEL, pose.x, pose.z, pose.heading));
   }
 
   private applyDebugParams(): void {

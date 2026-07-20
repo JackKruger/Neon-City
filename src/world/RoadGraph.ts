@@ -182,6 +182,39 @@ export function roadPoints(mode: NavigationMode): CellRef[] {
   return activeRoadNetwork.points?.(mode) ?? [];
 }
 
+export interface RoadPose {
+  x: number;
+  z: number;
+  heading: number;
+}
+
+/** Pick the nearest deterministic road pose in a distance band that passes a caller's clearance check. */
+export function nearestClearRoadPose(
+  x: number,
+  z: number,
+  minDistance: number,
+  maxDistance: number,
+  isClear: (x: number, z: number, heading: number) => boolean,
+  mode: NavigationMode = 'vehicle'
+): RoadPose | null {
+  const candidates = roadPoints(mode)
+    .map((point) => {
+      const world = pointWorld(point);
+      return { point, world, distance: Math.hypot(world.x - x, world.z - z) };
+    })
+    .filter(({ distance }) => distance >= minDistance && distance <= maxDistance)
+    .sort((a, b) => a.distance - b.distance || a.world.z - b.world.z || a.world.x - b.world.x);
+  for (const candidate of candidates) {
+    const next = roadNeighbors(candidate.point, mode)[0];
+    const target = next ? pointWorld(next) : { x: candidate.world.x, z: candidate.world.z + 1 };
+    const heading = Math.atan2(target.x - candidate.world.x, target.z - candidate.world.z);
+    if (isClear(candidate.world.x, candidate.world.z, heading)) {
+      return { ...candidate.world, heading };
+    }
+  }
+  return null;
+}
+
 /** Find the nearest waypoint in the active navigation network. */
 export function nearestRoadPoint(x: number, z: number, mode: NavigationMode = 'vehicle'): CellRef | null {
   return activeRoadNetwork.nearest({ ...worldToCell(x, z), x, z }, mode);

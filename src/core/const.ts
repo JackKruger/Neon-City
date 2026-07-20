@@ -36,6 +36,9 @@ export const CIVILIAN_CARS = [
   'cars/truck',
 ];
 
+/** Heavy construction vehicle placed near the initial player spawn. */
+export const BULLDOZER_MODEL = 'cars/tractor-shovel';
+
 export const PALETTE = {
   sky: 0xffb4a2,
   fogColor: 0xf7a8b8,

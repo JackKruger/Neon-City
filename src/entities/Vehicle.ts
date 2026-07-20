@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { Entity, Game } from '../core/Game';
-import { VEHICLE_COLLISION_GROUPS } from '../core/const';
+import { BULLDOZER_MODEL, VEHICLE_COLLISION_GROUPS } from '../core/const';
 import type { CombatTarget } from '../gameplay/Combat';
 import type { WeaponDef } from '../gameplay/Weapons';
 import type { CameraTarget } from '../render/Viewports';
@@ -73,6 +73,47 @@ const SPAWN_HALF_LENGTH = 2.45;
 // Identical lamp meshes share one immutable vertex buffer across every car.
 const HEADLIGHT_GEOMETRY = new THREE.BoxGeometry(0.28, 0.12, 0.06);
 
+export interface VehicleTuning {
+  maxHealth: number;
+  fireHealth: number;
+  massMultiplier: number;
+  maxForwardSpeed: number;
+  maxReverseSpeed: number;
+  driveAcceleration: number;
+  reverseAcceleration: number;
+  crashDamageMultiplier: number;
+  showDoors: boolean;
+}
+
+const STANDARD_VEHICLE_TUNING: Readonly<VehicleTuning> = Object.freeze({
+  maxHealth: MAX_HEALTH,
+  fireHealth: FIRE_HEALTH,
+  massMultiplier: 1,
+  maxForwardSpeed: MAX_FORWARD_SPEED,
+  maxReverseSpeed: MAX_REVERSE_SPEED,
+  driveAcceleration: 8,
+  reverseAcceleration: 5,
+  crashDamageMultiplier: 1,
+  showDoors: true,
+});
+
+const BULLDOZER_TUNING: Readonly<VehicleTuning> = Object.freeze({
+  maxHealth: 650,
+  fireHealth: 100,
+  massMultiplier: 3,
+  maxForwardSpeed: 15,
+  maxReverseSpeed: 6,
+  driveAcceleration: 6,
+  reverseAcceleration: 4.5,
+  crashDamageMultiplier: 0.3,
+  showDoors: false,
+});
+
+/** Stable per-model physics and damage tuning used by runtime tests and vehicles. */
+export function vehicleTuningFor(modelName: string): Readonly<VehicleTuning> {
+  return modelName === BULLDOZER_MODEL ? BULLDOZER_TUNING : STANDARD_VEHICLE_TUNING;
+}
+
 export interface VehicleFootprint {
   x: number;
   z: number;
@@ -112,6 +153,7 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
   readonly aimAssist = false;
   readonly root = new THREE.Group();
   readonly body: RAPIER.RigidBody;
+  private readonly tuning: Readonly<VehicleTuning>;
   private model: THREE.Object3D;
   private controller: RAPIER.DynamicRayCastVehicleController;
   private wheels: WheelVisual[] = [];
@@ -146,7 +188,7 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
   driver: object | null = null;
   /** True after the fire stage has converted this car into a wreck. */
   destroyed = false;
-  health = MAX_HEALTH;
+  health: number;
   burning = false;
 
   constructor(
@@ -156,6 +198,8 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     z: number,
     heading: number
   ) {
+    this.tuning = vehicleTuningFor(modelName);
+    this.health = this.tuning.maxHealth;
     const model = game.assets.get(modelName);
     this.model = model;
     model.scale.setScalar(CAR_SCALE);
@@ -210,7 +254,7 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     const center = bbox.getCenter(new THREE.Vector3());
     this.chassisCenter.copy(center);
     this.chassisHalfSize.copy(size).multiplyScalar(0.5);
-    this.buildDoors();
+    if (this.tuning.showDoors) this.buildDoors();
     this.buildHeadlights();
 
     const world = game.world;
@@ -228,7 +272,7 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
         .setFriction(BODY_FRICTION)
         .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
         .setRestitution(0.3)
-        .setDensity(CHASSIS_DENSITY)
+        .setDensity(CHASSIS_DENSITY * this.tuning.massMultiplier)
         .setCollisionGroups(VEHICLE_COLLISION_GROUPS),
       this.body
     );
@@ -239,7 +283,7 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
         .setTranslation(center.x, center.y - size.y / 4, center.z)
         .setFriction(BODY_FRICTION)
         .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
-        .setDensity(BALLAST_DENSITY)
+        .setDensity(BALLAST_DENSITY * this.tuning.massMultiplier)
         .setCollisionGroups(VEHICLE_COLLISION_GROUPS),
       this.body
     );
@@ -430,15 +474,25 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     this.sideFriction = THREE.MathUtils.lerp(this.sideFriction, targetFriction, 0.2);
 
     // Quadratic taper keeps midrange pull strong and still reaches top speed.
-    const speedRatio = THREE.MathUtils.clamp(speed / MAX_FORWARD_SPEED, 0, 1);
+    const speedRatio = THREE.MathUtils.clamp(speed / this.tuning.maxForwardSpeed, 0, 1);
     const forwardTaper = 1 - speedRatio * speedRatio;
-    const engineHealth = THREE.MathUtils.clamp(0.38 + 0.62 * (this.health / MAX_HEALTH), 0.38, 1);
-    let engine = (this.destroyed ? 0 : throttle * mass * 8 * forwardTaper * engineHealth);
+    const engineHealth = THREE.MathUtils.clamp(
+      0.38 + 0.62 * (this.health / this.tuning.maxHealth),
+      0.38,
+      1
+    );
+    let engine = this.destroyed
+      ? 0
+      : throttle * mass * this.tuning.driveAcceleration * forwardTaper * engineHealth;
     let brakeForce = 0;
     if (brake > 0) {
       if (speed < 1.0) {
-        const reverseTaper = THREE.MathUtils.clamp(1 + speed / MAX_REVERSE_SPEED, 0, 1);
-        engine = -brake * mass * 5 * reverseTaper;
+        const reverseTaper = THREE.MathUtils.clamp(
+          1 + speed / this.tuning.maxReverseSpeed,
+          0,
+          1
+        );
+        engine = -brake * mass * this.tuning.reverseAcceleration * reverseTaper;
       } else {
         // The controller's wheel brake is savagely non-linear (it locks the
         // wheel at small values); this lands around 15 m/s^2 of decel.
@@ -603,21 +657,22 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     if (this.destroyed || !Number.isFinite(amount) || amount <= 0) return;
     this.health = Math.max(0, this.health - amount);
     this.updateDamageAppearance();
-    if (this.health <= FIRE_HEALTH) this.startBurning();
+    if (this.health <= this.tuning.fireHealth) this.startBurning();
     if (this.health <= 0) this.burnTime = Math.max(this.burnTime, BURN_DURATION - 1.35);
   }
 
   /** Restore mechanical condition at a repair point; returns health restored. */
-  repair(amount = MAX_HEALTH): number {
-    if (this.destroyed || this.burning || !Number.isFinite(amount) || amount <= 0) return 0;
+  repair(amount?: number): number {
+    const restored = amount ?? this.tuning.maxHealth;
+    if (this.destroyed || this.burning || !Number.isFinite(restored) || restored <= 0) return 0;
     const before = this.health;
-    this.health = Math.min(MAX_HEALTH, this.health + amount);
+    this.health = Math.min(this.tuning.maxHealth, this.health + restored);
     this.updateDamageAppearance();
     return this.health - before;
   }
 
   get healthFraction(): number {
-    return this.health / MAX_HEALTH;
+    return this.health / this.tuning.maxHealth;
   }
 
   private startBurning(): void {
@@ -699,7 +754,7 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
   }
 
   private updateDamageAppearance(): void {
-    const damage = this.destroyed ? 1 : 1 - this.health / MAX_HEALTH;
+    const damage = this.destroyed ? 1 : 1 - this.health / this.tuning.maxHealth;
     for (const entry of this.damageMaterials) {
       entry.material.color.copy(entry.original).lerp(CHARRED, this.destroyed ? 0.98 : damage * 0.88);
       entry.material.roughness = Math.min(1, entry.roughness + damage * 0.18);
@@ -751,7 +806,8 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     const dz = velocity.z - this.preStepVelocity.z;
     const deltaV = Math.hypot(dx, dy, dz);
     if (deltaV <= IMPACT_DAMAGE_SPEED) return;
-    const damage = Math.min(85, Math.pow(deltaV - IMPACT_DAMAGE_SPEED, 1.35) * 2.1);
+    const damage = Math.min(85, Math.pow(deltaV - IMPACT_DAMAGE_SPEED, 1.35) * 2.1) *
+      this.tuning.crashDamageMultiplier;
     this.impactCooldown = 0.22;
     this.applyDamage(damage);
     this.game.onVehicleCrashDamage(this, damage, deltaV);
