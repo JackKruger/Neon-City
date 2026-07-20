@@ -1,4 +1,4 @@
-import { AuthoredMap, MapLayerName, RoadInfoIndex, setAuthoredMap } from './CityMap';
+import { setAuthoredMap, type AuthoredMap, type AuthoredObject, type MapLayerName, type RoadInfoIndex } from './CityMap';
 import { CHUNK_TILES, MAP_CONTRACT, TILE_SIZE } from './MapContract';
 
 /**
@@ -102,12 +102,29 @@ export async function loadAuthoredMap(
       const response = await fetch(`/maps/${meta.objects}`);
       if (!response.ok) throw new Error(`${response.status}`);
       const objects = await response.json();
-      if (!objects || ![1, MAP_CONTRACT.versions.objectIndex].includes(objects.version) || typeof objects.chunks !== 'object') throw new Error('invalid object index');
+      if (!objects || ![1, MAP_CONTRACT.versions.objectIndex].includes(objects.version)) throw new Error('invalid object index');
       if (objects.version === MAP_CONTRACT.versions.objectIndex &&
-          (objects.chunkTiles !== CHUNK_TILES || objects.ownership !== 'clipped-polygons')) {
+          (objects.chunkTiles !== CHUNK_TILES || objects.ownership !== 'clipped-polygons' ||
+            !Number.isInteger(objects.shardChunks) || typeof objects.shards !== 'object')) {
         throw new Error('incompatible object index');
       }
-      map.objectChunks = objects.chunks;
+      if (objects.version === MAP_CONTRACT.versions.objectIndex) {
+        const shards = await Promise.all(Object.entries(objects.shards).map(async ([key, file]) => {
+          if (typeof file !== 'string') throw new Error(`invalid object shard path ${key}`);
+          const shardResponse = await fetch(`/maps/${file}`);
+          if (!shardResponse.ok) throw new Error(`object shard ${key}: ${shardResponse.status}`);
+          const shard = await shardResponse.json();
+          if (shard.version !== MAP_CONTRACT.versions.objectIndex || shard.shard !== key || typeof shard.chunks !== 'object') {
+            throw new Error(`invalid object shard ${key}`);
+          }
+          return shard.chunks as Record<string, AuthoredObject[]>;
+        }));
+        map.objectChunks = Object.assign({}, ...shards);
+      } else if (typeof objects.chunks === 'object') {
+        map.objectChunks = objects.chunks;
+      } else {
+        throw new Error('invalid legacy object index');
+      }
       map.roadSurfaces = objects.roadSurfaces === true;
     } catch (error) {
       console.warn(`[map] ${name}: authored objects unavailable (${error})`);

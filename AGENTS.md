@@ -62,7 +62,7 @@ Treat `public/maps/` as generated-but-committed output.
 - Use `npm run map:build` only when source ingestion must change; it performs a full-city compile and can be expensive.
 - Use `node scripts/build-map.mjs --roads-only`, `--heights-only`, or `--fetch-osm-only` for targeted work when appropriate.
 - Never add nondeterministic timestamps to compiled provenance.
-- `public/maps/melbourne.objects.json` is already close to GitHub's 100 MB file limit. Avoid unnecessary duplication or size growth; prefer compiler-only compact formats or chunked data for future expansion.
+- `public/maps/melbourne.objects.json` is a small manifest for regional files under `public/maps/melbourne.objects/`. Keep source objects sharded; do not restore the former near-100 MB monolith.
 - Before committing regenerated assets, confirm that only the intended global sources and chunk scope changed and that no stale chunk files remain.
 
 Optional authoritative inputs live under `.map-cache/open-data` and are documented in `docs/open-data.md`. Missing inputs must be reported by the source manifest and handled by deterministic fallbacks. Do not commit `.map-cache`.

@@ -34,6 +34,7 @@ import {
   toWorld,
 } from './geo.mjs';
 import { roadSurfacesFromOverpass } from './roads.mjs';
+import { writeObjectIndex } from './object-index.mjs';
 import { COVERAGE_FLAGS, TRANSPORT_FLAGS, VERSIONS } from './contract.mjs';
 
 export const TRANSPORT = {
@@ -1123,13 +1124,7 @@ export async function enrichMelbourneMap({ root, grid, roadSurfaces = [], baseSu
   report.results.thinnedObjects = thinChunkObjects(chunks);
   for (const [name, layer] of Object.entries(layers)) writeLayer(outputDir, name, layer);
   for (const values of Object.values(chunks)) values.sort((a, b) => a.kind.localeCompare(b.kind) || a.x - b.x || a.z - b.z);
-  writeFileSync(join(outputDir, 'melbourne.objects.json'), JSON.stringify({
-    version: VERSIONS.objectIndex,
-    chunkTiles: CHUNK_TILES,
-    ownership: 'clipped-polygons',
-    roadSurfaces: roadSurfaces.length > 0,
-    chunks,
-  }));
+  writeObjectIndex(outputDir, 'melbourne', chunks, roadSurfaces.length > 0);
   writeFileSync(join(outputDir, 'melbourne.addresses.json'), JSON.stringify({ version: 1, streets: addressResult.streets }));
   writeFileSync(join(outputDir, 'melbourne.areas.json'), JSON.stringify({ version: 1, areas: boundaries?.areas ?? [] }));
   writeFileSync(join(outputDir, 'melbourne.sources.json'), JSON.stringify(report, null, 2) + '\n');

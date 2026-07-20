@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { MAP_SIZE } from './geo.mjs';
+import { readObjectIndex } from './object-index.mjs';
 import {
   COVERAGE,
   LAND_USE,
@@ -87,7 +88,7 @@ test('open data enrichment emits all runtime contracts', async () => {
     const height = new Uint8Array(readFileSync(join(output, 'melbourne.height.bin')));
     const address = new Uint8Array(readFileSync(join(output, 'melbourne.address.bin')));
     const coverage = new Uint8Array(readFileSync(join(output, 'melbourne.coverage.bin')));
-    const objects = JSON.parse(readFileSync(join(output, 'melbourne.objects.json'), 'utf8'));
+    const objects = readObjectIndex(output, 'melbourne');
 
     for (const layer of [transport, speed, landUse, height, address, coverage]) assert.equal(layer.length, MAP_SIZE * MAP_SIZE);
     assert.ok(transport.some((value) => (value & (TRANSPORT.ROAD | TRANSPORT.BRIDGE)) !== 0));

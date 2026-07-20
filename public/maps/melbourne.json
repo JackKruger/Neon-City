@@ -213,9 +213,10 @@
     "ownership": "clipped-polygons"
   },
   "objectIndex": {
-    "version": 2,
+    "version": 3,
     "file": "melbourne.objects.json",
     "chunkTiles": 10,
-    "ownership": "clipped-polygons"
+    "ownership": "clipped-polygons",
+    "shardChunks": 12
   }
 }

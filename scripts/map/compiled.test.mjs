@@ -164,6 +164,25 @@ test('compiled road polygons are subdivided and stay clear of curved terrain', (
   }
 });
 
+test('exact road polygons replace the blocky raster asphalt substrate', () => {
+  const grid = new Uint8Array(MAP_SIZE ** 2);
+  grid[MAP_SIZE / 2 + MAP_SIZE / 2 * MAP_SIZE] = 1;
+  const result = compileChunkRecipe(createCompilerContext({
+    meta: {}, grid,
+    heights: new Int16Array((MAP_SIZE + 1) ** 2),
+    coverage: new Uint8Array(MAP_SIZE ** 2),
+    transport: new Uint8Array(MAP_SIZE ** 2),
+    speed: new Uint8Array(MAP_SIZE ** 2),
+    objectIndex: { roadSurfaces: true, chunks: { '0,0': [{
+      kind: 'road-surface', sourceId: 'road:exact', role: 'carriageway', surface: 'asphalt',
+      elevation: 0.06, x: 0, z: 0, outline: [[-2, -5], [2, -5], [2, 5], [-2, 5]],
+    }] } },
+  }), 0, 0);
+  const asphalt = result.primitives.find((primitive) => primitive.material === 'asphalt');
+  assert.ok(Math.max(...asphalt.positions.filter((_, index) => index % 3 === 0).map(Math.abs)) <= 2.01,
+    '12 m raster asphalt still obscures the exact carriageway edge');
+});
+
 test('negative boundary navigation ownership follows encoded centimetres', () => {
   const path = {
     kind: 'nav-path', sourceId: 'nav:negative-boundary', mode: 'vehicle', speed: 40,
@@ -280,7 +299,10 @@ test('real transport structures compile as concrete geometry with collision', ()
   assert.equal(context.bridgeSurfaceHeightAt(48, 48), 3);
   assert.equal(context.bridgeSurfaceHeightAt(38, 48), 3, 'surveyed deck should stay level to its end');
   assert.equal(context.bridgeSurfaceHeightAt(41, 48), 3, 'short bridge spans must not contain steep ramps');
-  assert.equal(context.bridgeSurfaceHeightAt(37.9, 48), 0, 'natural terrain outside the deck stays separate');
+  assert.ok(context.bridgeSurfaceHeightAt(37.9, 48) > 2.9, 'bridge approach should meet the deck without a step');
+  assert.ok(context.bridgeSurfaceHeightAt(26, 48) > 1 && context.bridgeSurfaceHeightAt(26, 48) < 2,
+    'bridge approach should ease between terrain and deck');
+  assert.equal(context.bridgeSurfaceHeightAt(14, 48), 0, 'natural terrain beyond the approach stays separate');
   const result = compileChunkRecipe(context, 0, 0);
   assert.ok(result.primitives.some((primitive) => primitive.material === 'concrete'));
   const asphalt = result.primitives.find((primitive) => primitive.material === 'asphalt');
@@ -292,9 +314,9 @@ test('real transport structures compile as concrete geometry with collision', ()
   const props = result.primitives.find((primitive) => primitive.material === 'prop');
   assert.ok(props.positions.some((value, index) => index % 3 === 1 && value >= 3),
     'bridge furniture was not placed on the bridge deck');
-  assert.equal(result.counts.meshes, 2, 'bridge and raised footpath should compile collision meshes');
+  assert.equal(result.counts.meshes, 3, 'bridge, carriageway approach, and raised footpath should compile collision meshes');
   assert.equal(result.counts.cuboids, 3, 'tunnel shell should compile to a ceiling and two walls');
-  assert.equal(result.recipe.colliderCount, 5);
+  assert.equal(result.recipe.colliderCount, 6);
 });
 
 test('committed spawn compilation has valid hashes, GLBs, containers, and navigation', () => {

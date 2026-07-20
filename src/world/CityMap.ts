@@ -81,6 +81,7 @@ export function getAuthoredMap(): AuthoredMap | null {
 export const BLOCK = 5;
 export const SEA_LEVEL = 0;
 export const SEABED = -1.6;
+const BRIDGE_APPROACH_LENGTH = 24;
 
 function mod(n: number, m: number): number {
   return ((n % m) + m) % m;
@@ -348,6 +349,41 @@ export function bridgeProfileHeightAt(
   return deckStart + (deckEnd - deckStart) * t;
 }
 
+function bridgeSurfaceCandidateAt(
+  x: number,
+  z: number,
+  object: Extract<AuthoredObject, { kind: 'transport-structure' }>
+): number | null {
+  const alongWidth = object.width >= object.depth;
+  const c = Math.cos(object.rotation);
+  const s = Math.sin(object.rotation);
+  const axisX = alongWidth ? c : s;
+  const axisZ = alongWidth ? -s : c;
+  const crossX = -axisZ;
+  const crossZ = axisX;
+  const halfLength = Math.max(object.width, object.depth) / 2;
+  const halfWidth = Math.min(object.width, object.depth) / 2;
+  const dx = x - object.x;
+  const dz = z - object.z;
+  const along = dx * axisX + dz * axisZ;
+  const across = Math.abs(dx * crossX + dz * crossZ);
+  if (Math.abs(along) <= halfLength) {
+    return pointInOutline(x, z, object) ? bridgeProfileHeightAt(x, z, object) : null;
+  }
+  const distance = Math.abs(along) - halfLength;
+  if (distance > BRIDGE_APPROACH_LENGTH || across > halfWidth + 1.5) return null;
+  const sign = Math.sign(along) || 1;
+  const endX = object.x + axisX * halfLength * sign;
+  const endZ = object.z + axisZ * halfLength * sign;
+  const outerX = object.x + axisX * (halfLength + BRIDGE_APPROACH_LENGTH) * sign;
+  const outerZ = object.z + axisZ * (halfLength + BRIDGE_APPROACH_LENGTH) * sign;
+  const deckEnd = bridgeProfileHeightAt(endX, endZ, object);
+  const outerGround = terrainHeightAt(outerX, outerZ);
+  const t = 1 - distance / BRIDGE_APPROACH_LENGTH;
+  const eased = t * t * (3 - 2 * t);
+  return Math.max(terrainHeightAt(x, z), outerGround + (deckEnd - outerGround) * eased);
+}
+
 /** Elevated road surface at a bridge point. Natural terrain is deliberately
  * not replaced: callers opt into this only for bridge roads and deck meshes. */
 export function bridgeSurfaceHeightAt(x: number, z: number): number {
@@ -356,11 +392,18 @@ export function bridgeSurfaceHeightAt(x: number, z: number): number {
   // Keep synchronized with authored/compiled chunk ownership (10 cells).
   const cx = Math.round(x / TILE);
   const cz = Math.round(z / TILE);
-  const objects = authored.objectChunks[`${Math.floor(cx / 10)},${Math.floor(cz / 10)}`] ?? [];
+  const kx = Math.floor(cx / 10);
+  const kz = Math.floor(cz / 10);
   let result = fallback;
-  for (const object of objects) {
-    if (object.kind !== 'transport-structure' || object.structure !== 'bridge' || !object.roadDeck || !Number.isFinite(object.topY)) continue;
-    if (pointInOutline(x, z, object)) result = Math.max(result, bridgeProfileHeightAt(x, z, object));
+  for (let oz = -1; oz <= 1; oz++) {
+    for (let ox = -1; ox <= 1; ox++) {
+      const objects = authored.objectChunks[`${kx + ox},${kz + oz}`] ?? [];
+      for (const object of objects) {
+        if (object.kind !== 'transport-structure' || object.structure !== 'bridge' || !object.roadDeck || !Number.isFinite(object.topY)) continue;
+        const candidate = bridgeSurfaceCandidateAt(x, z, object);
+        if (candidate !== null) result = Math.max(result, candidate);
+      }
+    }
   }
   return result;
 }

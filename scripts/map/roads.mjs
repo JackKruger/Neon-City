@@ -7,6 +7,7 @@ const ROAD_CLEARANCE = 0.06;
 const MARKING_CLEARANCE = 0.075;
 const TRAM_BED_CLEARANCE = 0.1;
 const TRAM_RAIL_CLEARANCE = 0.14;
+const BRIDGE_APPROACH_LENGTH = 24;
 const DEFAULT_WIDTHS = {
   motorway: 18,
   trunk: 16,
@@ -70,6 +71,60 @@ function direction(a, b) {
   return length < 0.05 ? null : { x: dx / length, z: dz / length, length };
 }
 
+function interpolatePoint(a, b, t) {
+  return {
+    x: a.x + (b.x - a.x) * t,
+    z: a.z + (b.z - a.z) * t,
+    lat: a.lat + (b.lat - a.lat) * t,
+    lon: a.lon + (b.lon - a.lon) * t,
+  };
+}
+
+/**
+ * Round non-junction OSM vertices with short quadratic arcs. Endpoints and
+ * shared OSM nodes stay fixed, so rendered surfaces and navigation retain the
+ * same topology while bends no longer read as a chain of hard mitres.
+ */
+function smoothPath(points, width) {
+  if (points.length < 3) return points;
+  const result = [points[0]];
+  for (let i = 1; i + 1 < points.length; i++) {
+    const point = points[i];
+    const before = direction(points[i - 1], point);
+    const after = direction(point, points[i + 1]);
+    if (!before || !after || point.anchor) {
+      result.push(point);
+      continue;
+    }
+    const turn = Math.acos(Math.max(-1, Math.min(1, before.x * after.x + before.z * after.z)));
+    // OSM already samples broad curves densely. Only round visibly angular
+    // vertices; expanding every gentle survey point would bloat the committed
+    // city object index without producing a perceptible improvement.
+    if (turn < 0.3 || turn > 2.35) {
+      result.push(point);
+      continue;
+    }
+    const cut = Math.min(before.length * 0.28, after.length * 0.28, Math.max(1.5, Math.min(6, width * 0.45)));
+    if (cut < 0.35) {
+      result.push(point);
+      continue;
+    }
+    const entry = interpolatePoint(point, points[i - 1], cut / before.length);
+    const exit = interpolatePoint(point, points[i + 1], cut / after.length);
+    result.push(entry);
+    const samples = Math.max(2, Math.min(6, Math.ceil(turn / (Math.PI / 12))));
+    for (let sample = 1; sample < samples; sample++) {
+      const t = sample / samples;
+      const a = interpolatePoint(entry, point, t);
+      const b = interpolatePoint(point, exit, t);
+      result.push(interpolatePoint(a, b, t));
+    }
+    result.push(exit);
+  }
+  result.push(points.at(-1));
+  return result.filter((point, i) => i === 0 || Math.hypot(point.x - result[i - 1].x, point.z - result[i - 1].z) >= 0.05);
+}
+
 function offsetPath(points, offset) {
   if (Math.abs(offset) < 0.001) return points.map(({ x, z }) => ({ x, z }));
   const segments = points.slice(0, -1).map((point, i) => direction(point, points[i + 1]));
@@ -94,7 +149,7 @@ function offsetPath(points, offset) {
   });
 }
 
-function roadPath(points, width) {
+function roadPath(points, width, startExtension = width / 2, endExtension = startExtension) {
   if (points.length < 2) return null;
   const halfWidth = width / 2;
   const left = offsetPath(points, halfWidth);
@@ -111,8 +166,8 @@ function roadPath(points, width) {
     const d = direction(path[neighbor], path[index]);
     if (d) path[index] = { x: path[index].x + d.x * amount, z: path[index].z + d.z * amount };
   };
-  extend(left, true, halfWidth); extend(right, true, halfWidth);
-  extend(left, false, halfWidth); extend(right, false, halfWidth);
+  extend(left, true, startExtension); extend(right, true, startExtension);
+  extend(left, false, endExtension); extend(right, false, endExtension);
   return {
     x: rounded(center.x),
     z: rounded(center.z),
@@ -143,18 +198,20 @@ function pathParts(points, width, visit) {
   }
   let path = dense.length > 0 ? [dense[0]] : [];
   let pathLength = 0;
+  const paths = [];
   for (let i = 1; i < dense.length; i++) {
     const segment = direction(dense[i - 1], dense[i]);
     if (!segment) continue;
     if (path.length > 1 && pathLength + segment.length > MAX_PATH_LENGTH) {
-      visit(path);
+      paths.push(path);
       path = [path.at(-1)];
       pathLength = 0;
     }
     path.push(dense[i]);
     pathLength += segment.length;
   }
-  if (path.length > 1) visit(path);
+  if (path.length > 1) paths.push(path);
+  for (let i = 0; i < paths.length; i++) visit(paths[i], i, paths.length);
 }
 
 function sidewalkSides(tags) {
@@ -259,6 +316,11 @@ function laneCounts(tags) {
  */
 export function roadSurfacesFromOverpass(data) {
   const features = [];
+  const nodeUses = new Map();
+  for (const element of data?.elements ?? []) {
+    if (element.type !== 'way' || !Array.isArray(element.nodes)) continue;
+    for (const node of element.nodes) nodeUses.set(node, (nodeUses.get(node) ?? 0) + 1);
+  }
   for (const element of data?.elements ?? []) {
     if (element.type !== 'way' || !Array.isArray(element.geometry)) continue;
     const tags = element.tags ?? {};
@@ -268,9 +330,13 @@ export function roadSurfacesFromOverpass(data) {
     const areaHighway = String(tags['area:highway'] ?? '');
     const structure = roadStructure(tags);
     if (!highway && railway !== 'tram' && !platform && !areaHighway) continue;
-    const points = element.geometry
+    let points = element.geometry
       .filter((point) => Number.isFinite(point?.lat) && Number.isFinite(point?.lon))
-      .map((point) => ({ ...toWorld(point.lat, point.lon), lat: point.lat, lon: point.lon }));
+      .map((point, index) => ({
+        ...toWorld(point.lat, point.lon), lat: point.lat, lon: point.lon,
+        anchor: index === 0 || index === element.geometry.length - 1 ||
+          (Array.isArray(element.nodes) && (nodeUses.get(element.nodes[index]) ?? 0) > 1),
+      }));
     if (points.length < 2) continue;
     const isClosed = points.length >= 4 && Math.hypot(points[0].x - points.at(-1).x, points[0].z - points.at(-1).z) < 0.1;
     if ((platform || areaHighway || tags.area === 'yes') && isClosed) {
@@ -291,11 +357,18 @@ export function roadSurfacesFromOverpass(data) {
     }
     const source = `${railway === 'tram' ? 'tram' : 'road'}:${element.id ?? 'anonymous'}`;
     const width = railway === 'tram' ? 2.8 : roadWidth(tags);
+    points = smoothPath(points, width);
     let part = 0;
-    pathParts(points, width + 12, (path) => {
+    pathParts(points, width + 12, (path, pathIndex, pathCount) => {
       const partId = part++;
       const addSurface = (role, surface, stripPoints, stripWidth, elevation = ROAD_CLEARANCE) => {
-        const polygon = roadPath(stripPoints, stripWidth);
+        const normalCap = stripWidth / 2;
+        const polygon = roadPath(
+          stripPoints,
+          stripWidth,
+          structure === 'bridge' && pathIndex === 0 ? BRIDGE_APPROACH_LENGTH : normalCap,
+          structure === 'bridge' && pathIndex === pathCount - 1 ? BRIDGE_APPROACH_LENGTH : normalCap,
+        );
         if (polygon) features.push({
           kind: 'road-surface', sourceId: `${source}:${partId}:${role}`, role, surface, elevation, ...polygon,
           ...(structure ? { structure } : {}),
@@ -364,6 +437,11 @@ export function roadSurfacesFromOverpass(data) {
           const offset = (counts.forward / 2 - lane) * laneWidth;
           addSurface(`lane-line-oneway-${lane}`, 'marking', offsetPath(path, offset), 0.09, MARKING_CLEARANCE);
         }
+      }
+      if (['motorway', 'trunk', 'primary', 'secondary'].includes(highway) && width >= 8) {
+        const edgeOffset = Math.max(0, width / 2 - 0.18);
+        addSurface('edge-line-left', 'marking', offsetPath(path, edgeOffset), 0.1, MARKING_CLEARANCE);
+        addSurface('edge-line-right', 'marking', offsetPath(path, -edgeOffset), 0.1, MARKING_CLEARANCE);
       }
       const medianWidth = metres(tags['median:width']) ?? (/yes|median|island/.test(`${tags.median ?? ''} ${tags.divider ?? ''}`) ? 1.5 : null);
       if (medianWidth !== null) addSurface('median', 'concrete', path, Math.min(6, medianWidth), 0.15);

@@ -21,6 +21,7 @@ const COVERAGE_PARKING = COVERAGE_FLAGS.Parking;
 export const COVERAGE_BUILDING_SOURCE = COVERAGE_FLAGS.BuildingSource;
 const TRANSPORT_BRIDGE = TRANSPORT_FLAGS.Bridge;
 const TRANSPORT_TUNNEL = TRANSPORT_FLAGS.Tunnel;
+const BRIDGE_APPROACH_LENGTH = 24;
 
 /** Resolve the authored cell represented by an encoded centimetre coordinate. */
 export function navigationCellFromCentimeters(value) {
@@ -150,7 +151,7 @@ function subdivideTerrainFace(a, b, c, emit, shouldRefine = null, depth = 0) {
   emit(a, b, c);
 }
 
-function addPolygonTop(bucket, points, yForPoint) {
+function addPolygonTop(bucket, points, yForPoint, capture = null) {
   const shouldRefine = (a, b, c) => {
     const center = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3];
     const planeHeight = (yForPoint(a) + yForPoint(b) + yForPoint(c)) / 3;
@@ -162,8 +163,13 @@ function addPolygonTop(bucket, points, yForPoint) {
     const cv = [c[0], yForPoint(c), c[1]];
     // ShapeUtils winding depends on source winding; force the visible normal upward.
     const crossY = (bv[2] - av[2]) * (cv[0] - av[0]) - (bv[0] - av[0]) * (cv[2] - av[2]);
-    if (crossY >= 0) addTriangle(bucket, av, bv, cv);
-    else addTriangle(bucket, av, cv, bv);
+    const vertices = crossY >= 0 ? [av, bv, cv] : [av, cv, bv];
+    addTriangle(bucket, ...vertices);
+    if (capture) {
+      const index = capture.positions.length / 3;
+      capture.positions.push(...vertices[0], ...vertices[1], ...vertices[2]);
+      capture.indices.push(index, index + 1, index + 2);
+    }
   };
   for (const face of triangulate(points)) {
     subdivideTerrainFace(points[face[0]], points[face[1]], points[face[2]], addFace, shouldRefine);
@@ -272,6 +278,43 @@ function bridgeProfileHeightAt(x, z, object, terrainHeightAt) {
   const along = (x - object.x) * axisX + (z - object.z) * axisZ;
   const t = Math.max(0, Math.min(1, (along + halfLength) / (halfLength * 2)));
   return deckStart + (deckEnd - deckStart) * t;
+}
+
+/** Deck height inside the surveyed footprint plus a smooth, road-width
+ * approach immediately beyond either end. The approach is only returned in
+ * the bridge's longitudinal corridor, so crossing roads beneath stay on the
+ * natural terrain. */
+function bridgeSurfaceCandidateAt(x, z, object, terrainHeightAt) {
+  const alongWidth = object.width >= object.depth;
+  const c = Math.cos(object.rotation ?? 0);
+  const s = Math.sin(object.rotation ?? 0);
+  const axisX = alongWidth ? c : s;
+  const axisZ = alongWidth ? -s : c;
+  const crossX = -axisZ;
+  const crossZ = axisX;
+  const halfLength = Math.max(object.width, object.depth) / 2;
+  const halfWidth = Math.min(object.width, object.depth) / 2;
+  const dx = x - object.x;
+  const dz = z - object.z;
+  const along = dx * axisX + dz * axisZ;
+  const across = Math.abs(dx * crossX + dz * crossZ);
+  if (Math.abs(along) <= halfLength) {
+    return pointInOutline(x, z, object)
+      ? bridgeProfileHeightAt(x, z, object, terrainHeightAt)
+      : null;
+  }
+  const distance = Math.abs(along) - halfLength;
+  if (distance > BRIDGE_APPROACH_LENGTH || across > halfWidth + 1.5) return null;
+  const sign = Math.sign(along) || 1;
+  const endX = object.x + axisX * halfLength * sign;
+  const endZ = object.z + axisZ * halfLength * sign;
+  const outerX = object.x + axisX * (halfLength + BRIDGE_APPROACH_LENGTH) * sign;
+  const outerZ = object.z + axisZ * (halfLength + BRIDGE_APPROACH_LENGTH) * sign;
+  const deckEnd = bridgeProfileHeightAt(endX, endZ, object, terrainHeightAt);
+  const outerGround = terrainHeightAt(outerX, outerZ);
+  const t = 1 - distance / BRIDGE_APPROACH_LENGTH;
+  const eased = t * t * (3 - 2 * t);
+  return Math.max(terrainHeightAt(x, z), outerGround + (deckEnd - outerGround) * eased);
 }
 
 function profiledSlabTriangles(points, topAt, thickness) {
@@ -524,10 +567,15 @@ export function createCompilerContext({ meta, grid, heights, coverage, transport
     let result = terrainHeightAt(x, z);
     const cx = Math.round(x / TILE);
     const cz = Math.round(z / TILE);
-    for (const object of objectIndex.chunks[`${Math.floor(cx / CHUNK_TILES)},${Math.floor(cz / CHUNK_TILES)}`] ?? []) {
-      if (object.kind !== 'transport-structure' || object.structure !== 'bridge' || !object.roadDeck || !Number.isFinite(object.topY)) continue;
-      if (pointInOutline(x, z, object)) {
-        result = Math.max(result, bridgeProfileHeightAt(x, z, object, terrainHeightAt));
+    const kx = Math.floor(cx / CHUNK_TILES);
+    const kz = Math.floor(cz / CHUNK_TILES);
+    for (let oz = -1; oz <= 1; oz++) {
+      for (let ox = -1; ox <= 1; ox++) {
+        for (const object of objectIndex.chunks[`${kx + ox},${kz + oz}`] ?? []) {
+          if (object.kind !== 'transport-structure' || object.structure !== 'bridge' || !object.roadDeck || !Number.isFinite(object.topY)) continue;
+          const candidate = bridgeSurfaceCandidateAt(x, z, object, terrainHeightAt);
+          if (candidate !== null) result = Math.max(result, candidate);
+        }
       }
     }
     return result;
@@ -660,6 +708,7 @@ export function compileChunkRecipe(context, kx, kz) {
     }
   }
   const materialForCode = ['pavement', 'asphalt', 'pavement', 'grass', 'grass', 'water'];
+  const hasExactRoadSurfaces = context.objectIndex.roadSurfaces === true;
   const roadMask = (cx, cz) =>
     (context.isRoad(cx, cz - 1) ? 1 : 0) |
     (context.isRoad(cx + 1, cz) ? 2 : 0) |
@@ -672,7 +721,11 @@ export function compileChunkRecipe(context, kx, kz) {
       const cz = c0z + dz;
       const code = context.codeAt(cx, cz);
       cells[dx + dz * CHUNK_TILES] = code;
-      const bucket = buckets.get(materialForCode[code] ?? 'pavement');
+      // Exact carriageway polygons need a contrasting substrate. Keeping the
+      // old raster cell asphalt underneath turns every road into a blocky 12 m
+      // carpet and visually erases the authored kerb line.
+      const baseMaterial = code === 1 && hasExactRoadSurfaces ? 'pavement' : (materialForCode[code] ?? 'pavement');
+      const bucket = buckets.get(baseMaterial);
       const x0 = (cx - 0.5) * TILE;
       const x1 = (cx + 0.5) * TILE;
       const z0 = (cz - 0.5) * TILE;
@@ -759,7 +812,11 @@ export function compileChunkRecipe(context, kx, kz) {
         const collision = addRaisedPolygon(buckets.get(material), points, surfaceHeightAt, elevation);
         collisionMeshes.push({ sourceId: object.sourceId, ...collision });
       } else {
-        addPolygonTop(buckets.get(material), points, ([x, z]) => surfaceHeightAt(x, z) + elevation);
+        const collision = object.structure === 'bridge' && ['carriageway', 'tram-bed', 'cycleway'].includes(object.role)
+          ? { positions: [], indices: [] }
+          : null;
+        addPolygonTop(buckets.get(material), points, ([x, z]) => surfaceHeightAt(x, z) + elevation, collision);
+        if (collision && collision.indices.length > 0) collisionMeshes.push({ sourceId: object.sourceId, ...collision });
       }
     } else if (object.kind === 'transport-structure') {
       if (object.structure === 'bridge' && Array.isArray(object.outline) && object.outline.length >= 3) {

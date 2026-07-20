@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import RAPIER from '@dimforge/rapier3d-compat';
 import { MAP_SIZE } from './geo.mjs';
+import { readObjectIndex } from './object-index.mjs';
 import {
   MAX_GRADE,
   hgtTileNamesForBounds,
@@ -119,7 +120,7 @@ test('authored buildings derive their base without changing terrain', () => {
 
 test('compiled map manifest and object index declare compatible formats', () => {
   const meta = JSON.parse(readFileSync(new URL('../../public/maps/melbourne.json', import.meta.url), 'utf8'));
-  const objects = JSON.parse(readFileSync(new URL('../../public/maps/melbourne.objects.json', import.meta.url), 'utf8'));
+  const objects = readObjectIndex(new URL('../../public/maps', import.meta.url).pathname, 'melbourne');
   assert.equal(meta.formatVersion, 4);
   assert.deepEqual(meta.heightGrid, {
     version: 1,
@@ -131,8 +132,9 @@ test('compiled map manifest and object index declare compatible formats', () => 
   });
   assert.equal(meta.chunkGrid.tiles, 10);
   assert.equal(meta.chunkGrid.size, 120);
-  assert.equal(meta.objectIndex.version, 2);
-  assert.equal(objects.version, 2);
+  assert.equal(meta.objectIndex.version, 3);
+  assert.equal(meta.objectIndex.shardChunks, 12);
+  assert.equal(objects.version, 3);
   assert.equal(objects.chunkTiles, 10);
   assert.equal(objects.ownership, 'clipped-polygons');
   const buildingPieces = Object.values(objects.chunks).flat()

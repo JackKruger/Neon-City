@@ -34,6 +34,11 @@ import {
 } from './map/open-data.mjs';
 import { CHUNK_TILES, MAP_CENTER, MAP_SIZE, TILE, toGrid, toWorld } from './map/geo.mjs';
 import { CELL_CODES as CODES, MAP_CONTRACT, MAP_ID, VERSIONS } from './map/contract.mjs';
+import {
+  OBJECT_SHARD_CHUNKS,
+  readObjectIndex,
+  writeObjectIndex as writeShardedObjectIndex,
+} from './map/object-index.mjs';
 import { roadInfoFromOverpass, roadSurfacesFromOverpass } from './map/roads.mjs';
 import {
   HEIGHT_SCALE,
@@ -353,12 +358,10 @@ const PREVIEW_COLORS = {
 };
 
 function writeRoadSurfacesOnly(data) {
-  const path = join(ROOT, 'public', 'maps', `${MAP.name}.objects.json`);
+  const outDir = join(ROOT, 'public', 'maps');
+  const path = join(outDir, `${MAP.name}.objects.json`);
   if (!existsSync(path)) throw new Error(`authored object map not found: ${path}`);
-  const objects = JSON.parse(readFileSync(path, 'utf8'));
-  if (!objects || ![1, 2].includes(objects.version) || typeof objects.chunks !== 'object') {
-    throw new Error(`invalid authored object map: ${path}`);
-  }
+  const objects = readObjectIndex(outDir, MAP.name);
   const surfaces = roadSurfacesFromOverpass(data);
   const retained = Object.values(objects.chunks).flat()
     .filter((object) => (object.kind !== 'road-surface' || object.role === 'footpath-authoritative') && object.kind !== 'nav-path');
@@ -367,7 +370,11 @@ function writeRoadSurfacesOnly(data) {
     roadSurfaces: surfaces.length > 0,
     chunks: { legacy: [...retained, ...surfaces] },
   });
-  writeFileSync(path, JSON.stringify(rebuilt));
+  writeObjectIndex(outDir, rebuilt.chunks, rebuilt.roadSurfaces);
+  const metaPath = join(outDir, `${MAP.name}.json`);
+  const meta = JSON.parse(readFileSync(metaPath, 'utf8'));
+  installFormatManifest(meta, true);
+  writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n');
   console.log(`wrote ${surfaces.length} polygon road surfaces to public/maps/${MAP.name}.objects.json`);
 }
 
@@ -381,13 +388,7 @@ function writeRoadInfo(data) {
 }
 
 function writeObjectIndex(outDir, chunks, roadSurfaces) {
-  writeFileSync(join(outDir, `${MAP.name}.objects.json`), JSON.stringify({
-    version: OBJECT_INDEX_VERSION,
-    chunkTiles: CHUNK_TILES,
-    ownership: 'clipped-polygons',
-    roadSurfaces,
-    chunks,
-  }));
+  writeShardedObjectIndex(outDir, MAP.name, chunks, roadSurfaces);
 }
 
 function installFormatManifest(meta, hasObjects) {
@@ -414,6 +415,7 @@ function installFormatManifest(meta, hasObjects) {
       file: `${MAP.name}.objects.json`,
       chunkTiles: CHUNK_TILES,
       ownership: 'clipped-polygons',
+      shardChunks: OBJECT_SHARD_CHUNKS,
     };
     meta.objects = `${MAP.name}.objects.json`;
   }
@@ -434,7 +436,7 @@ async function main() {
     const grid = new Uint8Array(readFileSync(join(outDir, `${MAP.name}.bin`)));
     const objectsPath = join(outDir, `${MAP.name}.objects.json`);
     const objectIndex = existsSync(objectsPath)
-      ? rechunkObjectIndex(JSON.parse(readFileSync(objectsPath, 'utf8')))
+      ? rechunkObjectIndex(readObjectIndex(outDir, MAP.name))
       : null;
     const result = buildTerrainHeights(
       grid,

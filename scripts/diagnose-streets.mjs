@@ -2,15 +2,16 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readObjectIndex } from './map/object-index.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const maps = join(ROOT, 'public', 'maps');
-const objects = JSON.parse(readFileSync(join(maps, 'melbourne.objects.json'), 'utf8'));
 const meta = JSON.parse(readFileSync(join(maps, 'melbourne.json'), 'utf8'));
 const sources = JSON.parse(readFileSync(join(maps, 'melbourne.sources.json'), 'utf8'));
 const spawnChunk = { kx: Math.floor(Math.round(meta.spawn.x / 12) / 10), kz: Math.floor(Math.round(meta.spawn.z / 12) / 10) };
 const wanted = new Set();
 for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) wanted.add(`${spawnChunk.kx + dx},${spawnChunk.kz + dz}`);
+const objects = readObjectIndex(maps, 'melbourne', wanted);
 
 const records = Object.entries(objects.chunks)
   .filter(([key]) => wanted.has(key))

@@ -688,7 +688,7 @@ Refactor these current assumptions behind a versioned `MapDefinition`:
 - compiler validation requiring exactly 72×72 chunks;
 - runtime validation requiring map ID `melbourne`;
 - runtime validation hardcoding only one manifest shape;
-- one global `melbourne.objects.json`;
+- one fixed-size regional object-shard scheme (the pilot now has 12×12-chunk shards, but the future catalog must make region sizing configurable);
 - one global height lattice and cell-layer binaries;
 - a manifest containing every leaf chunk;
 - chunk URLs assumed to be loose files.
@@ -914,7 +914,7 @@ Work:
 - implement canonical projection and control-point tests;
 - write spatially indexed 2.4 km region shards with halos;
 - record conflict and coverage diagnostics;
-- replace the monolithic object-index path for the new map only.
+- generalize the pilot's sharded object-index path for every catalog map.
 
 Exit criteria:
 

@@ -48,6 +48,36 @@ test('bridge and tunnel tags survive in road surfaces and navigation', () => {
   }
 });
 
+test('non-junction bends are rounded and arterial edges receive markings', () => {
+  const features = roadSurfacesFromOverpass({ elements: [{
+    type: 'way', id: 7, nodes: [1, 2, 3],
+    tags: { highway: 'primary', lanes: '2' },
+    geometry: [
+      { lat: -37.8350, lon: 144.9598 },
+      { lat: -37.8350, lon: 144.9600 },
+      { lat: -37.8348, lon: 144.9600 },
+    ],
+  }] });
+  const vehicle = features.find((item) => item.kind === 'nav-path' && item.mode === 'vehicle');
+  assert.ok(vehicle.points.length > 3, 'bend was not sampled into a smooth shared path');
+  assert.equal(features.filter((item) => item.role?.startsWith('edge-line-')).length, 2);
+});
+
+test('bridge strips extend over a finite approach while navigation endpoints stay authored', () => {
+  const features = roadSurfacesFromOverpass({ elements: [{
+    type: 'way', id: 8, tags: { highway: 'primary', bridge: 'yes' },
+    geometry: [
+      { lat: -37.835, lon: 144.9598 },
+      { lat: -37.835, lon: 144.9602 },
+    ],
+  }] });
+  const road = features.find((item) => item.kind === 'road-surface' && item.role === 'carriageway');
+  const nav = features.find((item) => item.kind === 'nav-path' && item.mode === 'vehicle');
+  const roadExtent = Math.max(...road.outline.map(([x]) => x)) - Math.min(...road.outline.map(([x]) => x));
+  const navExtent = Math.max(...nav.points.map(([x]) => x)) - Math.min(...nav.points.map(([x]) => x));
+  assert.ok(roadExtent >= navExtent + 47, 'bridge surface does not cover both graded approaches');
+});
+
 test('tram centrelines generate standard-gauge rails and a tram graph', () => {
   const features = roadSurfacesFromOverpass({ elements: [{
     type: 'way', id: 9, tags: { railway: 'tram' }, geometry: [

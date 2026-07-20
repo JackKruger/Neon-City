@@ -40,6 +40,7 @@ import {
   TILE,
 } from './map/compiled-recipes.mjs';
 import { MAP_CONTRACT, MAP_CONTRACT_PATH, MAP_ID, VERSIONS } from './map/contract.mjs';
+import { objectIndexFiles, readObjectIndex } from './map/object-index.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE_MAP_DIR = join(ROOT, 'public', 'maps');
@@ -181,7 +182,12 @@ export async function compileMelbourne({ scope = 'all', outputRoot = join(ROOT, 
   const transport = new Uint8Array(readBytes('melbourne.transport.bin'));
   const speed = new Uint8Array(readBytes('melbourne.speed.bin'));
   const heights = readInt16LE('melbourne-height.bin');
-  const objectIndex = JSON.parse(readBytes('melbourne.objects.json'));
+  const chunks = selectedChunks(scope, meta.spawn);
+  const wantedObjectChunks = new Set();
+  for (const { kx, kz } of chunks) {
+    for (let oz = -1; oz <= 1; oz++) for (let ox = -1; ox <= 1; ox++) wantedObjectChunks.add(`${kx + ox},${kz + oz}`);
+  }
+  const objectIndex = readObjectIndex(SOURCE_MAP_DIR, 'melbourne', wantedObjectChunks);
   if (grid.length !== MAP_SIZE ** 2 || coverage.length !== grid.length || transport.length !== grid.length || speed.length !== grid.length) throw new Error('Melbourne source layers have incompatible lengths');
   if (heights.length !== (MAP_SIZE + 1) ** 2) throw new Error('Melbourne height lattice has incompatible dimensions');
   if (objectIndex.version !== VERSIONS.objectIndex || objectIndex.chunkTiles !== CHUNK_TILES || objectIndex.ownership !== 'clipped-polygons') throw new Error(`Melbourne object index requires clipped-polygons version ${VERSIONS.objectIndex}`);
@@ -189,14 +195,15 @@ export async function compileMelbourne({ scope = 'all', outputRoot = join(ROOT, 
   const sourcePaths = [
     'melbourne.json', 'melbourne.bin', 'melbourne-height.bin', 'melbourne.coverage.bin',
     'melbourne.transport.bin', 'melbourne.speed.bin', 'melbourne.landuse.bin',
-    'melbourne.height.bin', 'melbourne.address.bin', 'melbourne.objects.json',
+    'melbourne.height.bin', 'melbourne.address.bin',
     'melbourne.sources.json',
-  ].map((name) => join(SOURCE_MAP_DIR, name));
+  ].map((name) => join(SOURCE_MAP_DIR, name)).concat(objectIndexFiles(SOURCE_MAP_DIR, 'melbourne', wantedObjectChunks));
   const compilerPaths = [
     fileURLToPath(MAP_CONTRACT_PATH),
     join(ROOT, 'scripts', 'map', 'contract.mjs'),
     join(ROOT, 'scripts', 'compile-map.mjs'),
     join(ROOT, 'scripts', 'map', 'compiled-format.mjs'),
+    join(ROOT, 'scripts', 'map', 'object-index.mjs'),
     join(ROOT, 'scripts', 'map', 'compiled-recipes.mjs'),
     join(ROOT, 'package-lock.json'),
   ];
@@ -207,7 +214,6 @@ export async function compileMelbourne({ scope = 'all', outputRoot = join(ROOT, 
     assetPacks: hashFiles(filesBelow(join(ROOT, 'public', 'assets'))),
   };
   const buildId = sha256(stableStringify(dependencyHashes)).slice(0, 24);
-  const chunks = selectedChunks(scope, meta.spawn);
   mkdirSync(outputRoot, { recursive: true });
   const stagingRoot = mkdtempSync(join(outputRoot, '.melbourne-compile-'));
   const stagingCity = join(stagingRoot, 'melbourne');
