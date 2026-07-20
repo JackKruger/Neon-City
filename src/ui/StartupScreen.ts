@@ -39,6 +39,7 @@ export function showStartupScreen(
     const finish = (choice: StartupChoice) => {
       cancelAnimationFrame(frame);
       root.removeEventListener('keydown', onKey);
+      root.remove();
       resolve(choice);
     };
     const choose = (kind: string | undefined) => {
