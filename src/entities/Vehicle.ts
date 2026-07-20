@@ -5,7 +5,6 @@ import { VEHICLE_COLLISION_GROUPS } from '../core/const';
 import type { CombatTarget } from '../gameplay/Combat';
 import type { WeaponDef } from '../gameplay/Weapons';
 import type { CameraTarget } from '../render/Viewports';
-import { heightAt } from '../world/CityMap';
 import type { Drivable, DriveCommand } from './Drivable';
 import type { Player } from './Player';
 
@@ -178,7 +177,7 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     const world = game.world;
     this.body = world.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic()
-        .setTranslation(x, heightAt(x, z) + wheelRadius + SUSPENSION_REST + 0.05, z)
+        .setTranslation(x, game.roadSurfaceHeightAt(x, z) + wheelRadius + SUSPENSION_REST + 0.05, z)
         .setRotation(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), heading))
         .setLinearDamping(0.08)
         .setAngularDamping(1.2)

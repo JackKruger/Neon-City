@@ -2,7 +2,6 @@ import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { Game } from '../core/Game';
 import { GRAVITY, VEHICLE_COLLISION_GROUPS } from '../core/const';
-import { heightAt } from '../world/CityMap';
 import type { Drivable, DriveCommand } from './Drivable';
 
 const HOVER_GRAVITY = -GRAVITY;
@@ -56,7 +55,7 @@ export class Helicopter implements Drivable {
     this.root.add(this.model);
     this.body = game.world.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic()
-        .setTranslation(x, heightAt(x, z) + 0.98, z)
+        .setTranslation(x, game.roadSurfaceHeightAt(x, z) + 0.98, z)
         .setRotation(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), heading))
         .setLinearDamping(0.45)
         .setAngularDamping(2.5)
@@ -253,7 +252,7 @@ export class Helicopter implements Drivable {
   canExit(): boolean {
     const t = this.body.translation();
     return (
-      t.y - heightAt(t.x, t.z) < 1.8 &&
+      t.y - this.game.roadSurfaceHeightAt(t.x, t.z) < 1.8 &&
       this.getSpeed() < 3 &&
       Math.abs(this.body.linvel().y) < 2
     );

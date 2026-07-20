@@ -13,6 +13,7 @@ import { CompiledCity } from '../world/CompiledCity';
 import type { CityStreamer } from '../world/CityStreamer';
 import {
   cellAt,
+  bridgeSurfaceHeightAt,
   cellToWorld,
   getAuthoredMap,
   heightAt,
@@ -21,6 +22,8 @@ import {
   setAuthoredMap,
   speedLimitAt,
   suburbNameAt,
+  TransportFlag,
+  transportAt,
   worldToCell,
 } from '../world/CityMap';
 import { loadAuthoredMap } from '../world/MapLoad';
@@ -189,6 +192,20 @@ export class Game {
       RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC
     );
     return hit ? ceilingY - hit.timeOfImpact : heightAt(x, z);
+  }
+
+  /** Drivable surface for a fresh road-bound actor. Legacy maps can resolve
+   * the authored deck directly; compiled maps recover it from fixed collision
+   * when the transport layer marks this cell as a bridge. */
+  roadSurfaceHeightAt(x: number, z: number): number {
+    const terrain = heightAt(x, z);
+    const authoredDeck = bridgeSurfaceHeightAt(x, z);
+    if (authoredDeck > terrain + 0.02) return authoredDeck;
+    const { cx, cz } = worldToCell(x, z);
+    if ((transportAt(cx, cz) & TransportFlag.Bridge) !== 0) {
+      return this.surfaceHeightBelow(x, z, terrain + 24, 40);
+    }
+    return terrain;
   }
 
   addVehicle(v: Drivable): void {

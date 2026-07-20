@@ -250,7 +250,11 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     }
     this.vehicleTransition = null;
     this.pendingMelee = null;
-    this.character.teleport(arrestPos.x, heightAt(arrestPos.x, arrestPos.z), arrestPos.z);
+    this.character.teleport(
+      arrestPos.x,
+      this.game.surfaceHeightBelow(arrestPos.x, arrestPos.z, arrestPos.y + 1),
+      arrestPos.z
+    );
     this.character.setEnabled(false);
     this.dead = true;
     this.hudMessage = 'BUSTED';
