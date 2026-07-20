@@ -1,4 +1,6 @@
 import type { AuthoredMap } from '../world/CityMap';
+import type { InputMethod } from '../core/Input';
+import { Settings } from '../core/Settings';
 import { Minimap } from './Minimap';
 
 export interface HudState {
@@ -39,8 +41,11 @@ export class Hud {
   private hint: HTMLDivElement;
   private mapCanvas: HTMLCanvasElement | null = null;
   private map: AuthoredMap | null = null;
+  private inputMethods: InputMethod[] = ['keyboard'];
+  private caption: HTMLDivElement;
+  private captionTimer = 0;
 
-  constructor(private container: HTMLElement) {
+  constructor(private container: HTMLElement, private settings: Settings) {
     const style = document.createElement('style');
     style.textContent = `
       .hud-panel { position:absolute; top:0; height:100%; pointer-events:none; color:#fff;
@@ -94,12 +99,22 @@ export class Hud {
         text-shadow:0 0 8px rgba(255,60,180,.95), 0 2px 3px rgba(0,0,0,.9); }
       .hud-hint { position:absolute; left:50%; bottom:10px; transform:translateX(-50%);
         color:#fff; opacity:.55; font-size:12px; pointer-events:none; text-align:center; }
+      .hud-caption { position:absolute; left:50%; bottom:42px; transform:translateX(-50%);
+        min-width:120px; padding:5px 10px; border-radius:6px; color:#fff; background:rgba(8,5,20,.76);
+        font-size:14px; text-align:center; pointer-events:none; z-index:15; }
       .hud-pause { position:absolute; inset:0; background:rgba(12,4,28,.72); color:#fff;
         display:flex; flex-direction:column; align-items:center; justify-content:center;
-        gap:.4em; pointer-events:none; }
-      .hud-pause h1 { font-size:52px; margin:0 0 .3em; letter-spacing:2px;
+        gap:.4em; pointer-events:auto; overflow:auto; padding:20px; box-sizing:border-box; z-index:30; }
+      .hud-pause h1 { font-size:clamp(34px,7vw,52px); margin:0 0 .3em; letter-spacing:2px;
         color:#ff5db1; text-shadow:0 0 18px rgba(255,60,180,.8); }
       .hud-pause p { margin:.1em; font-size:16px; opacity:.9; }
+      .hud-settings { display:grid; grid-template-columns:auto minmax(130px,220px); gap:8px 14px;
+        align-items:center; margin:14px 0 8px; padding:13px 16px; border-radius:10px;
+        background:rgba(28,14,53,.78); border:1px solid rgba(94,243,255,.26); }
+      .hud-settings h2 { grid-column:1/-1; margin:0 0 3px; font-size:16px; color:#74ffd1; }
+      .hud-settings label { font-size:13px; opacity:.9; }
+      .hud-settings input[type="range"] { accent-color:#ff5db1; }
+      .hud-settings input[type="checkbox"] { justify-self:start; width:17px; height:17px; accent-color:#5ef3ff; }
       .hud-map { position:absolute; inset:0; display:none; overflow:hidden; color:#fff;
         background:rgba(12,4,28,.6); pointer-events:auto; cursor:grab; z-index:20; }
       .hud-map-open .hud-panel, .hud-map-open .hud-hint { visibility:hidden; }
@@ -118,14 +133,44 @@ export class Hud {
         .hud-hint { display:none; }
         .hud-map-title { font-size:19px; }
         .hud-map-footer { white-space:normal; }
+        .hud-pause { justify-content:flex-start; }
+        .hud-pause p { font-size:13px; text-align:center; }
       }
     `;
     document.head.appendChild(style);
     this.hint = document.createElement('div');
     this.hint.className = 'hud-hint';
-    this.hint.textContent =
-      'P1: WASD walk · LMB attack · RMB aim · Q/C weapon · R reload · E enter car · M map — P2: press Start on a gamepad to join';
+    this.updateHint();
     container.appendChild(this.hint);
+    this.caption = document.createElement('div');
+    this.caption.className = 'hud-caption';
+    this.caption.setAttribute('aria-live', 'polite');
+    this.caption.style.display = 'none';
+    container.appendChild(this.caption);
+  }
+
+  showCaption(text: string): void {
+    if (!this.settings.values.subtitles) return;
+    this.caption.textContent = `[${text}]`;
+    this.caption.style.display = 'block';
+    window.clearTimeout(this.captionTimer);
+    this.captionTimer = window.setTimeout(() => {
+      this.caption.style.display = 'none';
+    }, 1200);
+  }
+
+  setInputMethods(methods: InputMethod[]): void {
+    if (methods.length === this.inputMethods.length && methods.every((method, i) => method === this.inputMethods[i])) {
+      return;
+    }
+    this.inputMethods = [...methods];
+    this.updateHint();
+  }
+
+  private updateHint(): void {
+    this.hint.textContent = this.inputMethods[0] === 'gamepad'
+      ? 'Left stick move · Right stick camera · R3 recenter · RT attack · Y enter · Back map'
+      : 'WASD move · Mouse camera · V recenter · LMB attack · E enter · M map · click game to capture mouse';
   }
 
   setPlayerCount(n: 1 | 2): void {
@@ -203,14 +248,37 @@ export class Hud {
       el.className = 'hud-pause';
       el.innerHTML = `
         <h1>PAUSED</h1>
-        <p><b>P1 — keyboard:</b> WASD drive/walk/fly · Space jump/handbrake/ascend · Shift sprint/descend · E enter/exit</p>
+        <p><b>Keyboard:</b> WASD drive/walk/fly · mouse orbit · V recenter · Space jump/handbrake/ascend · Shift sprint/descend · E enter/exit</p>
         <p><b>Combat:</b> LMB / F attack · RMB aim · Q / C (Tab) switch weapon · R reload</p>
-        <p><b>Gamepad:</b> left stick steer/walk · RT gas/fire · LT brake/aim · A jump/ascend · B descend · Y enter/exit · LB/RB weapon · X reload</p>
+        <p><b>Gamepad:</b> left stick steer/walk · right stick orbit · R3 recenter · RT gas/fire · LT brake/aim · A jump/ascend · B descend · Y enter/exit · LB/RB weapon · X reload</p>
         <p><b>P2:</b> press Start on a second gamepad to join split-screen</p>
         <p><b>Map:</b> M / Back opens the city map</p>
-        <p>Every weapon and a flyable helicopter are waiting near spawn — but cause trouble and the police will come for you…</p>
+        <div class="hud-settings">
+          <h2>CAMERA &amp; ACCESSIBILITY</h2>
+          <label for="hud-camera-sensitivity">Camera sensitivity</label><input id="hud-camera-sensitivity" type="range" min="0.25" max="2" step="0.05">
+          <label for="hud-invert-camera">Invert vertical camera</label><input id="hud-invert-camera" type="checkbox">
+          <label for="hud-reduced-motion">Reduced camera motion</label><input id="hud-reduced-motion" type="checkbox">
+          <label for="hud-aim-assist">Aim assistance</label><input id="hud-aim-assist" type="checkbox">
+          <label for="hud-subtitles">Subtitles</label><input id="hud-subtitles" type="checkbox">
+        </div>
         <p style="margin-top:1em; opacity:.6">Esc / Start to resume</p>
         <p style="margin-top:1.5em; opacity:.45; font-size:12px">Map data © OpenStreetMap contributors (ODbL)</p>`;
+      const values = this.settings.values;
+      const sensitivity = el.querySelector<HTMLInputElement>('#hud-camera-sensitivity')!;
+      const invert = el.querySelector<HTMLInputElement>('#hud-invert-camera')!;
+      const reduced = el.querySelector<HTMLInputElement>('#hud-reduced-motion')!;
+      const aimAssist = el.querySelector<HTMLInputElement>('#hud-aim-assist')!;
+      const subtitles = el.querySelector<HTMLInputElement>('#hud-subtitles')!;
+      sensitivity.value = String(values.cameraSensitivity);
+      invert.checked = values.invertCameraY;
+      reduced.checked = values.reducedMotion;
+      aimAssist.checked = values.aimAssist;
+      subtitles.checked = values.subtitles;
+      sensitivity.addEventListener('input', () => this.settings.set('cameraSensitivity', Number(sensitivity.value)));
+      invert.addEventListener('change', () => this.settings.set('invertCameraY', invert.checked));
+      reduced.addEventListener('change', () => this.settings.set('reducedMotion', reduced.checked));
+      aimAssist.addEventListener('change', () => this.settings.set('aimAssist', aimAssist.checked));
+      subtitles.addEventListener('change', () => this.settings.set('subtitles', subtitles.checked));
       this.container.appendChild(el);
       this.pauseEl = el;
     } else if (!paused && this.pauseEl) {

@@ -38,6 +38,8 @@ for expanding the world across Greater Melbourne are documented in
 | -------------- | -------------------------- | --------------------------- |
 | Drive / walk   | WASD                       | Left stick + RT gas, LT brake |
 | Jump / handbrake | Space                    | A                           |
+| Orbit camera   | Mouse (click game to capture) | Right stick              |
+| Recenter camera | V                         | R3                          |
 | Sprint         | Shift                      | A (hold)                    |
 | Enter/exit car | E                          | Y                           |
 | Helicopter up/down | Space / Shift          | A / B                       |
@@ -53,6 +55,10 @@ for expanding the world across Greater Melbourne are documented in
 - Crashed traffic cars get abandoned by their drivers — free wheels.
 - Every weapon and a flyable helicopter spawn nearby. Helicopters use W/S
   for forward/back, A/D to yaw, and Space/Shift (A/B) to climb/descend.
+- The world clock follows local time when a session starts and then advances at
+  two in-game minutes per real second. Use `?time=22` to preview night lighting.
+- Camera sensitivity, inversion, reduced motion, aim assistance, and subtitles
+  can be changed from the pause menu and persist in the browser.
 
 ## Project layout
 

@@ -3,6 +3,7 @@
  * No samples needed; everything is oscillators and filtered noise.
  */
 export class AudioSys {
+  onCaption: ((text: string) => void) | null = null;
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
   private noiseBuf: AudioBuffer | null = null;
@@ -101,6 +102,7 @@ export class AudioSys {
 
   /** Low thump for a landed punch or bat hit. Volume falls off with distance. */
   thwack(dist = 0): void {
+    this.onCaption?.('Impact');
     if (!this.ctx || this.ctx.state !== 'running' || !this.master) return;
     const vol = Math.min(0.5, 10 / Math.max(dist, 5));
     this.noiseBurst(0.07, 'lowpass', 480, vol);
@@ -152,6 +154,7 @@ export class AudioSys {
 
   /** Synthesized gunshot; character varies per weapon. Falls off with distance. */
   gunshot(kind: 'pistol' | 'smg' | 'shotgun', dist = 0): void {
+    this.onCaption?.(`${kind === 'smg' ? 'SMG' : kind[0].toUpperCase() + kind.slice(1)} shot`);
     const vol = Math.min(0.34, 9 / Math.max(dist, 6));
     switch (kind) {
       case 'pistol':
@@ -169,11 +172,13 @@ export class AudioSys {
   }
 
   reloadClick(): void {
+    this.onCaption?.('Reloading');
     this.blip('square', 1500, 1100, 0.03, 0.05);
     this.blip('square', 1100, 1600, 0.03, 0.05, 0.13);
   }
 
   pickupBlip(): void {
+    this.onCaption?.('Pickup collected');
     this.blip('sine', 620, 1240, 0.09, 0.12);
   }
 

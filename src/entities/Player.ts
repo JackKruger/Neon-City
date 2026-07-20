@@ -278,8 +278,9 @@ export class Player implements Entity, CameraTarget, CombatTarget {
         descend: input.descend,
       };
       if (this.vehicle.kind === 'helicopter') {
+        const interact = this.game.input.interactLabel(this.index);
         this.prompt = this.vehicle.canExit()
-          ? 'Space ascend · Shift descend · E / Y exit'
+          ? `Space / A ascend · Shift / B descend · ${interact} exit`
           : 'Space ascend · Shift descend · land to exit';
       }
       if (input.interact) this.exitVehicle();
@@ -305,11 +306,12 @@ export class Player implements Entity, CameraTarget, CombatTarget {
 
     const nearest = this.nearestVehicle();
     if (nearest) {
+      const interact = this.game.input.interactLabel(this.index);
       this.prompt = nearest.driver instanceof TrafficCar
-        ? 'E / Y — pull driver out'
+        ? `${interact} — pull driver out`
         : nearest.kind === 'helicopter'
-          ? 'E / Y — enter helicopter'
-          : 'E / Y — enter car';
+          ? `${interact} — enter helicopter`
+          : `${interact} — enter car`;
       if (input.interact) this.enterVehicle(nearest);
     }
   }
@@ -373,7 +375,13 @@ export class Player implements Entity, CameraTarget, CombatTarget {
         pos.y + 1.35,
         pos.z + Math.cos(facing) * 0.45
       );
-      const dir = this.game.combat.acquireAim(muzzle, facing, def.range, this);
+      const dir = this.game.combat.acquireAim(
+        muzzle,
+        facing,
+        def.range,
+        this,
+        this.game.settings.values.aimAssist ? 0.2 : 0
+      );
       this.game.combat.fireHitscan(def, muzzle, dir, this, this.character.collider);
       this.game.audio.gunshot(def.id);
       if (this.shotHeatCooldown <= 0 && this.game.combat.anyTargetNear(pos, 30, this)) {

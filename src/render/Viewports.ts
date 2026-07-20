@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { CameraInput } from '../core/Input';
 import { heightAt } from '../world/CityMap';
 
 export interface CameraTarget {
@@ -13,6 +14,12 @@ export interface CameraTarget {
 }
 
 const BASE_FOV = 65;
+type CollisionResolver = (
+  target: CameraTarget,
+  focus: THREE.Vector3,
+  desired: THREE.Vector3,
+  out: THREE.Vector3
+) => void;
 
 export class ChaseCamera {
   readonly camera: THREE.PerspectiveCamera;
@@ -21,18 +28,36 @@ export class ChaseCamera {
   private initialized = false;
   private tmpFocus = new THREE.Vector3();
   private tmpIdeal = new THREE.Vector3();
+  private tmpResolved = new THREE.Vector3();
   private fov = BASE_FOV;
+  private orbitYaw = 0;
+  private orbitPitch = 0;
+  private recentering = false;
 
-  constructor(aspect: number) {
+  constructor(aspect: number, private resolveCollision?: CollisionResolver) {
     this.camera = new THREE.PerspectiveCamera(BASE_FOV, aspect, 0.3, 340);
   }
 
-  update(target: CameraTarget, dt: number): void {
+  update(target: CameraTarget, dt: number, look: CameraInput, reducedMotion: boolean): void {
+    this.orbitYaw += look.yaw;
+    this.orbitPitch = THREE.MathUtils.clamp(this.orbitPitch + look.pitch, -0.22, 0.78);
+    if (look.recenter) this.recentering = true;
+    if (Math.abs(look.yaw) > 0.0001 || Math.abs(look.pitch) > 0.0001) this.recentering = false;
+    if (this.recentering) {
+      const k = 1 - Math.exp(-6 * dt);
+      this.orbitYaw *= 1 - k;
+      this.orbitPitch *= 1 - k;
+      if (Math.abs(this.orbitYaw) + Math.abs(this.orbitPitch) < 0.002) {
+        this.orbitYaw = 0;
+        this.orbitPitch = 0;
+        this.recentering = false;
+      }
+    }
     target.getFocus(this.tmpFocus);
-    const heading = target.getHeading();
+    const heading = target.getHeading() + this.orbitYaw;
     const base = target.getFollowDistance();
     const dist = base + Math.min(target.getSpeed() * 0.12, 4);
-    const height = base * 0.45;
+    const height = base * 0.45 + this.orbitPitch * dist;
 
     // Sit behind the target: heading is the direction (sin h, 0, cos h).
     this.tmpIdeal.set(
@@ -53,9 +78,14 @@ export class ChaseCamera {
     }
 
     this.position.y = Math.max(this.position.y, heightAt(this.position.x, this.position.z) + 1.2);
+    if (this.resolveCollision) {
+      this.tmpResolved.copy(this.focusSmooth);
+      this.tmpResolved.y += 1.15;
+      this.resolveCollision(target, this.tmpResolved, this.position, this.position);
+    }
 
     // Widen the FOV with speed for a sense of rush.
-    const targetFov = BASE_FOV + Math.min(target.getSpeed() * 0.35, 11);
+    const targetFov = reducedMotion ? BASE_FOV : BASE_FOV + Math.min(target.getSpeed() * 0.35, 11);
     this.fov += (targetFov - this.fov) * (1 - Math.exp(-3 * dt));
     if (Math.abs(this.fov - this.camera.fov) > 0.01) {
       this.camera.fov = this.fov;
@@ -83,13 +113,13 @@ export class ChaseCamera {
 export class Viewports {
   readonly cameras: ChaseCamera[] = [];
 
-  constructor(private renderer: THREE.WebGLRenderer) {
+  constructor(private renderer: THREE.WebGLRenderer, private resolveCollision?: CollisionResolver) {
     this.renderer.setScissorTest(true);
   }
 
   setPlayerCount(count: 1 | 2): void {
     while (this.cameras.length < count) {
-      this.cameras.push(new ChaseCamera(this.aspectFor(count)));
+      this.cameras.push(new ChaseCamera(this.aspectFor(count), this.resolveCollision));
     }
     this.cameras.length = count;
     this.updateAspects();

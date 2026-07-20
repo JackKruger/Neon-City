@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import { Assets } from './Assets';
 import { Input } from './Input';
-import { Viewports } from '../render/Viewports';
+import { Viewports, type CameraTarget } from '../render/Viewports';
 import { Hud } from '../ui/Hud';
 import { buildMapCanvas } from '../ui/Minimap';
 import { MapOverlay } from '../ui/MapOverlay';
@@ -35,6 +35,8 @@ import { Fx } from '../render/Fx';
 import { Pickup } from '../entities/Pickup';
 import { WEAPONS, WEAPON_ORDER, type WeaponId } from '../gameplay/Weapons';
 import { randomRoadCellNear } from '../world/RoadGraph';
+import { Settings } from './Settings';
+import { WorldLighting } from '../world/WorldLighting';
 
 export interface Entity {
   update(dt: number): void;
@@ -51,8 +53,10 @@ export class Game {
   readonly eventQueue = new RAPIER.EventQueue(true);
   readonly assets: Assets;
   readonly input = new Input();
+  readonly settings = new Settings();
   readonly viewports: Viewports;
   readonly hud: Hud;
+  readonly lighting: WorldLighting;
   readonly mapOverlay: MapOverlay | null;
   readonly entities: Entity[] = [];
 
@@ -99,6 +103,7 @@ export class Game {
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     container.appendChild(this.renderer.domElement);
+    this.input.attachPointerLock(this.renderer.domElement);
 
     window.addEventListener('resize', () => {
       this.renderer.setSize(container.clientWidth, container.clientHeight);
@@ -108,16 +113,19 @@ export class Game {
     this.world = new RAPIER.World(new RAPIER.Vector3(0, GRAVITY, 0));
     this.world.timestep = STEP;
 
-    this.viewports = new Viewports(this.renderer);
+    this.viewports = new Viewports(this.renderer, (target, focus, desired, out) => {
+      this.resolveCameraCollision(target, focus, desired, out);
+    });
     this.viewports.setPlayerCount(1);
-    this.hud = new Hud(container);
+    this.hud = new Hud(container, this.settings);
+    this.audio.onCaption = (text) => this.hud.showCaption(text);
     const map = getAuthoredMap();
     const mapCanvas = map ? buildMapCanvas(map) : null;
     if (map && mapCanvas) this.hud.setMapCanvas(mapCanvas, map);
     this.hud.setPlayerCount(1);
     this.mapOverlay = map && mapCanvas ? new MapOverlay(container, map, mapCanvas) : null;
 
-    this.setupEnvironment();
+    this.lighting = this.setupEnvironment();
     // The Kenney asphalt is nearly sand-colored; darken it well below the
     // pavement gray so streets read as streets against the sidewalks.
     for (const name of CITY_ASSETS) {
@@ -273,7 +281,7 @@ export class Game {
     }
   }
 
-  private setupEnvironment(): void {
+  private setupEnvironment(): WorldLighting {
     this.scene.background = new THREE.Color(PALETTE.sky);
     // Fog far sits just inside the guaranteed chunk-loaded distance so new
     // chunks always materialize fully fogged (no visible pop-in).
@@ -284,6 +292,7 @@ export class Game {
     const sun = new THREE.DirectionalLight(0xffcf90, 1.7);
     sun.position.set(-80, 100, 40);
     this.scene.add(sun);
+    return new WorldLighting(this.scene, hemi, sun);
   }
 
   start(): void {
@@ -308,12 +317,16 @@ export class Game {
       } else {
         this.paused = !this.paused;
         this.hud.setPaused(this.paused);
+        if (this.paused) document.exitPointerLock?.();
         if (!this.paused) this.input.clearGameplayEdges();
       }
     }
     if (mapPressed && !pausePressed && !this.paused && this.mapOverlay) {
       if (this.mapOverlay.isOpen) this.mapOverlay.close();
-      else this.mapOverlay.open();
+      else {
+        document.exitPointerLock?.();
+        this.mapOverlay.open();
+      }
     }
     // Clicks and presses made while browsing the map shouldn't fire weapons.
     if (this.mapOverlay?.isOpen) this.input.clearGameplayEdges();
@@ -326,6 +339,7 @@ export class Game {
     }
     const positions = this.playerPositions();
     this.city.update(positions);
+    this.lighting.update(this.paused ? 0 : dt, positions);
     if (!this.paused) this.fx.update(dt);
     if (this.paused) this.audio.duck();
     else this.updateAudio(dt);
@@ -337,7 +351,16 @@ export class Game {
     for (let i = 0; i < this.players.length; i++) {
       const p = this.players[i];
       const pos = positions[i];
-      if (!this.debugCam) this.viewports.cameras[i]?.update(p, dt);
+      const look = this.input.cameraInput(
+        p.index,
+        dt,
+        this.settings.values.cameraSensitivity,
+        this.settings.values.invertCameraY,
+        !this.paused && !this.mapOverlay?.isOpen
+      );
+      if (!this.debugCam) {
+        this.viewports.cameras[i]?.update(p, dt, look, this.settings.values.reducedMotion);
+      }
       const def = p.inventory.def();
       const heading = p.getHeading();
       const drivingCar = p.driving && p.vehicle!.kind === 'car';
@@ -368,7 +391,37 @@ export class Game {
         }),
       });
     }
+    this.hud.setInputMethods(this.players.map((player) => this.input.inputMethod(player.index)));
     this.viewports.render(this.scene);
+  }
+
+  /** Pull the chase camera in front of the first wall/terrain obstruction. */
+  private resolveCameraCollision(
+    target: CameraTarget,
+    focus: THREE.Vector3,
+    desired: THREE.Vector3,
+    out: THREE.Vector3
+  ): void {
+    const direction = desired.clone().sub(focus);
+    const distance = direction.length();
+    if (distance < 0.01) {
+      out.copy(desired);
+      return;
+    }
+    direction.multiplyScalar(1 / distance);
+    const player = target as Player;
+    const excludedBody = player.vehicle?.body ?? player.character.body;
+    const hit = this.world.castRay(
+      new RAPIER.Ray(focus, direction),
+      distance,
+      true,
+      undefined,
+      undefined,
+      undefined,
+      excludedBody
+    );
+    const safeDistance = hit ? Math.max(0.8, hit.timeOfImpact - 0.35) : distance;
+    out.copy(focus).addScaledVector(direction, safeDistance);
   }
 
   private suburbAt(playerIndex: number, x: number, z: number): string | null {

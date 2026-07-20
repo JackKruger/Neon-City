@@ -21,9 +21,11 @@
 - [x] Add player jumping.
   - Support keyboard and gamepad input.
   - Only jump while grounded, with stable landing and slope handling.
-- [ ] Allow the player to move the camera independently.
+- [x] Allow the player to move the camera independently.
   - Add mouse and right-stick orbit controls.
   - Preserve a useful chase camera while driving and recenter smoothly when requested.
+  - Shipped: click-to-capture mouse orbit for player 1, per-player right-stick orbit,
+    smooth V/R3 recentering, pitch limits, and chase-heading preservation on foot and in vehicles.
 
 ## Vehicles and animation
 
@@ -49,21 +51,25 @@
 
 ## World
 
-- [ ] Make streetlights emit light after dark.
+- [x] Make streetlights emit light after dark.
   - Add or connect a time-of-day/darkness state.
   - Toggle emissive materials and nearby illumination after dark.
   - Limit active dynamic lights around players to protect performance and split-screen rendering.
+  - Shipped: a shared day/night clock drives sky, fog, sun, and ambient light; emissive lamp
+    heads and a fair split-screen pool of at most eight nearby point lights activate after dark.
 
 ## Economy and UI
 
 - [x] Add a money balance for each player.
   - Display it in the HUD and provide a clear API for earning and spending money.
   - Persist the balance if save data is introduced.
-- [ ] Polish the UI.
+- [x] Polish the UI.
   - Establish consistent typography, spacing, colors, icons, and interaction states.
   - Integrate money, health, armour, weapons, ammunition, wanted level, speed, prompts, minimaps, pause, and full-map states.
   - Verify responsive and split-screen layouts without overlaps.
   - Add clear keyboard and gamepad prompts that update with the active input method.
+  - Shipped: responsive neon HUD/pause/map presentation covers money, vitals, combat, speed,
+    wanted state and minimaps; interaction hints now switch between keyboard and gamepad labels.
 
 ## Additional roadmap
 
@@ -94,9 +100,12 @@
 - [ ] Improve vehicle and pedestrian traffic behavior.
   - Add traffic lights, yielding, overtaking, obstacle avoidance, crash recovery, and safer pedestrian crossings.
   - Prevent traffic deadlocks and provide recovery for stuck or flipped vehicles.
-- [ ] Add camera collision and accessibility options.
+- [x] Add camera collision and accessibility options.
   - Keep the camera out of buildings and terrain while preserving visibility in narrow streets.
   - Add sensitivity, inversion, camera shake, aim assistance, subtitle, and reduced-motion settings.
+  - Shipped: Rapier obstruction pull-in plus persistent sensitivity, vertical inversion, aim-assist,
+    subtitles, and reduced-motion controls in the pause menu. Reduced motion disables speed FOV;
+    the camera does not add shake.
 - [ ] Add input rebinding and controller feedback.
   - Support remappable keyboard/gamepad controls, per-player controller assignment, vibration, and disconnected-controller recovery.
 - [ ] Add ambient audio and combat feedback.

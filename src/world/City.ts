@@ -83,12 +83,44 @@ function isIndustrialDistrict(cx: number, cz: number): boolean {
  * the tile set can represent. Diagonal staircases of bends stay tiled: each
  * of their cells has only 2 orthogonal road neighbors.
  */
-function roadBlob(cx: number, cz: number): boolean {
+export function roadBlob(cx: number, cz: number): boolean {
   const road = (dx: number, dz: number) => (cellAt(cx + dx, cz + dz) === '#' ? 1 : 0);
   const n4 = road(0, -1) + road(1, 0) + road(0, 1) + road(-1, 0);
   if (n4 < 3) return false;
   const nd = road(-1, -1) + road(1, -1) + road(-1, 1) + road(1, 1);
   return n4 + nd >= 5;
+}
+
+export interface StreetlightPlacement {
+  x: number;
+  z: number;
+  rotation: number;
+  /** Lamp head, slightly inboard from the pole over the carriageway. */
+  bulbX: number;
+  bulbZ: number;
+}
+
+/** Deterministic streetlight layout shared by streamed geometry and night lighting. */
+export function streetlightPlacements(cx: number, cz: number): StreetlightPlacement[] {
+  if (((cx + cz) % 3 + 3) % 3 !== 0) return [];
+  const edges: [number, number][] = [];
+  const mask = roadMask(cx, cz);
+  if (roadBlob(cx, cz)) {
+    for (const [dx, dz] of [[0, -1], [1, 0], [0, 1], [-1, 0]] as const) {
+      if (cellAt(cx + dx, cz + dz) !== '#') edges.push([dx, dz]);
+    }
+  } else if (mask === 5 || mask === 10) {
+    const side = ((cx + cz) / 3) % 2 === 0 ? 1 : -1;
+    edges.push(mask === 5 ? [side, 0] : [0, side]);
+  }
+  const { x, z } = cellToWorld(cx, cz);
+  return edges.map(([dx, dz]) => ({
+    x: x + dx * TILE * 0.46,
+    z: z + dz * TILE * 0.46,
+    rotation: dx !== 0 ? (dx > 0 ? Math.PI / 2 : -Math.PI / 2) : dz > 0 ? 0 : Math.PI,
+    bulbX: x + dx * (TILE * 0.46 - 1.35),
+    bulbZ: z + dz * (TILE * 0.46 - 1.35),
+  }));
 }
 
 /**
@@ -413,7 +445,7 @@ export class City implements CityStreamer {
                 this.bake(object, model, buckets, true);
               }
             }
-            this.streetlight(cx, cz, x, z, mask, buckets);
+            this.streetlight(cx, cz, buckets);
             if (!hasCoverage(cx, cz, CoverageFlag.Parking)) this.maybeParkCar(cx, cz, x, z, mask, vehicles);
             break;
           }
@@ -1018,24 +1050,12 @@ export class City implements CityStreamer {
    * straight segments, and on every sidewalk edge of wide-road cells (which
    * have no straight mask, so the old rule left arterials unlit).
    */
-  private streetlight(cx: number, cz: number, x: number, z: number, mask: number, buckets: Buckets): void {
-    if (((cx + cz) % 3 + 3) % 3 !== 0) return;
-    const edges: [number, number][] = [];
-    if (roadBlob(cx, cz)) {
-      for (const [dx, dz] of [[0, -1], [1, 0], [0, 1], [-1, 0]] as const) {
-        if (cellAt(cx + dx, cz + dz) !== '#') edges.push([dx, dz]);
-      }
-    } else if (mask === 5 || mask === 10) {
-      const side = ((cx + cz) / 3) % 2 === 0 ? 1 : -1;
-      edges.push(mask === 5 ? [side, 0] : [0, side]);
-    }
-    for (const [dx, dz] of edges) {
+  private streetlight(cx: number, cz: number, buckets: Buckets): void {
+    for (const placement of streetlightPlacements(cx, cz)) {
       const { object } = this.game.assets.getFitted(STREETLIGHT, { height: 6 });
       // Stand on the sidewalk edge, arm pointing over the road.
-      const px = x + dx * TILE * 0.46;
-      const pz = z + dz * TILE * 0.46;
-      object.position.set(px, heightAt(px, pz), pz);
-      object.rotation.y = dx !== 0 ? (dx > 0 ? Math.PI / 2 : -Math.PI / 2) : dz > 0 ? 0 : Math.PI;
+      object.position.set(placement.x, heightAt(placement.x, placement.z), placement.z);
+      object.rotation.y = placement.rotation;
       this.bake(object, STREETLIGHT, buckets);
     }
   }

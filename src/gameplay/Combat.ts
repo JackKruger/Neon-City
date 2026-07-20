@@ -86,6 +86,7 @@ export class Combat {
     exclude?: object,
     cone = 0.2
   ): THREE.Vector3 {
+    if (cone <= 0) return new THREE.Vector3(Math.sin(facingYaw), 0, Math.cos(facingYaw));
     let best: CombatTarget | null = null;
     let bestDist = range;
     for (const target of new Set(this.byCollider.values())) {

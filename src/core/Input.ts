@@ -25,6 +25,15 @@ export interface PlayerInput {
   reload: boolean;
 }
 
+export type InputMethod = 'keyboard' | 'gamepad';
+
+export interface CameraInput {
+  /** Orbit deltas in radians for this render frame. */
+  yaw: number;
+  pitch: number;
+  recenter: boolean;
+}
+
 const DEADZONE = 0.15;
 
 function dz(v: number): number {
@@ -70,8 +79,12 @@ export class Input {
   private pendingWeaponNext = [false, false];
   private pendingWeaponPrev = [false, false];
   private pendingReload = [false, false];
+  private pendingCameraReset = [false, false];
   private pendingMap = false;
   private mouseButtons = new Set<number>();
+  private mouseLookX = 0;
+  private mouseLookY = 0;
+  private methods: [InputMethod, InputMethod] = ['keyboard', 'gamepad'];
 
   p1Pad: number | null = null;
   p2Pad: number | null = null;
@@ -83,12 +96,20 @@ export class Input {
       if (e.repeat) return;
       this.keys.add(e.code);
       this.keyEdges.add(e.code);
+      this.methods[0] = 'keyboard';
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     // Mouse always drives player 1: left fires, right aims.
     window.addEventListener('mousedown', (e) => {
       this.mouseButtons.add(e.button);
       if (e.button === 0) this.pendingAttack[0] = true;
+      this.methods[0] = 'keyboard';
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!document.pointerLockElement) return;
+      this.mouseLookX += e.movementX;
+      this.mouseLookY += e.movementY;
+      if (e.movementX !== 0 || e.movementY !== 0) this.methods[0] = 'keyboard';
     });
     window.addEventListener('mouseup', (e) => this.mouseButtons.delete(e.button));
     window.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -99,6 +120,13 @@ export class Input {
     window.addEventListener('gamepaddisconnected', (e) => {
       if (this.p1Pad === e.gamepad.index) this.p1Pad = null;
       if (this.p2Pad === e.gamepad.index) this.p2Pad = null;
+    });
+  }
+
+  /** Capture relative mouse movement while playing; Esc releases it normally. */
+  attachPointerLock(element: HTMLElement): void {
+    element.addEventListener('mousedown', () => {
+      if (!document.pointerLockElement) void element.requestPointerLock();
     });
   }
 
@@ -129,6 +157,9 @@ export class Input {
         if (just(5)) this.pendingWeaponNext[player] = true;
         if (just(4)) this.pendingWeaponPrev[player] = true;
         if (just(2)) this.pendingReload[player] = true;
+        if (just(11)) this.pendingCameraReset[player] = true;
+        const activeAxis = pad.axes.some((axis) => Math.abs(axis) > DEADZONE);
+        if (pressed.some(Boolean) || activeAxis) this.methods[player] = 'gamepad';
       }
       this.padPrev.set(pad.index, pressed);
     }
@@ -141,7 +172,48 @@ export class Input {
     if (this.keyEdges.has('KeyC') || this.keyEdges.has('Tab')) this.pendingWeaponNext[0] = true;
     if (this.keyEdges.has('KeyQ')) this.pendingWeaponPrev[0] = true;
     if (this.keyEdges.has('KeyR')) this.pendingReload[0] = true;
+    if (this.keyEdges.has('KeyV')) this.pendingCameraReset[0] = true;
     this.keyEdges.clear();
+  }
+
+  /** Mouse/right-stick camera orbit for one player. */
+  cameraInput(
+    player: 0 | 1,
+    dt: number,
+    sensitivity: number,
+    invertY: boolean,
+    enabled = true
+  ): CameraInput {
+    let yaw = 0;
+    let pitch = 0;
+    if (enabled && player === 0) {
+      yaw += this.mouseLookX * 0.0025 * sensitivity;
+      pitch += this.mouseLookY * 0.002 * sensitivity;
+    }
+    if (enabled) {
+      const padIndex = player === 0 ? this.p1Pad : this.p2Pad;
+      const pad = padIndex === null ? null : navigator.getGamepads()[padIndex];
+      if (pad) {
+        yaw += dz(pad.axes[2] ?? 0) * 2.4 * dt * sensitivity;
+        pitch += dz(pad.axes[3] ?? 0) * 1.8 * dt * sensitivity;
+      }
+    }
+    if (player === 0) {
+      this.mouseLookX = 0;
+      this.mouseLookY = 0;
+    }
+    if (invertY) pitch *= -1;
+    const recenter = this.pendingCameraReset[player];
+    this.pendingCameraReset[player] = false;
+    return { yaw, pitch, recenter };
+  }
+
+  inputMethod(player: 0 | 1): InputMethod {
+    return this.methods[player];
+  }
+
+  interactLabel(player: 0 | 1): string {
+    return this.methods[player] === 'gamepad' ? 'Y' : 'E';
   }
 
   /** Drop queued gameplay presses (e.g. accumulated on the pause screen). */
