@@ -16,7 +16,7 @@ interface MapContractShape {
   transportFlags: Record<'Road' | 'Bridge' | 'Tunnel' | 'Rail' | 'Tram' | 'Footpath' | 'Roundabout', number>;
   coverageFlags: Record<'Building' | 'Tree' | 'Parking' | 'Prop' | 'Address' | 'BuildingSource', number>;
   versions: Record<'authoredMap' | 'objectIndex' | 'roadIndex' | 'compiledManifest' | 'compiler' | 'runtime' | 'container' | 'provenance', number>;
-  nbchSections: Record<'HGT1' | 'COL1' | 'NAV2' | 'GME1', number>;
+  nbchSections: Record<'HGT1' | 'COL1' | 'NAV3' | 'GME1' | 'TRN1', number>;
 }
 
 export const MAP_CONTRACT = data as MapContractShape;

@@ -23,8 +23,9 @@ import {
 export { CODE_TO_CELL, CoverageFlag, TransportFlag, type Cell } from './MapContract';
 
 export type AuthoredObject =
-  | { kind: 'road-surface'; sourceId?: string; role?: string; elevation?: number; structure?: 'bridge' | 'tunnel'; x: number; z: number; surface: 'asphalt' | 'pavement' | 'marking' | 'rail' | 'concrete' | 'cycleway'; outline: [number, number][] }
-  | { kind: 'nav-path'; sourceId?: string; x: number; z: number; mode: 'vehicle' | 'pedestrian' | 'tram'; speed: number; flags?: number; structure?: 'bridge' | 'tunnel'; points: [number, number][] }
+  | { kind: 'road-surface'; sourceId?: string; role?: string; elevation?: number; structure?: 'bridge' | 'tunnel'; x: number; z: number; surface: 'asphalt' | 'pavement' | 'marking' | 'rail' | 'ballast' | 'concrete' | 'cycleway'; outline: [number, number][] }
+  | { kind: 'nav-path'; sourceId?: string; x: number; z: number; mode: 'vehicle' | 'pedestrian' | 'tram' | 'train'; speed: number; flags?: number; structure?: 'bridge' | 'tunnel'; points: [number, number][] }
+  | { kind: 'transit-stop'; sourceId?: string; mode: 'tram' | 'train'; name: string; x: number; z: number }
   | { kind: 'transport-structure'; sourceId?: string; structure: 'bridge' | 'tunnel'; component: string; roadDeck: boolean; x: number; z: number; rotation: number; width: number; depth: number; minAhd?: number; maxAhd?: number; baseY?: number; topY?: number; outline: [number, number][] }
   | { kind: 'building'; sourceId?: string; structureId?: string; baseOffset?: number; x: number; z: number; rotation: number; width: number; depth: number; height: number; baseY?: number; style: 'commercial' | 'skyscraper' | 'suburban' | 'industrial'; roof?: string; outline?: [number, number][] }
   | { kind: 'tree'; x: number; z: number; height: number; variant: 'small' | 'large' }

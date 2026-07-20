@@ -33,6 +33,7 @@ import {
   openDataInputsPresent,
   rechunkObjectIndex,
   refreshMelbournePointObjects,
+  transportLayerFromRoadObjects,
 } from './map/open-data.mjs';
 import { CHUNK_TILES, MAP_CENTER, MAP_SIZE, TILE, toGrid, toWorld } from './map/geo.mjs';
 import { CELL_CODES as CODES, MAP_CONTRACT, MAP_ID, VERSIONS } from './map/contract.mjs';
@@ -106,6 +107,11 @@ function overpassQuery() {
   way["highway"~"${roads}"](${bb});
   way["highway"="service"]["service"!~"^(driveway|parking_aisle|drive-through)$"](${bb});
   way["railway"="tram"](${bb});
+  way["railway"~"^(rail|light_rail|subway)$"](${bb});
+  node["railway"~"^(tram_stop|station|halt)$"](${bb});
+  node["public_transport"="stop_position"]["tram"="yes"](${bb});
+  node["public_transport"="stop_position"]["train"="yes"](${bb});
+  node["public_transport"="station"]["train"="yes"](${bb});
   way["railway"="platform"](${bb});
   way["public_transport"="platform"](${bb});
   way["area:highway"](${bb});
@@ -366,13 +372,15 @@ function writeRoadSurfacesOnly(data) {
   const objects = readObjectIndex(outDir, MAP.name);
   const surfaces = roadSurfacesFromOverpass(data);
   const retained = Object.values(objects.chunks).flat()
-    .filter((object) => (object.kind !== 'road-surface' || object.role === 'footpath-authoritative') && object.kind !== 'nav-path');
+    .filter((object) => (object.kind !== 'road-surface' || object.role === 'footpath-authoritative') &&
+      object.kind !== 'nav-path' && object.kind !== 'transit-stop');
   const rebuilt = rechunkObjectIndex({
     version: 1,
     roadSurfaces: surfaces.length > 0,
     chunks: { legacy: [...retained, ...surfaces] },
   });
   writeObjectIndex(outDir, rebuilt.chunks, rebuilt.roadSurfaces);
+  writeFileSync(join(outDir, `${MAP.name}.transport.bin`), transportLayerFromRoadObjects(surfaces));
   const metaPath = join(outDir, `${MAP.name}.json`);
   const meta = JSON.parse(readFileSync(metaPath, 'utf8'));
   installFormatManifest(meta, true);

@@ -14,10 +14,15 @@ export const GRAVITY = -20;
  */
 const VEHICLE_GROUP = 0x0004;
 const PEDESTRIAN_GROUP = 0x0008;
+const TRANSIT_GROUP = 0x0010;
 export const VEHICLE_COLLISION_GROUPS =
   ((VEHICLE_GROUP << 16) | (0xffff & ~PEDESTRIAN_GROUP)) >>> 0;
 export const PEDESTRIAN_COLLISION_GROUPS =
   ((PEDESTRIAN_GROUP << 16) | (0xffff & ~VEHICLE_GROUP)) >>> 0;
+/** Transit is track-constrained and only needs solver contact with vehicles;
+ * characters are handled by the existing impact/ragdoll gameplay path. */
+export const TRANSIT_COLLISION_GROUPS =
+  ((TRANSIT_GROUP << 16) | VEHICLE_GROUP) >>> 0;
 
 /** Stealable civilian car models (also used for parked and traffic cars). */
 export const CIVILIAN_CARS = [

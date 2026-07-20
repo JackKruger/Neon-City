@@ -25,7 +25,7 @@ test('shared contract contains the compiler/runtime Melbourne invariants', () =>
   assert.deepEqual(CELL_CODES, { '.': 0, '#': 1, C: 2, S: 3, P: 4, '~': 5 });
   assert.equal(TRANSPORT_FLAGS.Bridge, 2);
   assert.equal(COVERAGE_FLAGS.BuildingSource, 32);
-  assert.deepEqual(NBCH_SECTIONS, { HGT1: 1, COL1: 1, NAV2: 2, GME1: 1 });
+  assert.deepEqual(NBCH_SECTIONS, { HGT1: 1, COL1: 1, NAV3: 3, GME1: 1, TRN1: 1 });
   assert.deepEqual(VERSIONS, MAP_CONTRACT.versions);
 });
 

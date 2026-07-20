@@ -55,6 +55,7 @@ for expanding the world across Greater Melbourne are documented in
   police cruisers will hunt you down. Shake them off (stay >45 m away)
   and the heat clears.
 - Crashed traffic cars get abandoned by their drivers — free wheels.
+- Melbourne rail and tram alignments are compiled into the spawn pilot with solid ambient trains and trams, real stops, deterministic service intervals, and road traffic that yields to trams.
 - Every weapon and a flyable helicopter spawn nearby. Helicopters use W/S
   for forward/back, A/D to yaw, and Space/Shift (A/B) to climb/descend.
   Press E/Y to jump out in flight and enter a physics ragdoll; hard landings

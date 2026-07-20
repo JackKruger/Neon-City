@@ -7,6 +7,8 @@ const ROAD_CLEARANCE = 0.06;
 const MARKING_CLEARANCE = 0.075;
 const TRAM_BED_CLEARANCE = 0.1;
 const TRAM_RAIL_CLEARANCE = 0.14;
+const TRAIN_BED_CLEARANCE = 0.09;
+const TRAIN_RAIL_CLEARANCE = 0.16;
 const BRIDGE_APPROACH_LENGTH = 24;
 const DEFAULT_WIDTHS = {
   motorway: 18,
@@ -322,14 +324,31 @@ export function roadSurfacesFromOverpass(data) {
     for (const node of element.nodes) nodeUses.set(node, (nodeUses.get(node) ?? 0) + 1);
   }
   for (const element of data?.elements ?? []) {
+    if (element.type === 'node') {
+      const tags = element.tags ?? {};
+      const railway = String(tags.railway ?? '');
+      const publicTransport = String(tags.public_transport ?? '');
+      const tramStop = railway === 'tram_stop' || tags.tram === 'yes';
+      const trainStop = ['station', 'halt'].includes(railway) || tags.train === 'yes';
+      if (!tramStop && !trainStop) continue;
+      if (!Number.isFinite(element.lat) || !Number.isFinite(element.lon)) continue;
+      const world = toWorld(element.lat, element.lon);
+      const mode = tramStop ? 'tram' : 'train';
+      features.push({
+        kind: 'transit-stop', sourceId: `stop:${element.id ?? 'anonymous'}`, mode,
+        name: String(tags.name ?? tags.ref ?? '').trim(), x: rounded(world.x), z: rounded(world.z),
+      });
+      continue;
+    }
     if (element.type !== 'way' || !Array.isArray(element.geometry)) continue;
     const tags = element.tags ?? {};
     const highway = String(tags.highway ?? '').replace(/_link$/, '');
     const railway = String(tags.railway ?? '');
     const platform = railway === 'platform' || tags.public_transport === 'platform';
+    const train = ['rail', 'light_rail', 'subway'].includes(railway);
     const areaHighway = String(tags['area:highway'] ?? '');
     const structure = roadStructure(tags);
-    if (!highway && railway !== 'tram' && !platform && !areaHighway) continue;
+    if (!highway && railway !== 'tram' && !train && !platform && !areaHighway) continue;
     let points = element.geometry
       .filter((point) => Number.isFinite(point?.lat) && Number.isFinite(point?.lon))
       .map((point, index) => ({
@@ -347,7 +366,7 @@ export function roadSurfacesFromOverpass(data) {
       };
       features.push({
         kind: 'road-surface', sourceId: `${platform ? 'platform' : 'street-area'}:${element.id ?? 'anonymous'}`,
-        role: platform ? 'tram-platform' : 'street-area',
+        role: platform ? (tags.tram === 'yes' ? 'tram-platform' : 'train-platform') : 'street-area',
         surface: platform || highway === 'pedestrian' ? 'pavement' : 'asphalt',
         elevation: platform ? 0.18 : ROAD_CLEARANCE, x: rounded(center.x), z: rounded(center.z),
         outline: ring.map((point) => [rounded(point.x - center.x), rounded(point.z - center.z)]),
@@ -355,8 +374,9 @@ export function roadSurfacesFromOverpass(data) {
       });
       continue;
     }
-    const source = `${railway === 'tram' ? 'tram' : 'road'}:${element.id ?? 'anonymous'}`;
-    const width = railway === 'tram' ? 2.8 : roadWidth(tags);
+    const sourceMode = railway === 'tram' ? 'tram' : train ? 'train' : 'road';
+    const source = `${sourceMode}:${element.id ?? 'anonymous'}`;
+    const width = railway === 'tram' ? 2.8 : train ? 3.2 : roadWidth(tags);
     points = smoothPath(points, width);
     let part = 0;
     pathParts(points, width + 12, (path, pathIndex, pathCount) => {
@@ -389,6 +409,20 @@ export function roadSurfacesFromOverpass(data) {
         addSurface('tram-rail-left', 'rail', offsetPath(path, halfGauge), 0.075, TRAM_RAIL_CLEARANCE);
         addSurface('tram-rail-right', 'rail', offsetPath(path, -halfGauge), 0.075, TRAM_RAIL_CLEARANCE);
         addNav('tram', path, speedKmh(tags, 'tram'));
+        if (!enabledTag(tags.oneway)) addNav('tram', [...path].reverse(), speedKmh(tags, 'tram'));
+        return;
+      }
+
+      if (train) {
+        const halfGauge = STREET_DEFAULTS.tramGauge / 2;
+        const bedSurface = tags.embedded === 'yes' ? 'asphalt' : 'ballast';
+        addSurface('train-bed', bedSurface, path, 3.2, TRAIN_BED_CLEARANCE);
+        addSurface('train-rail-left', 'rail', offsetPath(path, halfGauge), 0.075, TRAIN_RAIL_CLEARANCE);
+        addSurface('train-rail-right', 'rail', offsetPath(path, -halfGauge), 0.075, TRAIN_RAIL_CLEARANCE);
+        if (String(tags['transit:active'] ?? 'yes').toLowerCase() === 'no') return;
+        const speed = speedKmh(tags, 'rail');
+        addNav('train', path, speed);
+        if (!enabledTag(tags.oneway)) addNav('train', [...path].reverse(), speed);
         return;
       }
 

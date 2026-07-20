@@ -16,6 +16,7 @@ import {
 } from './CompiledFormat';
 import { CompiledRoadNetwork, setRoadNetwork } from './RoadGraph';
 import { CHUNK_SIZE, CHUNK_TILES, TILE_SIZE as TILE } from './MapContract';
+import { TransitManager } from './Transit';
 
 const LOAD_RADIUS = 2;
 const UNLOAD_RADIUS = 3;
@@ -46,6 +47,7 @@ function chunkOfWorld(x: number, z: number): { kx: number; kz: number } {
 
 /** Streams deterministic GLB/NBCH pairs without invoking Melbourne builders. */
 export class CompiledCity implements CityStreamer {
+  readonly transit: TransitManager;
   private loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
   private manifest: CompiledManifest | null = null;
   private entries = new Map<string, CompiledChunkManifest>();
@@ -63,6 +65,7 @@ export class CompiledCity implements CityStreamer {
 
   constructor(private game: Game, private mapName = 'melbourne') {
     setRoadNetwork(this.roadNetwork);
+    this.transit = new TransitManager(game);
     this.safetyBody = game.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
     game.world.createCollider(
       RAPIER.ColliderDesc.cuboid(1e5, 0.5, 1e5).setTranslation(0, -30.5, 0),
@@ -127,6 +130,14 @@ export class CompiledCity implements CityStreamer {
     this.pumpLoads();
   }
 
+  fixedUpdate(dt: number): void {
+    this.transit.update(dt);
+  }
+
+  afterPhysics(): void {
+    this.transit.afterPhysics();
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -135,6 +146,7 @@ export class CompiledCity implements CityStreamer {
     for (const chunk of [...this.chunks.values()]) this.unloadChunk(chunk);
     for (const vehicle of [...this.managedVehicles.keys()]) this.game.removeVehicle(vehicle);
     this.managedVehicles.clear();
+    this.transit.dispose();
     this.roadNetwork.clear();
     setRoadNetwork(null);
     this.game.world.removeRigidBody(this.safetyBody);
@@ -209,6 +221,7 @@ export class CompiledCity implements CityStreamer {
     this.game.lighting.registerWetSurfaces(root);
     this.spawnVehicles(data);
     this.roadNetwork.registerChunk(key, data.navNodes, data.navEdges);
+    this.transit.registerChunk(key, data.transitStops, data.sources);
     this.chunks.set(key, { kx: entry.kx, kz: entry.kz, root, body, renderBytes: entry.renderBytes, dataBytes: entry.dataBytes });
     const elapsed = performance.now() - started;
     this.recentLoadMs.push(elapsed);
@@ -272,6 +285,7 @@ export class CompiledCity implements CityStreamer {
 
   private unloadChunk(chunk: LoadedChunk): void {
     const key = chunkKey(chunk.kx, chunk.kz);
+    this.transit.unregisterChunk(key);
     this.roadNetwork.unregisterChunk(key);
     this.game.lighting.unregisterWetSurfaces(chunk.root);
     this.game.fx.unregisterSurfaceRoot(chunk.root);

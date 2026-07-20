@@ -168,6 +168,7 @@ export class TrafficCar implements Entity {
   private obstacleAhead(): { stop: boolean; steerBias: number } {
     const t = this.vehicle.body.translation();
     const f = this.vehicle.forward();
+    if (this.game.transitBlocksRoad(t.x + f.x * 5, t.z + f.z * 5)) return { stop: true, steerBias: 0 };
     for (const other of this.game.vehiclesNear(t.x, t.z, 9, this.nearbyVehicles)) {
       if (other === this.vehicle) continue;
       const o = other.body.translation();

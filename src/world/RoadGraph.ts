@@ -2,13 +2,14 @@ import { TILE } from '../core/const';
 import { cellToWorld, isRoad, nearestRoadCell, worldToCell } from './CityMap';
 import type { CompiledNavEdge, CompiledNavNode } from './CompiledFormat';
 
-export type NavigationMode = 'vehicle' | 'pedestrian' | 'tram';
+export type NavigationMode = 'vehicle' | 'pedestrian' | 'tram' | 'train';
 
 export interface CellRef {
   cx: number;
   cz: number;
   /** Exact world position for compiled lane/footpath graphs. */
   x?: number;
+  y?: number;
   z?: number;
   mode?: NavigationMode;
   speed?: number;
@@ -25,6 +26,7 @@ export interface RoadNetwork {
    *  lane of a two-way street truncated at the loaded edge). Optional; the grid
    *  network has no lane concept and leaves the caller to retrace. */
   uTurn?(point: CellRef, mode?: NavigationMode): CellRef | null;
+  points?(mode: NavigationMode): CellRef[];
 }
 
 class CellRoadNetwork implements RoadNetwork {
@@ -42,7 +44,7 @@ class CellRoadNetwork implements RoadNetwork {
   }
 }
 
-const modeFlag = (mode: NavigationMode): number => mode === 'pedestrian' ? 2 : mode === 'tram' ? 4 : 1;
+const modeFlag = (mode: NavigationMode): number => mode === 'pedestrian' ? 2 : mode === 'tram' ? 4 : mode === 'train' ? 8 : 1;
 const positionKey = (x: number, z: number): string => `${Math.round(x * 100)},${Math.round(z * 100)}`;
 const adjacencyKey = (mode: NavigationMode, x: number, z: number): string => `${mode}:${positionKey(x, z)}`;
 
@@ -116,17 +118,21 @@ export class CompiledRoadNetwork implements RoadNetwork {
     this.adjacency.clear();
   }
 
+  points(mode: NavigationMode): CellRef[] {
+    return [...(this.nodes.get(mode)?.values() ?? [])];
+  }
+
   private rebuild(): void {
     this.nodes = new Map([
-      ['vehicle', new Map()], ['pedestrian', new Map()], ['tram', new Map()],
+      ['vehicle', new Map()], ['pedestrian', new Map()], ['tram', new Map()], ['train', new Map()],
     ]);
     this.adjacency.clear();
     for (const chunk of this.chunks.values()) {
       for (const node of chunk.nodes) {
-        for (const mode of ['vehicle', 'pedestrian', 'tram'] as const) {
+        for (const mode of ['vehicle', 'pedestrian', 'tram', 'train'] as const) {
           if ((node.flags & modeFlag(mode)) === 0) continue;
           const point: CellRef = {
-            ...worldToCell(node.x, node.z), x: node.x, z: node.z, mode, speed: node.speed,
+            ...worldToCell(node.x, node.z), x: node.x, y: node.y, z: node.z, mode, speed: node.speed,
           };
           this.nodes.get(mode)!.set(positionKey(node.x, node.z), point);
         }
@@ -140,7 +146,7 @@ export class CompiledRoadNetwork implements RoadNetwork {
     };
     for (const chunk of this.chunks.values()) {
       for (const edge of chunk.edges) {
-        for (const mode of ['vehicle', 'pedestrian', 'tram'] as const) {
+        for (const mode of ['vehicle', 'pedestrian', 'tram', 'train'] as const) {
           if ((edge.flags & modeFlag(mode)) === 0) continue;
           const from = this.nodes.get(mode)!.get(positionKey(edge.fromX, edge.fromZ));
           const to = this.nodes.get(mode)!.get(positionKey(edge.toX, edge.toZ));
@@ -169,6 +175,11 @@ export function pointWorld(point: CellRef): { x: number; z: number } {
 
 export function roadNeighbors(point: CellRef, mode: NavigationMode = point.mode ?? 'vehicle'): CellRef[] {
   return activeRoadNetwork.neighbors(point, mode);
+}
+
+/** Stable snapshot of currently streamed navigation points for ambient systems. */
+export function roadPoints(mode: NavigationMode): CellRef[] {
+  return activeRoadNetwork.points?.(mode) ?? [];
 }
 
 /** Find the nearest waypoint in the active navigation network. */

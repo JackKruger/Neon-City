@@ -35,7 +35,7 @@ for (const object of unique.values()) {
 }
 const sourceStatus = Object.fromEntries(
   sources.sources
-    .filter((source) => ['transport', 'footpaths', 'tramTracks', 'speeds'].includes(source.key))
+    .filter((source) => ['transport', 'footpaths', 'tramTracks', 'railTracks', 'speeds'].includes(source.key))
     .map((source) => [source.key, source.status]),
 );
 const result = {
@@ -47,4 +47,4 @@ const result = {
   malformed,
 };
 console.log(JSON.stringify(result, null, 2));
-if (malformed > 0 || !modes.vehicle || !modes.pedestrian || !modes.tram) process.exitCode = 1;
+if (malformed > 0 || !modes.vehicle || !modes.pedestrian || !modes.tram || !modes.train) process.exitCode = 1;

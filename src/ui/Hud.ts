@@ -24,6 +24,7 @@ export interface HudState {
   roadName?: string | null;
   speedLimitKmh?: number;
   cops?: { x: number; z: number }[];
+  transit?: { x: number; z: number; mode: 'tram' | 'train' }[];
   /** 0..1 fractions; bars hide when undefined. */
   health?: number;
   armour?: number;
@@ -445,6 +446,7 @@ export class Hud {
         roadName: state.roadName ?? null,
         speedLimitKmh: state.speedLimitKmh,
         cops: state.cops ?? [],
+        transit: state.transit ?? [],
       });
     }
   }

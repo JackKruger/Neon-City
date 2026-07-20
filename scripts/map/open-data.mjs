@@ -71,6 +71,16 @@ export const COVERAGE = {
 };
 
 const ODS_ROOT = 'https://data.melbourne.vic.gov.au/api/explore/v2.1/catalog/datasets';
+const VICMAP_RAIL_WFS = 'https://opendata.maps.vic.gov.au/geoserver/wfs?' + new URLSearchParams({
+  service: 'WFS',
+  version: '2.0.0',
+  request: 'GetFeature',
+  typeNames: 'open-data-platform:tr_rail',
+  outputFormat: 'application/json',
+  srsName: 'EPSG:4326',
+  // Melbourne map bounds plus a small edge allowance.
+  bbox: '144.9108,-37.8739,145.0092,-37.7961,EPSG:4326',
+}).toString();
 const SOURCE_DEFINITIONS = {
   buildings: {
     file: 'building-footprints.geojson',
@@ -115,6 +125,12 @@ const SOURCE_DEFINITIONS = {
     license: 'CC BY 4.0',
   },
   tramTracks: { file: 'tram-tracks.geojson', title: 'PTV Tram Track Centreline', license: 'CC BY 4.0' },
+  railTracks: {
+    file: 'rail-tracks.geojson',
+    title: 'Vicmap Transport Railway Line',
+    license: 'CC BY 4.0',
+    url: VICMAP_RAIL_WFS,
+  },
   streetOverrides: { file: 'street-overrides.geojson', title: 'Neon Bay reviewed street corrections', license: 'Project data' },
   transport: { file: 'vicmap-transport.geojson', title: 'Vicmap Transport', license: 'CC BY 4.0' },
   speeds: { file: 'speed-zones.geojson', title: 'Victorian Speed Zones', license: 'CC BY 4.0' },
@@ -186,10 +202,10 @@ function findSourcePath(cacheDir, filename) {
 async function loadSource(cacheDir, key, options, report) {
   const definition = SOURCE_DEFINITIONS[key];
   let path = findSourcePath(cacheDir, definition.file);
-  if (options.download && definition.dataset && (!existsSync(path) || options.refresh)) {
+  if (options.download && (definition.dataset || definition.url) && (!existsSync(path) || options.refresh)) {
     path = join(cacheDir, definition.file);
     console.log(`[open-data] downloading ${definition.title}`);
-    download(exportUrl(definition.dataset), path);
+    download(definition.url ?? exportUrl(definition.dataset), path);
   }
   if (!existsSync(path)) {
     report.sources.push({ key, title: definition.title, status: 'missing', file: definition.file });
@@ -205,6 +221,7 @@ async function loadSource(cacheDir, key, options, report) {
       file: basename(path),
       records: features.length,
       retrievedAt: statSync(path).mtime.toISOString(),
+      ...(definition.url ? { url: definition.url } : {}),
     });
     return features;
   } catch (error) {
@@ -462,7 +479,9 @@ function importRoadObjectTransport(objects, layer) {
       ? TRANSPORT.ROAD
       : object.mode === 'tram'
         ? TRANSPORT.RAIL | TRANSPORT.TRAM
-        : TRANSPORT.FOOTPATH;
+        : object.mode === 'train'
+          ? TRANSPORT.RAIL
+          : TRANSPORT.FOOTPATH;
     if (object.structure === 'bridge') flags |= TRANSPORT.BRIDGE;
     else if (object.structure === 'tunnel') flags |= TRANSPORT.TUNNEL;
     markWorldTransport(
@@ -473,6 +492,13 @@ function importRoadObjectTransport(objects, layer) {
     accepted++;
   }
   return accepted;
+}
+
+/** Build the semantic transport raster from the exact rendered/navigation paths. */
+export function transportLayerFromRoadObjects(objects) {
+  const layer = new Uint8Array(MAP_SIZE * MAP_SIZE);
+  importRoadObjectTransport(objects, layer);
+  return layer;
 }
 
 function speedClass(value) {
@@ -559,6 +585,63 @@ function importTramTracks(features, chunks) {
   return elements.length;
 }
 
+function importRailTracks(features, chunks) {
+  if (!features) return 0;
+  const elements = [];
+  let fallbackId = 0;
+  for (const feature of features) {
+    const properties = feature.properties ?? {};
+    const description = `${property(properties, 'feature_type_code', 'feature_type', 'railway_type', 'type') ?? ''}`.toLowerCase();
+    const railway = /tram/.test(description) ? 'tram' : 'rail';
+    const inactive = /dismantled|disused|marshalling|siding/.test(description);
+    const structure = /bridge/.test(description) ? { bridge: 'yes' }
+      : /underground|uground|tunnel/.test(description) ? { tunnel: 'yes' }
+        : {};
+    const featureId = property(properties, 'pfi', 'ufi', 'feature_ufi') ?? feature.id ?? fallbackId++;
+    let part = 0;
+    for (const line of lineStrings(feature.geometry)) {
+      if (line.length < 2) continue;
+      elements.push({
+        type: 'way', id: `vicmap-${featureId}-${part++}`,
+        tags: {
+          ...properties,
+          ...structure,
+          railway,
+          'transit:active': inactive ? 'no' : 'yes',
+        },
+        geometry: line.map(([lon, lat]) => ({ lon, lat })),
+      });
+    }
+  }
+  for (const object of roadSurfacesFromOverpass({ elements })) addObject(chunks, object);
+  return elements.length;
+}
+
+function railModes(features) {
+  const modes = new Set();
+  for (const feature of features ?? []) {
+    const properties = feature.properties ?? {};
+    const description = `${property(properties, 'feature_type_code', 'feature_type', 'railway_type', 'type') ?? ''}`.toLowerCase();
+    modes.add(/tram/.test(description) ? 'tram' : 'train');
+  }
+  return modes;
+}
+
+function suppressFallbackRail(chunks, modes) {
+  let removed = 0;
+  const prefixes = [...modes].map((mode) => `${mode}:`);
+  for (const values of Object.values(chunks)) {
+    for (let i = values.length - 1; i >= 0; i--) {
+      const object = values[i];
+      if (!['nav-path', 'road-surface'].includes(object.kind)) continue;
+      if (!modes.has(object.mode) && !prefixes.some((prefix) => object.sourceId?.startsWith(prefix))) continue;
+      values.splice(i, 1);
+      removed++;
+    }
+  }
+  return removed;
+}
+
 function importStreetOverrides(features, chunks) {
   if (!features) return 0;
   let accepted = 0;
@@ -585,7 +668,8 @@ function importStreetOverrides(features, chunks) {
         tags: {
           ...properties,
           ...(mode === 'tram' ? { railway: 'tram' } : {}),
-          ...(!properties.highway && mode !== 'tram' ? { highway: mode === 'pedestrian' ? 'footway' : 'residential' } : {}),
+          ...(mode === 'train' ? { railway: 'rail' } : {}),
+          ...(!properties.highway && mode !== 'tram' && mode !== 'train' ? { highway: mode === 'pedestrian' ? 'footway' : 'residential' } : {}),
         },
         geometry: line.map(([lon, lat]) => ({ lon, lat })),
       });
@@ -1218,7 +1302,13 @@ export async function enrichMelbourneMap({ root, grid, roadSurfaces = [], baseSu
 
   report.results.footpaths = importFootpathSurfaces(await loadSource(cacheDir, 'footpaths', options, report), chunks);
   report.results.suppressedInferredFootpaths = suppressInferredFootpaths(chunks);
-  report.results.tramTracks = importTramTracks(await loadSource(cacheDir, 'tramTracks', options, report), chunks);
+  const tramTracks = await loadSource(cacheDir, 'tramTracks', options, report);
+  const railTracks = await loadSource(cacheDir, 'railTracks', options, report);
+  const authoritativeRailModes = railModes(railTracks);
+  if (tramTracks?.length) authoritativeRailModes.add('tram');
+  report.results.suppressedOsmRail = suppressFallbackRail(chunks, authoritativeRailModes);
+  report.results.tramTracks = importTramTracks(tramTracks, chunks);
+  report.results.railTracks = importRailTracks(railTracks, chunks);
   report.results.streetOverrides = importStreetOverrides(await loadSource(cacheDir, 'streetOverrides', options, report), chunks);
 
   const planning = await loadSource(cacheDir, 'planning', options, report);

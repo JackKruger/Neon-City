@@ -1,5 +1,6 @@
 import { TILE } from '../core/const';
 import type { AuthoredMap } from '../world/CityMap';
+import { TransportFlag } from '../world/MapContract';
 
 const MAP_COLORS: readonly [number, number, number][] = [
   [76, 74, 104],   // plaza
@@ -29,6 +30,16 @@ export function buildMapCanvas(map: AuthoredMap): HTMLCanvasElement {
     image.data[offset + 3] = 255;
   }
   ctx.putImageData(image, 0, 0);
+  const transport = map.layers?.transport;
+  if (transport) {
+    ctx.globalAlpha = 0.9;
+    for (let i = 0; i < transport.length; i++) {
+      if ((transport[i] & TransportFlag.Rail) === 0) continue;
+      ctx.fillStyle = (transport[i] & TransportFlag.Tram) !== 0 ? '#ff5fcf' : '#75d8ff';
+      ctx.fillRect(i % map.width, Math.floor(i / map.width), 1, 1);
+    }
+    ctx.globalAlpha = 1;
+  }
   return canvas;
 }
 
@@ -40,6 +51,7 @@ export interface MinimapState {
   roadName: string | null;
   speedLimitKmh?: number;
   cops: { x: number; z: number }[];
+  transit?: { x: number; z: number; mode: 'tram' | 'train' }[];
 }
 
 /** A player-up, per-viewport map rendered from the shared authored raster. */
@@ -128,6 +140,16 @@ export class Minimap {
       ctx.shadowColor = '#ff365f';
       ctx.shadowBlur = 12;
       ctx.fill();
+    }
+
+    for (const transit of state.transit ?? []) {
+      const dx = ((transit.x - state.x) / TILE) * scale;
+      const dz = ((transit.z - state.z) / TILE) * scale;
+      const markerX = cos * dx - sin * dz;
+      const markerY = sin * dx + cos * dz;
+      if (Math.hypot(markerX, markerY) > center - 10) continue;
+      ctx.fillStyle = transit.mode === 'tram' ? '#ff5fcf' : '#75d8ff';
+      ctx.fillRect(center + markerX - 4, center + markerY - 4, 8, 8);
     }
 
     ctx.shadowBlur = 10;

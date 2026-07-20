@@ -359,6 +359,11 @@ export class Game {
     });
   }
 
+  /** True when a streamed tram currently occupies this road position. */
+  transitBlocksRoad(x: number, z: number): boolean {
+    return this.city.transit.blocksRoad(x, z);
+  }
+
   /** Fill `out` with vehicles whose chassis origins lie within `radius`.
    * The fixed-step spatial index keeps local AI queries independent of the
    * total number of parked cars in streamed chunks. */
@@ -716,6 +721,7 @@ export class Game {
           const t = cop.vehicle.body.translation();
           return { x: t.x, z: t.z };
         }),
+        transit: this.city.transit.positions(),
       });
     }
     this.hud.setInputMethods(this.players.map((player) => this.input.inputMethod(player.index)));
@@ -751,6 +757,7 @@ export class Game {
         stream: this.city.stats(),
         pedestrians: this.npcs.peds.length,
         traffic: this.npcs.traffic.length,
+        transit: this.city.transit.vehicles.length,
         vehicles: this.vehicles.length,
         police,
         pickups: this.pickups.length,
@@ -854,6 +861,7 @@ export class Game {
       p.cameraYaw = this.viewports.cameras[p.index]?.yaw() ?? 0;
     }
     this.rebuildVehicleGrid();
+    this.city.fixedUpdate(STEP);
     const npcStarted = performance.now();
     this.npcs.update(STEP);
     const npcMs = performance.now() - npcStarted;
@@ -869,6 +877,7 @@ export class Game {
     const physicsMs = performance.now() - physicsStarted;
     const postPhysicsStarted = performance.now();
     for (const vehicle of this.vehicles) vehicle.afterPhysics();
+    this.city.afterPhysics();
     this.npcs.afterPhysics();
     const postPhysicsMs = performance.now() - postPhysicsStarted;
     return { npcMs, actorMs, physicsMs, postPhysicsMs };

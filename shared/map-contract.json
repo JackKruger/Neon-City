@@ -30,16 +30,17 @@
     "authoredMap": 4,
     "objectIndex": 3,
     "roadIndex": 1,
-    "compiledManifest": 1,
-    "compiler": 1,
-    "runtime": 2,
-    "container": 2,
+    "compiledManifest": 2,
+    "compiler": 2,
+    "runtime": 3,
+    "container": 3,
     "provenance": 1
   },
   "nbchSections": {
     "HGT1": 1,
     "COL1": 1,
-    "NAV2": 2,
-    "GME1": 1
+    "NAV3": 3,
+    "GME1": 1,
+    "TRN1": 1
   }
 }

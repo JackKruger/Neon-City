@@ -62,23 +62,23 @@ function validateGlbDocument(bytes, gltf, key) {
 }
 
 function decodeNavigation(section, entry, nodes, edges) {
-  ensure(section.length >= 8 && section.readUInt16LE(0) === NBCH_SECTIONS.NAV2, `chunk ${chunkKey(entry.kx, entry.kz)} has invalid NAV2 header`);
+  ensure(section.length >= 8 && section.readUInt16LE(0) === NBCH_SECTIONS.NAV3, `chunk ${chunkKey(entry.kx, entry.kz)} has invalid NAV3 header`);
   const nodeCount = section.readUInt16LE(2);
   const edgeCount = section.readUInt32LE(4);
-  ensure(section.length === 8 + nodeCount * 12 + edgeCount * 20, `chunk ${chunkKey(entry.kx, entry.kz)} has invalid NAV2 length`);
+  ensure(section.length === 8 + nodeCount * 16 + edgeCount * 20, `chunk ${chunkKey(entry.kx, entry.kz)} has invalid NAV3 length`);
   let offset = 8;
   for (let i = 0; i < nodeCount; i++) {
     const xcm = section.readInt32LE(offset);
-    const zcm = section.readInt32LE(offset + 4);
-    const flags = section.readUInt16LE(offset + 8);
+    const zcm = section.readInt32LE(offset + 8);
+    const flags = section.readUInt16LE(offset + 12);
     const cx = navigationCellFromCentimeters(xcm);
     const cz = navigationCellFromCentimeters(zcm);
     ensure(Math.floor(cx / CHUNK_TILES) === entry.kx && Math.floor(cz / CHUNK_TILES) === entry.kz, `navigation node ${xcm},${zcm} has wrong owner`);
-    ensure((flags & 7) !== 0, `navigation node ${xcm},${zcm} has no travel mode`);
-    const key = `${xcm},${zcm},${flags & 7}`;
+    ensure((flags & 15) !== 0, `navigation node ${xcm},${zcm} has no travel mode`);
+    const key = `${xcm},${zcm},${flags & 15}`;
     ensure(!nodes.has(key), `duplicate navigation node ${key}`);
     nodes.add(key);
-    offset += 12;
+    offset += 16;
   }
   for (let i = 0; i < edgeCount; i++) {
     const edge = {
@@ -86,7 +86,7 @@ function decodeNavigation(section, entry, nodes, edges) {
       fromZ: section.readInt32LE(offset + 4),
       toX: section.readInt32LE(offset + 8),
       toZ: section.readInt32LE(offset + 12),
-      flags: section.readUInt16LE(offset + 16) & 7,
+      flags: section.readUInt16LE(offset + 16) & 15,
     };
     ensure(Math.hypot(edge.fromX - edge.toX, edge.fromZ - edge.toZ) <= 1500, `navigation edge is longer than 15m in ${entry.kx},${entry.kz}`);
     edges.push(edge);
@@ -145,7 +145,8 @@ export function validateCompiledMap(outputRoot = join(ROOT, 'public', 'maps')) {
     ensure(container.sections.get('HGT1').length === 121 * 2, `chunk ${key} HGT1 length mismatch`);
     ensure(container.sections.get('COL1').length >= 12 && container.sections.get('COL1').readUInt16LE(0) === NBCH_SECTIONS.COL1, `chunk ${key} COL1 is invalid`);
     ensure(container.sections.get('GME1').length >= 8 && container.sections.get('GME1').readUInt16LE(0) === NBCH_SECTIONS.GME1, `chunk ${key} GME1 is invalid`);
-    decodeNavigation(container.sections.get('NAV2'), entry, nodes, edges);
+    ensure(container.sections.get('TRN1').length >= 4 && container.sections.get('TRN1').readUInt16LE(0) === NBCH_SECTIONS.TRN1, `chunk ${key} TRN1 is invalid`);
+    decodeNavigation(container.sections.get('NAV3'), entry, nodes, edges);
     entries.set(key, entry);
     expectedFiles.add(glbName);
     expectedFiles.add(binName);

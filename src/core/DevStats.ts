@@ -46,6 +46,7 @@ export interface WorldStats {
   stream: CityStreamStats;
   pedestrians: number;
   traffic: number;
+  transit: number;
   vehicles: number;
   police: number;
   pickups: number;
@@ -198,7 +199,7 @@ export class DevStats {
       lines.push(
         `chunks ${stream.loadedChunks}/${stream.wantedChunks}  pending ${stream.pendingChunks}  missing ${stream.missingChunks}  ${(stream.loadedBytes / 1048576).toFixed(1)} MiB`,
         `chunk load last ${fmt(stream.lastLoadMs)}  avg ${fmt(stream.averageLoadMs)} ms  ${stream.scope}${stream.partial ? ' PARTIAL' : ''}`,
-        `actors peds ${snapshot.world.pedestrians}  traffic ${snapshot.world.traffic}  vehicles ${snapshot.world.vehicles}  police ${snapshot.world.police}`,
+        `actors peds ${snapshot.world.pedestrians}  traffic ${snapshot.world.traffic}  transit ${snapshot.world.transit}  vehicles ${snapshot.world.vehicles}  police ${snapshot.world.police}`,
         `physics bodies ${snapshot.world.bodies}  colliders ${snapshot.world.colliders}   lights ${snapshot.world.dynamicLights}`,
         `weather ${snapshot.world.weather}  pickups ${snapshot.world.pickups}${heap ? `  JS heap ${(heap / 1048576).toFixed(1)} MiB` : ''}`
       );

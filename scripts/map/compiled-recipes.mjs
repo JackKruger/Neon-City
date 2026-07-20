@@ -48,6 +48,7 @@ export const MATERIALS = [
   { name: 'art', color: [0.807, 0.107, 0.263], roughness: 0.35, metalness: 0.2 },
   { name: 'marking', color: [0.94, 0.92, 0.78], roughness: 0.72 },
   { name: 'rail', color: [0.34, 0.36, 0.39], roughness: 0.28, metalness: 0.82 },
+  { name: 'ballast', color: [0.29, 0.28, 0.3], roughness: 0.96, metalness: 0.02 },
   { name: 'concrete', color: [0.42, 0.43, 0.45], roughness: 0.94 },
   { name: 'cycleway', color: [0.34, 0.18, 0.14], roughness: 0.9 },
   { name: 'roof-tile', color: [0.44, 0.16, 0.12], roughness: 0.85 },
@@ -719,15 +720,30 @@ function encodeColliders(cuboids, meshes, sourceIndices) {
 
 function encodeNavigation(nodes, edges) {
   const writer = bufferWriter();
-  writer.u16(NBCH_SECTIONS.NAV2); writer.u16(nodes.length); writer.u32(edges.length);
+  writer.u16(NBCH_SECTIONS.NAV3); writer.u16(nodes.length); writer.u32(edges.length);
   for (const node of nodes) {
-    writer.i32(Math.round(node.x * 100)); writer.i32(Math.round(node.z * 100));
+    writer.i32(Math.round(node.x * 100)); writer.i32(Math.round((node.y ?? 0) * 100)); writer.i32(Math.round(node.z * 100));
     writer.u16(node.flags); writer.u16(node.speed);
   }
   for (const edge of edges) {
     writer.i32(Math.round(edge.fromX * 100)); writer.i32(Math.round(edge.fromZ * 100));
     writer.i32(Math.round(edge.toX * 100)); writer.i32(Math.round(edge.toZ * 100));
     writer.u16(edge.flags); writer.u16(0);
+  }
+  return writer.finish();
+}
+
+function encodeTransit(stops, sourceIndices) {
+  const writer = bufferWriter();
+  writer.u16(NBCH_SECTIONS.TRN1); writer.u16(stops.length);
+  const encoder = new TextEncoder();
+  for (const stop of stops) {
+    writer.f32(stop.x); writer.f32(stop.y); writer.f32(stop.z);
+    writer.u8(stop.mode === 'train' ? 2 : 1); writer.u8(0); writer.u16(0);
+    writer.u32(sourceIndices.get(stop.sourceId));
+    const name = encoder.encode(stop.name ?? '');
+    if (name.length > 65535) throw new Error('transit stop name is too long');
+    writer.u16(name.length); writer.bytes(name);
   }
   return writer.finish();
 }
@@ -846,26 +862,27 @@ function buildingChunkSeams(context, object, kx, kz) {
 const NAV_VEHICLE = 1;
 const NAV_PEDESTRIAN = 2;
 const NAV_TRAM = 4;
+const NAV_TRAIN = 8;
 
-function navigationFromPaths(objects, kx, kz) {
+function navigationFromPaths(context, objects, kx, kz) {
   const nodes = new Map();
   const edges = [];
   const starts = [];
   const ends = [];
   const owner = (x, z) => ({
-    // Ownership must use the same centimetre precision written to NAV2.
+    // Ownership must use the same centimetre precision written to NAV3.
     // Otherwise rounding a negative half-cell can move the encoded node into
     // a neighboring chunk after ownership has already been decided.
     kx: Math.floor(navigationCellFromCentimeters(Math.round(x * 100)) / CHUNK_TILES),
     kz: Math.floor(navigationCellFromCentimeters(Math.round(z * 100)) / CHUNK_TILES),
   });
-  const flagFor = (mode) => mode === 'pedestrian' ? NAV_PEDESTRIAN : mode === 'tram' ? NAV_TRAM : NAV_VEHICLE;
+  const flagFor = (mode) => mode === 'pedestrian' ? NAV_PEDESTRIAN : mode === 'tram' ? NAV_TRAM : mode === 'train' ? NAV_TRAIN : NAV_VEHICLE;
   const nodeKey = (point, flags) => `${Math.round(point.x * 100)},${Math.round(point.z * 100)},${flags}`;
   const addNode = (point, flags, speed) => {
     const owned = owner(point.x, point.z);
     if (owned.kx !== kx || owned.kz !== kz) return;
     const key = nodeKey(point, flags);
-    if (!nodes.has(key)) nodes.set(key, { x: rounded(point.x), z: rounded(point.z), flags, speed });
+    if (!nodes.has(key)) nodes.set(key, { x: rounded(point.x), y: rounded(context.bridgeSurfaceHeightAt(point.x, point.z)), z: rounded(point.z), flags, speed });
   };
   for (const object of objects) {
     if (object.kind !== 'nav-path' || !Array.isArray(object.points) || object.points.length < 2) continue;
@@ -929,6 +946,7 @@ export function compileChunkRecipe(context, kx, kz) {
   const cuboids = [];
   const collisionMeshes = [];
   const parked = [];
+  const transitStops = [];
   const nodes = [];
   const edges = [];
   const cells = new Uint8Array(CHUNK_TILES * CHUNK_TILES);
@@ -1158,6 +1176,14 @@ export function compileChunkRecipe(context, kx, kz) {
       cuboids.push({ sourceId: object.sourceId, x: object.x, y: base + object.height / 2, z: object.z, hx: 0.22, hy: object.height / 2, hz: 0.22, rotation: 0 });
     } else if (object.kind === 'parking') {
       parked.push({ sourceId: object.sourceId, x: object.x, z: object.z, rotation: object.rotation ?? 0, seed: Number.parseInt(createHash('sha256').update(object.sourceId).digest('hex').slice(0, 8), 16) });
+    } else if (object.kind === 'transit-stop') {
+      transitStops.push({
+        sourceId: object.sourceId, mode: object.mode, name: object.name ?? '', x: object.x,
+        y: context.bridgeSurfaceHeightAt(object.x, object.z) + 0.05, z: object.z,
+      });
+      const base = context.bridgeSurfaceHeightAt(object.x, object.z);
+      addBox(buckets.get('prop'), object.x, base + 1.25, object.z, 0.07, 1.25, 0.07);
+      addBox(buckets.get('prop'), object.x, base + 2.25, object.z, 0.28, 0.18, 0.04);
     } else if (object.kind !== 'road-surface' && object.kind !== 'nav-path') {
       const base = context.bridgeSurfaceHeightAt(object.x, object.z);
       addPointPropRecipe(buckets, cuboids, object, base);
@@ -1165,7 +1191,7 @@ export function compileChunkRecipe(context, kx, kz) {
   }
 
   if (authoredNavigation) {
-    const authored = navigationFromPaths(objects, kx, kz);
+    const authored = navigationFromPaths(context, objects, kx, kz);
     nodes.push(...authored.nodes);
     edges.push(...authored.edges);
   }
@@ -1193,8 +1219,9 @@ export function compileChunkRecipe(context, kx, kz) {
     sections: {
       HGT1: heightBytes,
       COL1: encodeColliders(cuboids, collisionMeshes, sourceIndices),
-      NAV2: encodeNavigation(nodes, edges),
+      NAV3: encodeNavigation(nodes, edges),
       GME1: encodeGameplay(cells, parked, sourceList, sourceIndices),
+      TRN1: encodeTransit(transitStops, sourceIndices),
     },
     counts: { nodes: nodes.length, edges: edges.length, cuboids: cuboids.length, meshes: collisionMeshes.length, parked: parked.length, sources: sourceList.length },
   };

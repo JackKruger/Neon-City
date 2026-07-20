@@ -17,6 +17,16 @@
       "file": "tram-tracks.geojson"
     },
     {
+      "key": "railTracks",
+      "title": "Vicmap Transport Railway Line",
+      "license": "CC BY 4.0",
+      "status": "loaded",
+      "file": "rail-tracks.geojson",
+      "records": 1224,
+      "retrievedAt": "2026-07-20T11:39:31.514Z",
+      "url": "https://opendata.maps.vic.gov.au/geoserver/wfs?service=WFS&version=2.0.0&request=GetFeature&typeNames=open-data-platform%3Atr_rail&outputFormat=application%2Fjson&srsName=EPSG%3A4326&bbox=144.9108%2C-37.8739%2C145.0092%2C-37.7961%2CEPSG%3A4326"
+    },
+    {
       "key": "streetOverrides",
       "title": "Neon Bay reviewed street corrections",
       "status": "missing",
@@ -86,7 +96,7 @@
       "status": "loaded",
       "file": "street-furniture.geojson",
       "records": 23426,
-      "retrievedAt": "2026-07-20T10:14:58.460Z"
+      "retrievedAt": "2026-07-19T01:13:54.128Z"
     },
     {
       "key": "art",
@@ -95,7 +105,7 @@
       "status": "loaded",
       "file": "public-art.geojson",
       "records": 261,
-      "retrievedAt": "2026-07-20T10:14:58.860Z"
+      "retrievedAt": "2026-07-19T01:13:54.491Z"
     },
     {
       "key": "parking",
@@ -132,10 +142,12 @@
     }
   ],
   "results": {
-    "osmTransportPaths": 110465,
+    "osmTransportPaths": 116386,
     "footpaths": 11053,
-    "suppressedInferredFootpaths": 20936,
+    "suppressedInferredFootpaths": 20938,
+    "suppressedOsmRail": 52686,
     "tramTracks": 0,
+    "railTracks": 1224,
     "streetOverrides": 0,
     "landuse": 0,
     "transport": 0,

@@ -92,6 +92,29 @@ test('tram centrelines generate standard-gauge rails and a tram graph', () => {
   assert.ok(rails.every((item) => item.elevation >= bed.elevation + 0.03));
 });
 
+test('rail centrelines generate standard-gauge train tracks in both directions', () => {
+  const features = roadSurfacesFromOverpass({ elements: [{
+    type: 'way', id: 11, tags: { railway: 'rail', maxspeed: '80' }, geometry: [
+      { lat: -37.835, lon: 144.9595 }, { lat: -37.835, lon: 144.9605 },
+    ],
+  }] });
+  assert.equal(features.filter((item) => item.role?.startsWith('train-rail')).length, 2);
+  const paths = features.filter((item) => item.kind === 'nav-path' && item.mode === 'train');
+  assert.equal(paths.length, 2);
+  assert.ok(paths.every((item) => item.speed === 80));
+  assert.deepEqual(paths[0].points, [...paths[1].points].reverse());
+});
+
+test('transit stop nodes become named mode-specific records', () => {
+  const features = roadSurfacesFromOverpass({ elements: [{
+    type: 'node', id: 12, lat: -37.835, lon: 144.96,
+    tags: { railway: 'tram_stop', name: 'Flinders Street' },
+  }] });
+  assert.deepEqual(features.map(({ kind, mode, name }) => ({ kind, mode, name })), [
+    { kind: 'transit-stop', mode: 'tram', name: 'Flinders Street' },
+  ]);
+});
+
 test('road information preserves names and speed limits in spatial chunks', () => {
   const info = roadInfoFromOverpass({ elements: [{
     type: 'way', id: 10, tags: { highway: 'primary', name: 'Flinders Street', maxspeed: '40' }, geometry: [

@@ -59,6 +59,7 @@ export interface CompiledCollisionMesh {
 
 export interface CompiledNavNode {
   x: number;
+  y: number;
   z: number;
   flags: number;
   speed: number;
@@ -80,6 +81,15 @@ export interface CompiledParkedSpawn {
   sourceIndex: number;
 }
 
+export interface CompiledTransitStop {
+  x: number;
+  y: number;
+  z: number;
+  mode: 'tram' | 'train';
+  sourceIndex: number;
+  name: string;
+}
+
 export interface CompiledChunkData {
   kx: number;
   kz: number;
@@ -90,6 +100,7 @@ export interface CompiledChunkData {
   navEdges: CompiledNavEdge[];
   cells: Uint8Array;
   parked: CompiledParkedSpawn[];
+  transitStops: CompiledTransitStop[];
   sources: string[];
 }
 
@@ -208,13 +219,14 @@ export function parseCompiledChunk(buffer: ArrayBuffer, expectedKx: number, expe
   }
   ensure(collisionReader.remaining() === 0, 'trailing COL1 data');
 
-  const navReader = new Reader(sections.get('NAV2')!);
-  ensure(navReader.u16() === MAP_CONTRACT.nbchSections.NAV2, 'unsupported NAV2 version');
+  const navReader = new Reader(sections.get('NAV3')!);
+  ensure(navReader.u16() === MAP_CONTRACT.nbchSections.NAV3, 'unsupported NAV3 version');
   const nodeCount = navReader.u16();
   const edgeCount = navReader.u32();
   const navNodes: CompiledNavNode[] = [];
   for (let i = 0; i < nodeCount; i++) navNodes.push({
-    x: navReader.i32() / 100, z: navReader.i32() / 100, flags: navReader.u16(), speed: navReader.u16(),
+    x: navReader.i32() / 100, y: navReader.i32() / 100, z: navReader.i32() / 100,
+    flags: navReader.u16(), speed: navReader.u16(),
   });
   const navEdges: CompiledNavEdge[] = [];
   for (let i = 0; i < edgeCount; i++) {
@@ -225,7 +237,7 @@ export function parseCompiledChunk(buffer: ArrayBuffer, expectedKx: number, expe
     });
     navReader.u16();
   }
-  ensure(navReader.remaining() === 0, 'trailing NAV2 data');
+  ensure(navReader.remaining() === 0, 'trailing NAV3 data');
 
   const gameReader = new Reader(sections.get('GME1')!);
   ensure(gameReader.u16() === MAP_CONTRACT.nbchSections.GME1, 'unsupported GME1 version');
@@ -240,6 +252,20 @@ export function parseCompiledChunk(buffer: ArrayBuffer, expectedKx: number, expe
   const sources: string[] = [];
   for (let i = 0; i < sourceCount; i++) sources.push(decoder.decode(gameReader.take(gameReader.u16())));
   ensure(gameReader.remaining() === 0, 'trailing GME1 data');
-  ensure(cuboids.every((item) => item.sourceIndex < sources.length) && meshes.every((item) => item.sourceIndex < sources.length) && parked.every((item) => item.sourceIndex < sources.length), 'compiled source index is out of range');
-  return { kx, kz, heights, cuboids, meshes, navNodes, navEdges, cells, parked, sources };
+  const transitReader = new Reader(sections.get('TRN1')!);
+  ensure(transitReader.u16() === MAP_CONTRACT.nbchSections.TRN1, 'unsupported TRN1 version');
+  const transitCount = transitReader.u16();
+  ensure(transitCount <= 4096, 'TRN1 record count is unreasonable');
+  const transitStops: CompiledTransitStop[] = [];
+  for (let i = 0; i < transitCount; i++) {
+    const x = transitReader.f32(); const y = transitReader.f32(); const z = transitReader.f32();
+    const modeCode = transitReader.u8(); transitReader.u8(); transitReader.u16();
+    ensure(modeCode === 1 || modeCode === 2, 'invalid TRN1 transit mode');
+    const sourceIndex = transitReader.u32();
+    const name = decoder.decode(transitReader.take(transitReader.u16()));
+    transitStops.push({ x, y, z, mode: modeCode === 2 ? 'train' : 'tram', sourceIndex, name });
+  }
+  ensure(transitReader.remaining() === 0, 'trailing TRN1 data');
+  ensure(cuboids.every((item) => item.sourceIndex < sources.length) && meshes.every((item) => item.sourceIndex < sources.length) && parked.every((item) => item.sourceIndex < sources.length) && transitStops.every((item) => item.sourceIndex < sources.length), 'compiled source index is out of range');
+  return { kx, kz, heights, cuboids, meshes, navNodes, navEdges, cells, parked, transitStops, sources };
 }

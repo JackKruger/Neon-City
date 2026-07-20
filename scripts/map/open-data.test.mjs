@@ -39,6 +39,12 @@ test('open data enrichment emits all runtime contracts', async () => {
     writeGeo('vicmap-planning.geojson', [polygon('Commercial 1 Zone', block)]);
     writeGeo('vicmap-transport.geojson', [line({ feature_type: 'Road Bridge' }, road)]);
     writeGeo('speed-zones.geojson', [line({ speed_zone: 40 }, road)]);
+    writeGeo('rail-tracks.geojson', [
+      line({ pfi: 701, feature_type_code: 'railway' }, [[144.9595, -37.8348], [144.9605, -37.8348]]),
+      line({ pfi: 702, feature_type_code: 'tramway' }, [[144.9595, -37.8352], [144.9605, -37.8352]]),
+      line({ pfi: 703, feature_type_code: 'bridge_rail_o' }, [[144.9595, -37.8347], [144.9605, -37.8347]]),
+      line({ pfi: 704, feature_type_code: 'rail_siding' }, [[144.9595, -37.8353], [144.9605, -37.8353]]),
+    ]);
     writeGeo('building-footprints.geojson', [
       polygon('building', building, {
         objectid: 'A1', structure_id: 'A', footprint_extrusion: 28,
@@ -91,6 +97,21 @@ test('open data enrichment emits all runtime contracts', async () => {
         x: 0,
         z: 0,
         points: [[-8, 0], [8, 0]],
+      }, {
+        kind: 'nav-path',
+        sourceId: 'train:osm-fallback:nav',
+        mode: 'train',
+        speed: 80,
+        x: 0,
+        z: 0,
+        points: [[-8, 0], [8, 0]],
+      }, {
+        kind: 'transit-stop',
+        sourceId: 'stop:osm-platform',
+        mode: 'train',
+        name: 'Test Station',
+        x: 0,
+        z: 0,
       }],
       baseSuburbs: null,
     });
@@ -115,6 +136,8 @@ test('open data enrichment emits all runtime contracts', async () => {
     assert.equal(result.report.results.buildings.excludedInfrastructure, 2);
     assert.equal(result.report.results.buildings.infrastructureComponents, 3);
     assert.ok(result.report.results.osmTransportPaths > 0);
+    assert.ok(result.report.results.suppressedOsmRail > 0);
+    assert.equal(result.report.results.railTracks, 4);
     const authored = Object.values(objects.chunks).flat();
     for (const kind of ['road-surface', 'building', 'tree', 'bollard', 'tree-guard', 'information-pillar', 'art', 'parking']) {
       assert.ok(authored.some((item) => item.kind === kind), kind);
@@ -144,6 +167,13 @@ test('open data enrichment emits all runtime contracts', async () => {
     assert.ok(infrastructure.some((item) => item.structure === 'bridge' && item.component === 'jetty' && !item.roadDeck));
     assert.ok(infrastructure.some((item) => item.structure === 'tunnel' && item.roadDeck));
     assert.ok(infrastructure.every((item) => Number.isFinite(item.minAhd) && Number.isFinite(item.maxAhd)));
+    assert.ok(!authored.some((item) => item.sourceId === 'train:osm-fallback:nav'));
+    assert.ok(authored.some((item) => item.sourceId === 'stop:osm-platform'));
+    assert.ok(authored.some((item) => item.kind === 'nav-path' && item.mode === 'train' && item.sourceId?.includes('vicmap-701')));
+    assert.ok(authored.some((item) => item.kind === 'nav-path' && item.mode === 'tram' && item.sourceId?.includes('vicmap-702')));
+    assert.ok(authored.some((item) => item.kind === 'road-surface' && item.structure === 'bridge' && item.sourceId?.includes('vicmap-703')));
+    assert.ok(!authored.some((item) => item.kind === 'nav-path' && item.sourceId?.includes('vicmap-704')));
+    assert.ok(authored.some((item) => item.kind === 'road-surface' && item.sourceId?.includes('vicmap-704')));
     assert.equal(result.suburbs?.[0]?.name, 'Melbourne');
 
     const buildingSnapshot = authored.filter((item) => item.kind === 'building');

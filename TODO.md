@@ -59,6 +59,9 @@
 
 ## World
 
+- [x] Add accurate train and tram tracks with living transit.
+  - Shipped in the spawn pilot: refreshed OSM/Vicmap-ready physical rail ingestion, standard-gauge rail meshes, train/tram navigation and stop records, solid deterministic ambient consists, dwell/door behavior, collision reactions, traffic yielding, and map markers. GTFS-exact timetables and passenger boarding remain future work.
+
 - [x] Make streetlights emit light after dark.
   - Add or connect a time-of-day/darkness state.
   - Toggle emissive materials and nearby illumination after dark.

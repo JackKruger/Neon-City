@@ -49,7 +49,7 @@ This file applies to the entire repository.
 - Vehicle, pedestrian, and tram navigation must be generated from the same street geometry used for rendering.
 - Australia uses left-hand traffic. Do not restore fixed right-hand or cell-fraction lane assumptions in compiled mode.
 - Keep compiler/runtime versions and binary layouts synchronized between `scripts/map/compiled-format.mjs`, `scripts/map/compiled-recipes.mjs`, and `src/world/CompiledFormat.ts`.
-- Current NBCH sections are `HGT1`, `COL1`, `NAV2`, and `GME1`. Format changes require version bumps, parser/validator changes, compatibility tests, and regenerated pilot chunks.
+- Current NBCH sections are `HGT1`, `COL1`, `NAV3`, `GME1`, and `TRN1`. Format changes require version bumps, parser/validator changes, compatibility tests, and regenerated pilot chunks.
 
 ## Generated map assets
 

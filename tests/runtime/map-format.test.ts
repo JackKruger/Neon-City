@@ -15,11 +15,13 @@ function sections() {
   const collision = Buffer.alloc(12);
   collision.writeUInt16LE(NBCH_SECTIONS.COL1, 0);
   const navigation = Buffer.alloc(8);
-  navigation.writeUInt16LE(NBCH_SECTIONS.NAV2, 0);
+  navigation.writeUInt16LE(NBCH_SECTIONS.NAV3, 0);
   const gameplay = Buffer.alloc(108);
   gameplay.writeUInt16LE(NBCH_SECTIONS.GME1, 0);
   gameplay.writeUInt16LE(100, 2);
-  return { HGT1: Buffer.alloc(121 * 2), COL1: collision, NAV2: navigation, GME1: gameplay };
+  const transit = Buffer.alloc(4);
+  transit.writeUInt16LE(NBCH_SECTIONS.TRN1, 0);
+  return { HGT1: Buffer.alloc(121 * 2), COL1: collision, NAV3: navigation, GME1: gameplay, TRN1: transit };
 }
 
 function arrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -32,7 +34,7 @@ describe('shared map contract', () => {
     expect(MANIFEST_VERSION).toBe(MAP_CONTRACT.versions.compiledManifest);
     expect(CONTAINER_VERSION).toBe(MAP_CONTRACT.versions.container);
     expect(RUNTIME_VERSION).toBe(MAP_CONTRACT.versions.runtime);
-    expect(MAP_CONTRACT.nbchSections).toEqual({ HGT1: 1, COL1: 1, NAV2: 2, GME1: 1 });
+    expect(MAP_CONTRACT.nbchSections).toEqual({ HGT1: 1, COL1: 1, NAV3: 3, GME1: 1, TRN1: 1 });
     const manifest = JSON.parse(readFileSync('public/maps/melbourne.compiled.json', 'utf8'));
     expect(validateCompiledManifest(manifest).mapId).toBe(MAP_CONTRACT.mapId);
   });
@@ -56,7 +58,7 @@ describe('cross-environment NBCH format', () => {
   it('parses a container encoded by the Node compiler with the runtime parser', () => {
     const encoded = encodeChunkContainer(3, -4, sections());
     const parsed = parseCompiledChunk(arrayBuffer(encoded), 3, -4);
-    expect(parsed).toMatchObject({ kx: 3, kz: -4, cuboids: [], meshes: [], navNodes: [], navEdges: [], parked: [], sources: [] });
+    expect(parsed).toMatchObject({ kx: 3, kz: -4, cuboids: [], meshes: [], navNodes: [], navEdges: [], parked: [], transitStops: [], sources: [] });
     expect(parsed.heights).toHaveLength(121);
     expect(parsed.cells).toHaveLength(100);
   });

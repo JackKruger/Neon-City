@@ -33,12 +33,13 @@ test('NBCH round-trips its versioned section table and rejects corrupt offsets',
   const sections = {
     HGT1: Buffer.alloc(242),
     COL1: Buffer.from([1, 0, 0, 0]),
-    NAV2: Buffer.from([2, 0, 0, 0]),
+    NAV3: Buffer.from([3, 0, 0, 0]),
     GME1: Buffer.from([1, 0, 0, 0]),
+    TRN1: Buffer.from([1, 0, 0, 0]),
   };
   const encoded = encodeChunkContainer(4, -16, sections);
   const parsed = parseChunkContainer(encoded, { kx: 4, kz: -16 });
-  assert.equal(parsed.version, 2);
+  assert.equal(parsed.version, 3);
   assert.deepEqual([...parsed.sections], Object.entries(sections).map(([type, bytes]) => [type, Buffer.from(bytes)]));
   const malformed = Buffer.from(encoded);
   malformed.writeUInt32LE(malformed.length + 4, 20);
@@ -198,11 +199,11 @@ test('negative boundary navigation ownership follows encoded centimetres', () =>
     objectIndex: { chunks: { '-13,-27': [path], '-13,-26': [path] } },
   });
   const coordinates = (kz) => {
-    const nav = compileChunkRecipe(context, -13, kz).sections.NAV2;
+    const nav = compileChunkRecipe(context, -13, kz).sections.NAV3;
     const count = nav.readUInt16LE(2);
     return Array.from({ length: count }, (_, index) => {
-      const offset = 8 + index * 12;
-      return [nav.readInt32LE(offset), nav.readInt32LE(offset + 4)];
+      const offset = 8 + index * 16;
+      return [nav.readInt32LE(offset), nav.readInt32LE(offset + 8)];
     });
   };
   assert.ok(coordinates(-26).some(([x, z]) => x === -144773 && z === -312600));
@@ -212,6 +213,28 @@ test('negative boundary navigation ownership follows encoded centimetres', () =>
     { kx: -36, kz: -37 },
     'an edge beyond the south boundary must remain outside the full-city manifest'
   );
+});
+
+test('transit stops compile into named mode-specific TRN1 records', () => {
+  const stop = {
+    kind: 'transit-stop', sourceId: 'stop:flinders', mode: 'train',
+    name: 'Flinders Street', x: 500, z: -1900,
+  };
+  const context = createCompilerContext({
+    meta: {},
+    grid: new Uint8Array(MAP_SIZE ** 2),
+    heights: new Int16Array((MAP_SIZE + 1) ** 2),
+    coverage: new Uint8Array(MAP_SIZE ** 2),
+    transport: new Uint8Array(MAP_SIZE ** 2),
+    speed: new Uint8Array(MAP_SIZE ** 2),
+    objectIndex: { chunks: { '4,-16': [stop] } },
+  });
+  const section = compileChunkRecipe(context, 4, -16).sections.TRN1;
+  assert.equal(section.readUInt16LE(0), 1);
+  assert.equal(section.readUInt16LE(2), 1);
+  assert.equal(section.readUInt8(16), 2);
+  const nameLength = section.readUInt16LE(24);
+  assert.equal(section.toString('utf8', 26, 26 + nameLength), 'Flinders Street');
 });
 
 test('building roofs cover their real footprint while collision stays flat', () => {
