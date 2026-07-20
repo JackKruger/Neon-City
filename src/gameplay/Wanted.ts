@@ -20,6 +20,7 @@ export class Wanted {
   private spawnCooldown = 0;
   private lastKnown = new THREE.Vector3();
   searching = false;
+  private lockedStars: 0 | 1 | 2 | 3 | null = null;
   readonly police: PoliceCar[] = [];
   readonly copPeds: CopPed[] = [];
 
@@ -29,6 +30,7 @@ export class Wanted {
   ) {}
 
   addHeat(amount: number, origin?: THREE.Vector3): void {
+    if (this.lockedStars === 0) return;
     this.heat = Math.min(this.heat + amount, MAX_HEAT);
     this.unseenTimer = 0;
     this.searchTimer = 0;
@@ -59,6 +61,21 @@ export class Wanted {
     this.recomputeStars();
   }
 
+  get lockedLevel(): 0 | 1 | 2 | 3 | null {
+    return this.lockedStars;
+  }
+
+  /** Hold a deterministic response level for testing, or null for normal heat. */
+  setLockedLevel(stars: 0 | 1 | 2 | 3 | null): void {
+    this.lockedStars = stars;
+    if (stars === null) return;
+    this.heat = stars === 0 ? 0 : STAR_THRESHOLDS[stars - 1];
+    this.unseenTimer = 0;
+    this.searchTimer = 0;
+    this.searching = false;
+    this.recomputeStars();
+  }
+
   /** Immediately dispose every responder and reset all pursuit/search timers. */
   reset(): void {
     for (const cop of this.copPeds) cop.dispose();
@@ -77,6 +94,10 @@ export class Wanted {
   }
 
   update(dt: number): void {
+    if (this.lockedStars !== null && this.stars !== this.lockedStars) {
+      this.heat = this.lockedStars === 0 ? 0 : STAR_THRESHOLDS[this.lockedStars - 1];
+      this.recomputeStars();
+    }
     for (const p of this.police) p.update(dt);
 
     // Line-of-sight is approximated by a conservative awareness radius. Once
@@ -100,7 +121,7 @@ export class Wanted {
           this.searching = true;
           this.searchTimer += dt;
         }
-        if (this.searchTimer > SEARCH_TIME) {
+        if (this.searchTimer > SEARCH_TIME && this.lockedStars === null) {
           this.heat = 0;
           this.recomputeStars();
         }

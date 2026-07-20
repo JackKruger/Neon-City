@@ -47,6 +47,7 @@ for expanding the world across Greater Melbourne are documented in
 | Enter/exit car | E                          | Y                           |
 | Helicopter up/down | Space / Shift          | A / B                       |
 | Pause          | Esc                        | Start                       |
+| Test menu (development) | F4                 | —                           |
 
 - A gamepad can take over from the keyboard: press any face button on an
   unclaimed pad.
@@ -120,4 +121,7 @@ not have detailed world chunks until the full-city compile is published. Compile
 chunks are 120 m and unload beyond a hysteresis ring.
 
 Development builds show rolling performance diagnostics while playing. Press F3
-to toggle the panel; production builds can opt in with `?dev`.
+to toggle the panel. F4 opens a test menu with time and weather locks,
+invincibility, wanted-level controls, vitals, arsenal, and vehicle repair. Cheat
+state is session-only and is not written to saves. Production builds can opt in
+to both developer panels with `?dev`.

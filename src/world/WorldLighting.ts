@@ -13,6 +13,13 @@ const RAIN_COUNT = 700;
 
 export type WeatherKind = 'clear' | 'rain' | 'fog' | 'storm';
 
+const WEATHER_TARGETS: Record<WeatherKind, { rain: number; cloud: number; fog: number }> = {
+  clear: { rain: 0, cloud: 0, fog: 0 },
+  rain: { rain: 0.7, cloud: 0.72, fog: 0.25 },
+  fog: { rain: 0, cloud: 0.38, fog: 1 },
+  storm: { rain: 1, cloud: 1, fog: 0.5 },
+};
+
 interface Lamp {
   light: THREE.PointLight;
   bulb: THREE.Mesh;
@@ -35,7 +42,8 @@ export class WorldLighting {
   private rainPositions: THREE.BufferAttribute;
   private surfaceRefreshTimer = 0;
   private wetMaterials = new Map<THREE.MeshStandardMaterial, { roughness: number; metalness: number }>();
-  private readonly forcedWeather: WeatherKind | null;
+  private timeLocked = false;
+  private weatherLock: WeatherKind | null;
 
   constructor(
     private scene: THREE.Scene,
@@ -46,9 +54,9 @@ export class WorldLighting {
     const params = new URLSearchParams(location.search);
     const rawTime = params.get('time');
     const requestedWeather = params.get('weather');
-    this.forcedWeather = requestedWeather === 'clear' || requestedWeather === 'rain' ||
+    this.weatherLock = requestedWeather === 'clear' || requestedWeather === 'rain' ||
       requestedWeather === 'fog' || requestedWeather === 'storm' ? requestedWeather : null;
-    if (this.forcedWeather) this.weather = this.forcedWeather;
+    if (this.weatherLock) this.weather = this.weatherLock;
     const requested = rawTime === null ? Number.NaN : Number(rawTime);
     const now = new Date();
     this.timeOfDay = Number.isFinite(requested)
@@ -93,7 +101,7 @@ export class WorldLighting {
 
   /** Two in-game minutes pass per real second; ?time=22 is a useful night preview. */
   update(dt: number, players: { x: number; z: number }[]): void {
-    this.timeOfDay = (this.timeOfDay + dt / 30) % 24;
+    if (!this.timeLocked) this.timeOfDay = (this.timeOfDay + dt / 30) % 24;
     this.updateWeather(dt, players);
     this.applyEnvironment();
     this.refreshTimer -= dt;
@@ -125,6 +133,43 @@ export class WorldLighting {
     return this.weather;
   }
 
+  get currentTime(): number {
+    return this.timeOfDay;
+  }
+
+  get isTimeLocked(): boolean {
+    return this.timeLocked;
+  }
+
+  get lockedWeather(): WeatherKind | null {
+    return this.weatherLock;
+  }
+
+  setTime(time: number): void {
+    if (!Number.isFinite(time)) return;
+    this.timeOfDay = ((time % 24) + 24) % 24;
+    this.applyEnvironment();
+  }
+
+  setTimeLocked(locked: boolean): void {
+    this.timeLocked = locked;
+  }
+
+  /** Lock to a weather preset, or pass null to resume normal transitions. */
+  setWeatherLock(weather: WeatherKind | null): void {
+    this.weatherLock = weather;
+    if (!weather) return;
+    this.weather = weather;
+    this.weatherTimer = 75;
+    const target = WEATHER_TARGETS[weather];
+    this.precipitation = target.rain;
+    this.cloud = target.cloud;
+    this.fogAmount = target.fog;
+    this.lightningFlash = 0;
+    this.applyEnvironment();
+    this.applyWetSurfaces();
+  }
+
   get activeLightCount(): number {
     return this.lamps.filter((lamp) => lamp.light.visible).length;
   }
@@ -152,7 +197,7 @@ export class WorldLighting {
   }
 
   private updateWeather(dt: number, players: { x: number; z: number }[]): void {
-    if (!this.forcedWeather) {
+    if (!this.weatherLock) {
       this.weatherTimer -= dt;
       if (this.weatherTimer <= 0) {
         const transitions: Record<WeatherKind, WeatherKind[]> = {
@@ -166,13 +211,7 @@ export class WorldLighting {
         this.weatherTimer = 75 + Math.random() * 90;
       }
     }
-    const targets: Record<WeatherKind, { rain: number; cloud: number; fog: number }> = {
-      clear: { rain: 0, cloud: 0, fog: 0 },
-      rain: { rain: 0.7, cloud: 0.72, fog: 0.25 },
-      fog: { rain: 0, cloud: 0.38, fog: 1 },
-      storm: { rain: 1, cloud: 1, fog: 0.5 },
-    };
-    const target = targets[this.weather];
+    const target = WEATHER_TARGETS[this.weather];
     const blend = 1 - Math.exp(-dt / 8);
     this.precipitation = THREE.MathUtils.lerp(this.precipitation, target.rain, blend);
     this.cloud = THREE.MathUtils.lerp(this.cloud, target.cloud, blend);

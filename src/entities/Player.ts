@@ -83,6 +83,7 @@ export class Player implements Entity, CameraTarget, CombatTarget {
   readonly inventory = new Inventory();
   health = PLAYER_HEALTH;
   armour = 0;
+  invincible = false;
   dead = false;
   knockedDown = false;
   /** Message for this player's HUD center slot ("WASTED"). */
@@ -136,7 +137,7 @@ export class Player implements Entity, CameraTarget, CombatTarget {
   }
 
   takeHit(damage: number, dir: THREE.Vector3, _weapon: WeaponDef, _attacker: Player | null): void {
-    if (this.dead || this.knockedDown || this.driving) return;
+    if (this.invincible || this.dead || this.knockedDown || this.driving) return;
     const absorbed = Math.min(this.armour, damage * 0.7);
     this.armour -= absorbed;
     this.health -= damage - absorbed;
@@ -146,19 +147,19 @@ export class Player implements Entity, CameraTarget, CombatTarget {
 
   /** Apply a car hit, entering a recoverable ragdoll state when fast enough. */
   takeVehicleHit(damage: number, impact: THREE.Vector3, knockDown: boolean): void {
-    if (!this.canReceiveVehicleImpact()) return;
+    if (this.invincible || !this.canReceiveVehicleImpact()) return;
     this.vehicleHitCooldown = 0.8;
     this.takeHit(damage, impact, VEHICLE_IMPACT, null);
     if (!this.dead && knockDown) this.knockDown(impact);
   }
 
   applyBlast(velocityChange: THREE.Vector3): void {
-    if (!this.dead && !this.knockedDown && !this.driving) this.knockDown(velocityChange);
+    if (!this.invincible && !this.dead && !this.knockedDown && !this.driving) this.knockDown(velocityChange);
   }
 
   /** Crash forces can injure occupants even while the chassis protects them. */
   takeOccupantCrashDamage(damage: number, origin: THREE.Vector3): void {
-    if (this.dead || !this.vehicle || damage <= 0) return;
+    if (this.invincible || this.dead || !this.vehicle || damage <= 0) return;
     const absorbed = Math.min(this.armour, damage * 0.55);
     this.armour -= absorbed;
     this.health -= damage - absorbed;
@@ -337,6 +338,13 @@ export class Player implements Entity, CameraTarget, CombatTarget {
       throw new RangeError('Money earned must be a positive finite amount');
     }
     this.balance += dollars;
+  }
+
+  /** Restore maximum player health and armour for developer testing. */
+  restoreVitals(): void {
+    if (this.dead) return;
+    this.health = PLAYER_HEALTH;
+    this.armour = PLAYER_ARMOUR_MAX;
   }
 
   /** Debit whole dollars if the player can afford the purchase. */

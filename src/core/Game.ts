@@ -36,11 +36,12 @@ import { Pickup } from '../entities/Pickup';
 import { WEAPONS, WEAPON_ORDER, type WeaponId } from '../gameplay/Weapons';
 import { randomRoadCellNear } from '../world/RoadGraph';
 import { Settings } from './Settings';
-import { WorldLighting } from '../world/WorldLighting';
+import { WorldLighting, type WeatherKind } from '../world/WorldLighting';
 import { DevStats, type DevStatsSnapshot } from './DevStats';
 import { restoreAtomically, SaveController } from '../save/SaveController';
 import { createGameSave, type GameSaveV1, type SaveResult } from '../save/GameSave';
 import { SaveStorage } from '../save/SaveStorage';
+import { CheatMenu } from '../ui/CheatMenu';
 
 export interface Entity {
   update(dt: number): void;
@@ -76,6 +77,7 @@ export class Game {
   readonly hud: Hud;
   readonly lighting: WorldLighting;
   readonly devStats: DevStats;
+  readonly cheatMenu: CheatMenu | null;
   readonly mapOverlay: MapOverlay | null;
   readonly saveStorage: SaveStorage;
   readonly saveController: SaveController;
@@ -88,6 +90,7 @@ export class Game {
   private suburbCache: { cx: number; cz: number; name: string | null }[] = [];
   private vehicleGrid = new Map<number, Map<number, Drivable[]>>();
   private maximumVehicleSpeed = 0;
+  private pausedBeforeCheats = false;
 
   readonly vehicles: Drivable[] = [];
   readonly players: Player[] = [];
@@ -161,6 +164,42 @@ export class Game {
     this.mapOverlay = map && mapCanvas ? new MapOverlay(container, map, mapCanvas) : null;
 
     this.lighting = this.setupEnvironment();
+    const params = new URLSearchParams(location.search);
+    const cheatsEnabled = params.get('dev') !== '0' && (import.meta.env.DEV || params.has('dev'));
+    this.cheatMenu = cheatsEnabled ? new CheatMenu(container, {
+      inspect: () => {
+        const player = this.players[0];
+        return {
+          time: this.lighting.currentTime,
+          timeLocked: this.lighting.isTimeLocked,
+          weather: this.lighting.weatherKind,
+          weatherLock: this.lighting.lockedWeather,
+          invincible: player?.invincible ?? false,
+          wantedLock: player?.wanted.lockedLevel ?? null,
+          hasRepairableVehicle: player?.vehicle instanceof Vehicle,
+        };
+      },
+      setTime: (time) => this.lighting.setTime(time),
+      setTimeLocked: (locked) => this.lighting.setTimeLocked(locked),
+      setWeatherLock: (weather: WeatherKind | null) => this.lighting.setWeatherLock(weather),
+      setInvincible: (enabled) => {
+        for (const player of this.players) player.invincible = enabled;
+      },
+      setWantedLock: (stars) => {
+        for (const player of this.players) player.wanted.setLockedLevel(stars);
+      },
+      restoreVitals: () => {
+        for (const player of this.players) player.restoreVitals();
+      },
+      giveArsenal: () => {
+        for (const player of this.players) player.inventory.giveAll();
+      },
+      repairVehicle: () => {
+        const vehicle = this.players[0]?.vehicle;
+        if (vehicle instanceof Vehicle) vehicle.repair();
+      },
+      setOpen: (open) => this.setCheatMenuOpen(open),
+    }) : null;
     this.city = new CompiledCity(this);
     this.saveController = new SaveController(
       () => this.players[0]?.canSave === true,
@@ -176,6 +215,7 @@ export class Game {
     this.renderer.setAnimationLoop(null);
     this.events.abort();
     this.mapOverlay?.dispose();
+    this.cheatMenu?.dispose();
     this.city.dispose();
     this.lighting.dispose();
     this.hud.dispose();
@@ -500,6 +540,10 @@ export class Game {
   private handlePauseAndMapInput(): void {
     const pausePressed = this.input.consumePause();
     const mapPressed = this.input.consumeMapToggle();
+    if (this.cheatMenu?.isOpen) {
+      if (pausePressed) this.cheatMenu.setOpen(false);
+      return;
+    }
     if (pausePressed) {
       if (this.mapOverlay?.isOpen) {
         this.mapOverlay.close();
@@ -519,6 +563,20 @@ export class Game {
     }
     // Clicks and presses made while browsing the map shouldn't fire weapons.
     if (this.mapOverlay?.isOpen) this.input.clearGameplayEdges();
+  }
+
+  private setCheatMenuOpen(open: boolean): void {
+    this.input.clearQueuedInput();
+    if (open) {
+      this.pausedBeforeCheats = this.paused;
+      this.paused = true;
+      this.hud.setPaused(false);
+      this.mapOverlay?.close();
+      document.exitPointerLock?.();
+      return;
+    }
+    this.paused = this.pausedBeforeCheats;
+    this.hud.setPaused(this.paused);
   }
 
   private advanceFixedSteps(dt: number): SimulationTiming {
