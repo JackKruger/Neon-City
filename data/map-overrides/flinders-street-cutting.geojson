@@ -1,0 +1,95 @@
+{
+  "type": "FeatureCollection",
+  "name": "flinders-street-station-cutting",
+  "metadata": {
+    "reviewStatus": "reviewed-hybrid",
+    "coordinateReferenceSystem": "EPSG:4326",
+    "description": "Reviewed open-cutting correction derived from Vicmap Transport railway geometry and City of Melbourne structure 804817.",
+    "sources": [
+      "Vicmap Transport Railway Line (tr_rail)",
+      "City of Melbourne 2023 Building Footprints structure 804817"
+    ]
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "id": "flinders-street-cutting",
+      "properties": {
+        "record": "terrain-cutting",
+        "id": "flinders-street-station",
+        "floor_ahd": 4.1,
+        "structure_id": "804817",
+        "canopy_component_id": "1139",
+        "surface": "ballast",
+        "city_structure_source": "building:804817:1139",
+        "vicmap_source": "open-data-platform:tr_rail",
+        "review": "reviewed-hybrid; station-only correction"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [144.9626615601, -37.8183093784],
+          [144.9670440784, -37.8176907621],
+          [144.9674205464, -37.8178237109],
+          [144.9678292880, -37.8187116115],
+          [144.9678046555, -37.8187637294],
+          [144.9677377170, -37.8187753599],
+          [144.9650793191, -37.8191874892],
+          [144.9626615601, -37.8190729429],
+          [144.9626615601, -37.8183093784]
+        ]]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "flinders-street-western-portal",
+      "properties": {
+        "record": "terrain-portal",
+        "id": "flinders-street-west",
+        "cutting_id": "flinders-street-station",
+        "side": "west",
+        "covered": false,
+        "approach_length": 96,
+        "max_grade": 0.05,
+        "source_ids": ["building:804817:1139", "Vicmap station throat"]
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [144.9626615601, -37.8183093784],
+          [144.9626615601, -37.8190729429]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "flinders-street-eastern-portal",
+      "properties": {
+        "record": "terrain-portal",
+        "id": "flinders-street-east",
+        "cutting_id": "flinders-street-station",
+        "side": "east",
+        "covered": true,
+        "approach_length": 160,
+        "max_grade": 0.05,
+        "source_ids": [
+          "vicmap:pfi:5578297",
+          "vicmap:pfi:25083201",
+          "vicmap:pfi:24013526",
+          "vicmap:pfi:24013524",
+          "vicmap:feature_type_code:rail_uground_o"
+        ]
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [144.9670440784, -37.8176907621],
+          [144.9674205464, -37.8178237109],
+          [144.9678292880, -37.8187116115],
+          [144.9678046555, -37.8187637294],
+          [144.9677377170, -37.8187753599]
+        ]
+      }
+    }
+  ]
+}

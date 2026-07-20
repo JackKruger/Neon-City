@@ -33,6 +33,14 @@
       "file": "street-overrides.geojson"
     },
     {
+      "key": "reviewedTerrain",
+      "title": "Neon Bay reviewed Flinders Street Station cutting",
+      "license": "Project data derived from CC BY 4.0 sources",
+      "status": "loaded",
+      "file": "data/map-overrides/flinders-street-cutting.geojson",
+      "records": 3
+    },
+    {
       "key": "planning",
       "title": "Vicmap Planning",
       "status": "missing",
@@ -149,6 +157,10 @@
     "tramTracks": 0,
     "railTracks": 1224,
     "streetOverrides": 0,
+    "reviewedTerrain": {
+      "cuttings": 1,
+      "portals": 2
+    },
     "landuse": 0,
     "transport": 0,
     "speeds": 0,

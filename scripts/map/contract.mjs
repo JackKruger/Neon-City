@@ -13,6 +13,7 @@ export const MAX_CHUNK = MAP_CONTRACT.validChunkBounds.maxX;
 export const CELL_CODES = Object.freeze(MAP_CONTRACT.cellCodes);
 export const TRANSPORT_FLAGS = Object.freeze(MAP_CONTRACT.transportFlags);
 export const COVERAGE_FLAGS = Object.freeze(MAP_CONTRACT.coverageFlags);
+export const COLLISION_FLAGS = Object.freeze(MAP_CONTRACT.collisionFlags);
 export const VERSIONS = Object.freeze(MAP_CONTRACT.versions);
 export const NBCH_SECTIONS = Object.freeze(MAP_CONTRACT.nbchSections);
 export const SECTION_TYPES = Object.freeze(Object.keys(NBCH_SECTIONS));

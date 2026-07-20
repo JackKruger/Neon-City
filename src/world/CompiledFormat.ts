@@ -1,4 +1,4 @@
-import { MAP_CONTRACT, MAP_ID } from './MapContract';
+import { CollisionFlag, MAP_CONTRACT, MAP_ID } from './MapContract';
 
 export const COMPILED_MANIFEST_VERSION = MAP_CONTRACT.versions.compiledManifest;
 export const COMPILED_CONTAINER_VERSION = MAP_CONTRACT.versions.container;
@@ -94,6 +94,7 @@ export interface CompiledChunkData {
   kx: number;
   kz: number;
   heights: Int16Array;
+  collisionFlags: number;
   cuboids: CompiledCuboid[];
   meshes: CompiledCollisionMesh[];
   navNodes: CompiledNavNode[];
@@ -102,6 +103,11 @@ export interface CompiledChunkData {
   parked: CompiledParkedSpawn[];
   transitStops: CompiledTransitStop[];
   sources: string[];
+}
+
+/** Custom-terrain chunks carry their complete terrain as authored trimeshes. */
+export function usesDefaultTerrainHeightfield(collisionFlags: number): boolean {
+  return (collisionFlags & CollisionFlag.CustomTerrain) === 0;
 }
 
 function ensure(condition: boolean, message: string): asserts condition {
@@ -194,7 +200,8 @@ export function parseCompiledChunk(buffer: ArrayBuffer, expectedKx: number, expe
 
   const collisionReader = new Reader(sections.get('COL1')!);
   ensure(collisionReader.u16() === MAP_CONTRACT.nbchSections.COL1, 'unsupported COL1 version');
-  collisionReader.u16();
+  const collisionFlags = collisionReader.u16();
+  ensure((collisionFlags & ~MAP_CONTRACT.collisionFlags.CustomTerrain) === 0, 'unsupported COL1 flags');
   const cuboidCount = collisionReader.u32();
   const meshCount = collisionReader.u32();
   ensure(cuboidCount <= 10000 && meshCount <= 10000, 'COL1 record count is unreasonable');
@@ -267,5 +274,5 @@ export function parseCompiledChunk(buffer: ArrayBuffer, expectedKx: number, expe
   }
   ensure(transitReader.remaining() === 0, 'trailing TRN1 data');
   ensure(cuboids.every((item) => item.sourceIndex < sources.length) && meshes.every((item) => item.sourceIndex < sources.length) && parked.every((item) => item.sourceIndex < sources.length) && transitStops.every((item) => item.sourceIndex < sources.length), 'compiled source index is out of range');
-  return { kx, kz, heights, cuboids, meshes, navNodes, navEdges, cells, parked, transitStops, sources };
+  return { kx, kz, heights, collisionFlags, cuboids, meshes, navNodes, navEdges, cells, parked, transitStops, sources };
 }

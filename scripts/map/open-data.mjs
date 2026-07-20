@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, extname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parse as parseDelimited } from 'csv-parse/sync';
 import { fromFile } from 'geotiff';
 import proj4 from 'proj4';
@@ -233,6 +234,36 @@ async function loadSource(cacheDir, key, options, report) {
 
 function addObject(chunks, object) {
   if (
+    (object.kind === 'terrain-cutting' || object.kind === 'station-canopy') &&
+    object.outline?.length >= 3
+  ) {
+    const absolute = object.outline.map(([x, z]) => [object.x + x, object.z + z]);
+    const minX = Math.min(...absolute.map(([x]) => x));
+    const maxX = Math.max(...absolute.map(([x]) => x));
+    const minZ = Math.min(...absolute.map(([, z]) => z));
+    const maxZ = Math.max(...absolute.map(([, z]) => z));
+    const [minKx, minKz] = chunkKeyForWorld(minX, minZ).split(',').map(Number);
+    const [maxKx, maxKz] = chunkKeyForWorld(maxX, maxZ).split(',').map(Number);
+    for (let kz = minKz; kz <= maxKz; kz++) {
+      for (let kx = minKx; kx <= maxKx; kx++) (chunks[`${kx},${kz}`] ??= []).push(object);
+    }
+    return;
+  }
+  if (object.kind === 'terrain-portal' && object.points?.length >= 2) {
+    const absolute = object.points.map(([x, z]) => [object.x + x, object.z + z]);
+    const margin = Math.max(0, object.approachLength ?? 0);
+    const minX = Math.min(...absolute.map(([x]) => x)) - margin;
+    const maxX = Math.max(...absolute.map(([x]) => x)) + margin;
+    const minZ = Math.min(...absolute.map(([, z]) => z)) - margin;
+    const maxZ = Math.max(...absolute.map(([, z]) => z)) + margin;
+    const [minKx, minKz] = chunkKeyForWorld(minX, minZ).split(',').map(Number);
+    const [maxKx, maxKz] = chunkKeyForWorld(maxX, maxZ).split(',').map(Number);
+    for (let kz = minKz; kz <= maxKz; kz++) {
+      for (let kx = minKx; kx <= maxKx; kx++) (chunks[`${kx},${kz}`] ??= []).push(object);
+    }
+    return;
+  }
+  if (
     (object.kind === 'road-surface' || object.kind === 'building' ||
       (object.kind === 'transport-structure' && object.structure === 'bridge')) &&
     object.outline?.length >= 3
@@ -265,6 +296,85 @@ function addObject(chunks, object) {
   }
   const key = chunkKeyForWorld(object.x, object.z);
   (chunks[key] ??= []).push(object);
+}
+
+async function importReviewedTerrain(root, chunks, report) {
+  void root;
+  const path = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'data', 'map-overrides', 'flinders-street-cutting.geojson');
+  if (!existsSync(path)) throw new Error('reviewed Flinders Street cutting override is missing');
+  const features = await readFeatures(path);
+  const canopyComponents = new Map();
+  let cuttings = 0;
+  let portals = 0;
+  for (const feature of features) {
+    const properties = feature.properties ?? {};
+    const record = textValue(properties, 'record');
+    if (record === 'terrain-cutting') {
+      const polygon = polygons(feature.geometry)[0]?.[0];
+      const world = simplifyWorldRing(polygon, 0.05, 256);
+      if (world.length < 3) throw new Error(`reviewed cutting ${properties.id ?? feature.id} has no polygon`);
+      const x = world.reduce((sum, point) => sum + point.x, 0) / world.length;
+      const z = world.reduce((sum, point) => sum + point.z, 0) / world.length;
+      const floorAhd = numeric(properties, 'floor_ahd');
+      if (floorAhd === null) throw new Error(`reviewed cutting ${properties.id ?? feature.id} has no floor_ahd`);
+      const id = textValue(properties, 'id') || String(feature.id ?? cuttings);
+      addObject(chunks, {
+        kind: 'terrain-cutting',
+        sourceId: `terrain-cutting:${id}`,
+        cuttingId: id,
+        x: round(x),
+        z: round(z),
+        floorAhd: round(floorAhd),
+        surface: textValue(properties, 'surface') || 'ballast',
+        structureId: textValue(properties, 'structure_id'),
+        provenance: {
+          cityStructure: properties.city_structure_source,
+          vicmap: properties.vicmap_source,
+          review: properties.review,
+        },
+        outline: world.map((point) => [round(point.x - x), round(point.z - z)]),
+      });
+      const structureId = textValue(properties, 'structure_id');
+      const componentId = textValue(properties, 'canopy_component_id');
+      if (structureId && componentId) {
+        const components = canopyComponents.get(structureId) ?? new Set();
+        components.add(componentId);
+        canopyComponents.set(structureId, components);
+      }
+      cuttings++;
+    } else if (record === 'terrain-portal') {
+      const line = lineStrings(feature.geometry)[0];
+      const world = (line ?? []).map(([lon, lat]) => toWorld(lat, lon));
+      if (world.length < 2) throw new Error(`reviewed portal ${properties.id ?? feature.id} has no line`);
+      const x = world.reduce((sum, point) => sum + point.x, 0) / world.length;
+      const z = world.reduce((sum, point) => sum + point.z, 0) / world.length;
+      const id = textValue(properties, 'id') || String(feature.id ?? portals);
+      addObject(chunks, {
+        kind: 'terrain-portal',
+        sourceId: `terrain-portal:${id}`,
+        portalId: id,
+        cuttingId: textValue(properties, 'cutting_id'),
+        side: textValue(properties, 'side') === 'west' ? 'west' : 'east',
+        covered: properties.covered === true,
+        approachLength: round(numeric(properties, 'approach_length') ?? 96),
+        maxGrade: round(numeric(properties, 'max_grade') ?? 0.05),
+        sourceIds: Array.isArray(properties.source_ids) ? properties.source_ids.map(String) : [],
+        x: round(x),
+        z: round(z),
+        points: world.map((point) => [round(point.x - x), round(point.z - z)]),
+      });
+      portals++;
+    }
+  }
+  report.sources.push({
+    key: 'reviewedTerrain',
+    title: 'Neon Bay reviewed Flinders Street Station cutting',
+    license: 'Project data derived from CC BY 4.0 sources',
+    status: 'loaded',
+    file: 'data/map-overrides/flinders-street-cutting.geojson',
+    records: features.length,
+  });
+  return { cuttings, portals, canopyComponents };
 }
 
 /** Rebuild a legacy centroid-owned object index using clipped polygon ownership. */
@@ -680,7 +790,7 @@ function importStreetOverrides(features, chunks) {
   return accepted;
 }
 
-function importBuildings(features, chunks, coverage, heightLayer, landUseLayer, dsm) {
+function importBuildings(features, chunks, coverage, heightLayer, landUseLayer, dsm, canopyComponents = new Map()) {
   if (!features) return { accepted: 0, rejected: 0, excludedInfrastructure: 0, infrastructureComponents: 0 };
   const byStructure = new Map();
   let rejected = 0;
@@ -751,7 +861,14 @@ function importBuildings(features, chunks, coverage, heightLayer, landUseLayer, 
       const structureHeight = numeric(feature.properties, 'structure_extrusion', 'structure_height') ??
         baseOffset + (Number(height) || 0);
       const placement = { sourceId, structureId, baseOffset, structureHeight };
-      if (!height && dsm) pending.push({ feature, ring, bounds, landUse, ...placement });
+      if (canopyComponents.get(String(id))?.has(String(componentId))) {
+        addStationCanopy(feature, ring, bounds, chunks, {
+          sourceId,
+          structureId,
+          floorAhd: numeric(feature.properties, 'footprint_min_elevation') ?? group.minAhd,
+          roofAhd: numeric(feature.properties, 'footprint_max_elevation'),
+        });
+      } else if (!height && dsm) pending.push({ feature, ring, bounds, landUse, ...placement });
       else addBuilding(feature, ring, bounds, landUse, height, chunks, coverage, heightLayer, placement);
     }
   }
@@ -762,6 +879,30 @@ function importBuildings(features, chunks, coverage, heightLayer, landUseLayer, 
     infrastructureComponents,
     pending,
   };
+}
+
+function addStationCanopy(feature, ring, bounds, chunks, placement) {
+  const outline = simplifyWorldRing(ring, 0.35, 192).map((point) => [
+    round(point.x - bounds.x),
+    round(point.z - bounds.z),
+  ]);
+  if (outline.length < 3 || !Number.isFinite(placement.floorAhd) || !Number.isFinite(placement.roofAhd)) {
+    throw new Error(`station canopy ${placement.sourceId} has invalid surveyed geometry`);
+  }
+  addObject(chunks, {
+    kind: 'station-canopy',
+    sourceId: placement.sourceId,
+    structureId: placement.structureId,
+    component: textValue(feature.properties, 'objectid', 'component_id'),
+    x: round(bounds.x),
+    z: round(bounds.z),
+    rotation: round(bounds.rotation),
+    width: round(Math.max(2, bounds.width)),
+    depth: round(Math.max(2, bounds.depth)),
+    floorAhd: round(placement.floorAhd),
+    roofAhd: round(placement.roofAhd),
+    outline,
+  });
 }
 
 function addBuilding(feature, ring, bounds, landUse, rawHeight, chunks, coverage, heightLayer, placement) {
@@ -1310,6 +1451,11 @@ export async function enrichMelbourneMap({ root, grid, roadSurfaces = [], baseSu
   report.results.tramTracks = importTramTracks(tramTracks, chunks);
   report.results.railTracks = importRailTracks(railTracks, chunks);
   report.results.streetOverrides = importStreetOverrides(await loadSource(cacheDir, 'streetOverrides', options, report), chunks);
+  const reviewedTerrain = await importReviewedTerrain(root, chunks, report);
+  report.results.reviewedTerrain = {
+    cuttings: reviewedTerrain.cuttings,
+    portals: reviewedTerrain.portals,
+  };
 
   const planning = await loadSource(cacheDir, 'planning', options, report);
   const clue = await loadSource(cacheDir, 'clue', options, report);
@@ -1323,7 +1469,15 @@ export async function enrichMelbourneMap({ root, grid, roadSurfaces = [], baseSu
   const dsmPath = process.env.MELBOURNE_DSM_PATH ?? join(cacheDir, 'melbourne-dsm.tif');
   const dsm = await DsmSampler.open(dsmPath);
   report.sources.push({ key: 'dsm', title: 'City of Melbourne Digital Surface Model', status: dsm ? 'loaded' : 'missing', file: basename(dsmPath) });
-  const buildingResult = importBuildings(await loadSource(cacheDir, 'buildings', options, report), chunks, layers.coverage, layers.height, layers.landuse, dsm);
+  const buildingResult = importBuildings(
+    await loadSource(cacheDir, 'buildings', options, report),
+    chunks,
+    layers.coverage,
+    layers.height,
+    layers.landuse,
+    dsm,
+    reviewedTerrain.canopyComponents
+  );
   if (dsm) await finishDsmBuildings(buildingResult.pending, dsm, chunks, layers.coverage, layers.height);
   else for (const item of buildingResult.pending ?? []) addBuilding(
     item.feature,

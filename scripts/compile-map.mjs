@@ -197,7 +197,9 @@ export async function compileMelbourne({ scope = 'all', outputRoot = join(ROOT, 
     'melbourne.transport.bin', 'melbourne.speed.bin', 'melbourne.landuse.bin',
     'melbourne.height.bin', 'melbourne.address.bin',
     'melbourne.sources.json',
-  ].map((name) => join(SOURCE_MAP_DIR, name)).concat(objectIndexFiles(SOURCE_MAP_DIR, 'melbourne', wantedObjectChunks));
+  ].map((name) => join(SOURCE_MAP_DIR, name))
+    .concat(join(ROOT, 'data', 'map-overrides', 'flinders-street-cutting.geojson'))
+    .concat(objectIndexFiles(SOURCE_MAP_DIR, 'melbourne', wantedObjectChunks));
   const compilerPaths = [
     fileURLToPath(MAP_CONTRACT_PATH),
     join(ROOT, 'scripts', 'map', 'contract.mjs'),

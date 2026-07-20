@@ -17,6 +17,8 @@ import {
   compileChunkRecipe,
   createCompilerContext,
 } from './compiled-recipes.mjs';
+import { COLLISION_FLAGS } from './contract.mjs';
+import { readObjectIndex } from './object-index.mjs';
 
 function filesBelow(root, prefix = '') {
   const output = [];
@@ -333,6 +335,124 @@ test('building render faces stop cleanly at streamed chunk seams', () => {
   assert.ok(Math.max(...roofXs) <= 114.01, 'roof overhang crossed an artificial chunk cut');
 });
 
+test('reviewed cutting emits seam-safe render and identical custom terrain collision', () => {
+  const base = {
+    meta: {},
+    grid: new Uint8Array(MAP_SIZE ** 2),
+    heights: new Int16Array((MAP_SIZE + 1) ** 2).fill(100),
+    coverage: new Uint8Array(MAP_SIZE ** 2),
+    transport: new Uint8Array(MAP_SIZE ** 2),
+    speed: new Uint8Array(MAP_SIZE ** 2),
+  };
+  const cutting = {
+    kind: 'terrain-cutting', sourceId: 'terrain-cutting:test', cuttingId: 'test',
+    x: 114, z: 48, floorY: 4.1, surface: 'ballast', terrainCorners: [],
+    outline: [[-20, -20], [20, -20], [20, 20], [-20, 20]],
+  };
+  const context = createCompilerContext({
+    ...base,
+    objectIndex: { chunks: { '0,0': [cutting], '1,0': [structuredClone(cutting)] } },
+  });
+  const compiled = [compileChunkRecipe(context, 0, 0), compileChunkRecipe(context, 1, 0)];
+  for (const result of compiled) {
+    assert.equal(result.sections.COL1.readUInt16LE(2), COLLISION_FLAGS.CustomTerrain);
+    assert.equal(result.counts.meshes, 1);
+    const collision = result.sections.COL1;
+    const vertexCount = collision.readUInt32LE(16);
+    const vertices = [];
+    for (let index = 0; index < vertexCount; index++) {
+      const offset = 24 + index * 12;
+      vertices.push([collision.readFloatLE(offset), collision.readFloatLE(offset + 4), collision.readFloatLE(offset + 8)]);
+    }
+    const rendered = new Set(result.primitives.flatMap((primitive) => {
+      const keys = [];
+      for (let index = 0; index < primitive.positions.length; index += 3) {
+        keys.push(primitive.positions.slice(index, index + 3).map((value) => value.toFixed(4)).join(','));
+      }
+      return keys;
+    }));
+    assert.ok(vertices.every((vertex) => rendered.has(vertex.map((value) => value.toFixed(4)).join(','))),
+      'custom terrain collision diverges from rendered terrain');
+    assert.ok(vertices.some(([x, y]) => Math.abs(x - 114) < 0.01 && Math.abs(y - 4.1) < 0.01),
+      'floor does not meet the streamed chunk seam');
+    const concrete = result.primitives.find((primitive) => primitive.material === 'concrete');
+    for (let index = 0; index < (concrete?.positions.length ?? 0); index += 9) {
+      const xs = [concrete.positions[index], concrete.positions[index + 3], concrete.positions[index + 6]];
+      assert.ok(!xs.every((x) => Math.abs(x - 114) < 0.01), 'artificial retaining wall emitted at chunk seam');
+    }
+  }
+});
+
+test('reviewed rail profile wins over terrain and tunnel offsets through Swanston clearance', () => {
+  const base = {
+    meta: {}, grid: new Uint8Array(MAP_SIZE ** 2),
+    heights: new Int16Array((MAP_SIZE + 1) ** 2).fill(120),
+    coverage: new Uint8Array(MAP_SIZE ** 2), transport: new Uint8Array(MAP_SIZE ** 2),
+    speed: new Uint8Array(MAP_SIZE ** 2),
+  };
+  const cutting = {
+    kind: 'terrain-cutting', sourceId: 'terrain-cutting:test-profile', cuttingId: 'profile',
+    x: 60, z: 50, floorY: 3.1, surface: 'ballast', terrainCorners: [],
+    outline: [[-40, -30], [40, -30], [40, 30], [-40, 30]],
+  };
+  const portal = {
+    kind: 'terrain-portal', sourceId: 'terrain-portal:test-east', cuttingId: 'profile',
+    side: 'east', covered: true, approachLength: 160, maxGrade: 0.05,
+    x: 100, z: 50, points: [[0, -30], [0, 30]],
+  };
+  const rail = {
+    kind: 'road-surface', sourceId: 'train:test:bed', role: 'train-bed', structure: 'tunnel',
+    surface: 'ballast', elevation: 0.09, x: 100, z: 50,
+    outline: [[-50, -2], [50, -2], [50, 2], [-50, 2]],
+  };
+  const nav = {
+    kind: 'nav-path', sourceId: 'train:test:nav', mode: 'train', speed: 80, structure: 'tunnel',
+    x: 100, z: 50, points: [[-50, 0], [50, 0]],
+  };
+  const context = createCompilerContext({
+    ...base, objectIndex: { chunks: { '0,0': [cutting, portal, rail, nav], '1,0': [portal, rail, nav] } },
+  });
+  assert.equal(context.railSurfaceHeightAt(60, 50, 'tunnel'), 3.1);
+  const trackAtSwanston = context.railSurfaceHeightAt(130, 50, 'tunnel');
+  assert.ok(context.terrainHeightAt(130, 50) - trackAtSwanston >= 4.5,
+    'road-to-track clearance is below 4.5 m');
+  const result = compileChunkRecipe(context, 0, 0);
+  const ballast = result.primitives.find((primitive) => primitive.material === 'ballast');
+  assert.ok(ballast.positions.some((value, index) => index % 3 === 1 && Math.abs(value - 3.19) < 0.01));
+  const navSection = result.sections.NAV3;
+  const nodeCount = navSection.readUInt16LE(2);
+  const trainHeights = Array.from({ length: nodeCount }, (_, index) => 8 + index * 16)
+    .filter((offset) => (navSection.readUInt16LE(offset + 12) & 8) !== 0)
+    .map((offset) => navSection.readInt32LE(offset + 4) / 100);
+  assert.ok(trainHeights.includes(3.1), 'train navigation does not share the reviewed floor');
+  assert.ok(trainHeights.every((height) => height < 12), 'train navigation leaked to road height');
+});
+
+test('committed Swanston Street crossing retains surveyed road-to-track clearance', () => {
+  const mapRoot = join(import.meta.dirname, '..', '..', 'public', 'maps');
+  const bytes = (name) => new Uint8Array(readFileSync(join(mapRoot, name)));
+  const encodedHeights = readFileSync(join(mapRoot, 'melbourne-height.bin'));
+  const heights = new Int16Array(encodedHeights.length / 2);
+  for (let index = 0; index < heights.length; index++) heights[index] = encodedHeights.readInt16LE(index * 2);
+  const context = createCompilerContext({
+    meta: JSON.parse(readFileSync(join(mapRoot, 'melbourne.json'), 'utf8')),
+    grid: bytes('melbourne.bin'), heights,
+    coverage: bytes('melbourne.coverage.bin'), transport: bytes('melbourne.transport.bin'),
+    speed: bytes('melbourne.speed.bin'), objectIndex: readObjectIndex(mapRoot, 'melbourne'),
+  });
+  assert.equal(context.railSurfaceHeightAt(624, -1859, 'tunnel'), 3,
+    'station rail does not use the reviewed 4.1 m AHD floor');
+  // Surveyed east portal / Swanston Street crossing, immediately beyond the
+  // open cutting and before the Vicmap underground rail continues east.
+  const x = 680;
+  const z = -1850;
+  const roadY = context.naturalTerrainHeightAt(x, z);
+  const trackY = context.railSurfaceHeightAt(x, z, 'tunnel');
+  assert.ok(roadY - trackY >= 4.5,
+    `Swanston Street clearance is ${(roadY - trackY).toFixed(2)}m`);
+  assert.ok(trackY < roadY - 0.1, 'train rail leaked to Swanston Street road height');
+});
+
 test('real transport structures compile as concrete geometry with collision', () => {
   const base = {
     meta: {},
@@ -521,6 +641,7 @@ test('committed spawn compilation has valid hashes, GLBs, containers, and naviga
   const meshCount = collision.readUInt32LE(8);
   let collisionOffset = 12 + cuboidCount * 32;
   let flattenedBuildingMeshes = 0;
+  let stationCanopyMeshes = 0;
   for (let meshIndex = 0; meshIndex < meshCount; meshIndex++) {
     const sourceIndex = collision.readUInt32LE(collisionOffset);
     const vertexCount = collision.readUInt32LE(collisionOffset + 4);
@@ -529,12 +650,19 @@ test('committed spawn compilation has valid hashes, GLBs, containers, and naviga
     const ys = [];
     for (let vertex = 0; vertex < vertexCount; vertex++) ys.push(collision.readFloatLE(collisionOffset + vertex * 12 + 4));
     collisionOffset += vertexCount * 12 + indexCount * 4;
+    if (sources[sourceIndex] === 'building:804817:1139') {
+      assert.deepEqual([...new Set(ys.map((value) => value.toFixed(1)))], ['9.3'],
+        'station canopy collision is not confined to its surveyed roof');
+      stationCanopyMeshes++;
+      continue;
+    }
     if (!sources[sourceIndex]?.startsWith('building:')) continue;
     const levels = [...new Set(ys.map((value) => value.toFixed(4)))];
     assert.equal(levels.length, 2, `building collider ${sources[sourceIndex]} is not flattened to one base and roof level`);
     flattenedBuildingMeshes++;
   }
   assert.ok(flattenedBuildingMeshes > 0);
+  assert.ok(stationCanopyMeshes > 0, 'open station canopy collision is absent');
 });
 
 test('spawn compilation is byte-identical for identical inputs', { timeout: 30_000 }, async () => {

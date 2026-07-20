@@ -15,6 +15,7 @@ interface MapContractShape {
   cellCodes: Record<Cell, number>;
   transportFlags: Record<'Road' | 'Bridge' | 'Tunnel' | 'Rail' | 'Tram' | 'Footpath' | 'Roundabout', number>;
   coverageFlags: Record<'Building' | 'Tree' | 'Parking' | 'Prop' | 'Address' | 'BuildingSource', number>;
+  collisionFlags: Record<'CustomTerrain', number>;
   versions: Record<'authoredMap' | 'objectIndex' | 'roadIndex' | 'compiledManifest' | 'compiler' | 'runtime' | 'container' | 'provenance', number>;
   nbchSections: Record<'HGT1' | 'COL1' | 'NAV3' | 'GME1' | 'TRN1', number>;
 }
@@ -28,6 +29,7 @@ export const CHUNK_SIZE = MAP_CONTRACT.chunkSize;
 export const VALID_CHUNK_BOUNDS = MAP_CONTRACT.validChunkBounds;
 export const TransportFlag = MAP_CONTRACT.transportFlags;
 export const CoverageFlag = MAP_CONTRACT.coverageFlags;
+export const CollisionFlag = MAP_CONTRACT.collisionFlags;
 export const CODE_TO_CELL = Object.freeze(
   Object.entries(MAP_CONTRACT.cellCodes)
     .sort((left, right) => left[1] - right[1])

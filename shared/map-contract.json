@@ -26,13 +26,16 @@
     "Address": 16,
     "BuildingSource": 32
   },
+  "collisionFlags": {
+    "CustomTerrain": 1
+  },
   "versions": {
     "authoredMap": 4,
     "objectIndex": 3,
     "roadIndex": 1,
     "compiledManifest": 2,
-    "compiler": 2,
-    "runtime": 3,
+    "compiler": 3,
+    "runtime": 4,
     "container": 3,
     "provenance": 1
   },

@@ -27,6 +27,9 @@ export type AuthoredObject =
   | { kind: 'nav-path'; sourceId?: string; x: number; z: number; mode: 'vehicle' | 'pedestrian' | 'tram' | 'train'; speed: number; flags?: number; structure?: 'bridge' | 'tunnel'; points: [number, number][] }
   | { kind: 'transit-stop'; sourceId?: string; mode: 'tram' | 'train'; name: string; x: number; z: number }
   | { kind: 'transport-structure'; sourceId?: string; structure: 'bridge' | 'tunnel'; component: string; roadDeck: boolean; x: number; z: number; rotation: number; width: number; depth: number; minAhd?: number; maxAhd?: number; baseY?: number; topY?: number; outline: [number, number][] }
+  | { kind: 'terrain-cutting'; sourceId?: string; cuttingId: string; x: number; z: number; floorAhd: number; floorY?: number; surface: 'ballast' | 'concrete'; structureId?: string; outline: [number, number][]; terrainCorners?: [number, number, number][] }
+  | { kind: 'terrain-portal'; sourceId?: string; portalId: string; cuttingId: string; side: 'west' | 'east'; covered: boolean; approachLength: number; maxGrade: number; x: number; z: number; points: [number, number][] }
+  | { kind: 'station-canopy'; sourceId?: string; structureId?: string; component: string; x: number; z: number; rotation: number; width: number; depth: number; floorAhd: number; roofAhd: number; floorY?: number; roofY?: number; outline: [number, number][] }
   | { kind: 'building'; sourceId?: string; structureId?: string; baseOffset?: number; x: number; z: number; rotation: number; width: number; depth: number; height: number; baseY?: number; style: 'commercial' | 'skyscraper' | 'suburban' | 'industrial'; roof?: string; outline?: [number, number][] }
   | { kind: 'tree'; x: number; z: number; height: number; variant: 'small' | 'large' }
   | { kind: 'parking'; sourceId?: string; x: number; z: number; rotation: number }

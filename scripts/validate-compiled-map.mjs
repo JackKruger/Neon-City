@@ -18,7 +18,7 @@ import {
   TILE,
   navigationCellFromCentimeters,
 } from './map/compiled-recipes.mjs';
-import { MAP_CONTRACT, MAP_ID, NBCH_SECTIONS } from './map/contract.mjs';
+import { COLLISION_FLAGS, MAP_CONTRACT, MAP_ID, NBCH_SECTIONS } from './map/contract.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -143,7 +143,13 @@ export function validateCompiledMap(outputRoot = join(ROOT, 'public', 'maps')) {
     validateGlbDocument(glb, gltf, key);
     const container = parseChunkContainer(bin, entry);
     ensure(container.sections.get('HGT1').length === 121 * 2, `chunk ${key} HGT1 length mismatch`);
-    ensure(container.sections.get('COL1').length >= 12 && container.sections.get('COL1').readUInt16LE(0) === NBCH_SECTIONS.COL1, `chunk ${key} COL1 is invalid`);
+    const collision = container.sections.get('COL1');
+    ensure(collision.length >= 12 && collision.readUInt16LE(0) === NBCH_SECTIONS.COL1, `chunk ${key} COL1 is invalid`);
+    const collisionFlags = collision.readUInt16LE(2);
+    ensure((collisionFlags & ~COLLISION_FLAGS.CustomTerrain) === 0, `chunk ${key} COL1 flags are invalid`);
+    if ((collisionFlags & COLLISION_FLAGS.CustomTerrain) !== 0) {
+      ensure(collision.readUInt32LE(8) > 0, `chunk ${key} declares custom terrain without a collision mesh`);
+    }
     ensure(container.sections.get('GME1').length >= 8 && container.sections.get('GME1').readUInt16LE(0) === NBCH_SECTIONS.GME1, `chunk ${key} GME1 is invalid`);
     ensure(container.sections.get('TRN1').length >= 4 && container.sections.get('TRN1').readUInt16LE(0) === NBCH_SECTIONS.TRN1, `chunk ${key} TRN1 is invalid`);
     decodeNavigation(container.sections.get('NAV3'), entry, nodes, edges);

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { MAP_CONTRACT } from '../../src/world/MapContract';
-import { parseCompiledChunk, validateCompiledManifest } from '../../src/world/CompiledFormat';
+import { parseCompiledChunk, usesDefaultTerrainHeightfield, validateCompiledManifest } from '../../src/world/CompiledFormat';
 import { selectPrewarmChunkKeys } from '../../src/world/CityStreamer';
 import {
   CONTAINER_VERSION,
@@ -11,9 +11,10 @@ import {
 } from '../../scripts/map/compiled-format.mjs';
 import { MAP_CONTRACT as NODE_CONTRACT, NBCH_SECTIONS } from '../../scripts/map/contract.mjs';
 
-function sections() {
+function sections(collisionFlags = 0) {
   const collision = Buffer.alloc(12);
   collision.writeUInt16LE(NBCH_SECTIONS.COL1, 0);
+  collision.writeUInt16LE(collisionFlags, 2);
   const navigation = Buffer.alloc(8);
   navigation.writeUInt16LE(NBCH_SECTIONS.NAV3, 0);
   const gameplay = Buffer.alloc(108);
@@ -59,8 +60,25 @@ describe('cross-environment NBCH format', () => {
     const encoded = encodeChunkContainer(3, -4, sections());
     const parsed = parseCompiledChunk(arrayBuffer(encoded), 3, -4);
     expect(parsed).toMatchObject({ kx: 3, kz: -4, cuboids: [], meshes: [], navNodes: [], navEdges: [], parked: [], transitStops: [], sources: [] });
+    expect(parsed.collisionFlags).toBe(0);
+    expect(usesDefaultTerrainHeightfield(parsed.collisionFlags)).toBe(true);
     expect(parsed.heights).toHaveLength(121);
     expect(parsed.cells).toHaveLength(100);
+  });
+
+  it('uses authored terrain collision when COL1 declares the custom-terrain flag', () => {
+    const parsed = parseCompiledChunk(
+      arrayBuffer(encodeChunkContainer(0, 0, sections(MAP_CONTRACT.collisionFlags.CustomTerrain))),
+      0,
+      0
+    );
+    expect(parsed.collisionFlags).toBe(MAP_CONTRACT.collisionFlags.CustomTerrain);
+    expect(usesDefaultTerrainHeightfield(parsed.collisionFlags)).toBe(false);
+  });
+
+  it('rejects unknown COL1 flags', () => {
+    const encoded = encodeChunkContainer(0, 0, sections(0x8000));
+    expect(() => parseCompiledChunk(arrayBuffer(encoded), 0, 0)).toThrow(/unsupported COL1 flags/);
   });
 
   it('rejects truncated headers and sections', () => {

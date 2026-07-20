@@ -6,6 +6,7 @@ import { MAP_SIZE } from './geo.mjs';
 import { readObjectIndex } from './object-index.mjs';
 import {
   MAX_GRADE,
+  applyTerrainCuttings,
   hgtTileNamesForBounds,
   maxRoadGrade,
   normalizeInfrastructureElevations,
@@ -16,10 +17,35 @@ import {
 test('infrastructure AHD levels normalize to the game sea datum', () => {
   const bridge = { kind: 'transport-structure', minAhd: 2.05, maxAhd: 4.95 };
   const duplicatePiece = { kind: 'transport-structure', minAhd: 2.05, maxAhd: 4.95 };
-  const count = normalizeInfrastructureElevations({ '0,0': [bridge], '1,0': [duplicatePiece] }, 1.05);
-  assert.equal(count, 2);
+  const cutting = { kind: 'terrain-cutting', floorAhd: 4.1 };
+  const canopy = { kind: 'station-canopy', floorAhd: 4.1, roofAhd: 10.4 };
+  const count = normalizeInfrastructureElevations({ '0,0': [bridge, cutting, canopy], '1,0': [duplicatePiece] }, 1.05);
+  assert.equal(count, 4);
   assert.deepEqual({ baseY: bridge.baseY, topY: bridge.topY }, { baseY: 1, topY: 3.9 });
   assert.deepEqual({ baseY: duplicatePiece.baseY, topY: duplicatePiece.topY }, { baseY: 1, topY: 3.9 });
+  assert.equal(cutting.floorY, 3.1);
+  assert.deepEqual({ floorY: canopy.floorY, roofY: canopy.roofY }, { floorY: 3.1, roofY: 9.4 });
+});
+
+test('reviewed cutting pins only covered corners and preserves natural samples', () => {
+  const mapSize = 4;
+  const quantized = Int16Array.from({ length: (mapSize + 1) ** 2 }, (_, index) => 80 + index);
+  const cutting = {
+    kind: 'terrain-cutting', sourceId: 'terrain-cutting:test', x: 0, z: 0, floorY: 4.1,
+    outline: [[-6, -6], [6, -6], [6, 6], [-6, 6]],
+  };
+  const duplicate = structuredClone(cutting);
+  const original = quantized.slice();
+  const result = applyTerrainCuttings(quantized, { '0,0': [cutting], '1,0': [duplicate] }, { mapSize, tile: 10 });
+  assert.deepEqual(result, { cuttings: 1, changedCorners: 4 });
+  assert.equal(cutting.terrainCorners.length, 4);
+  assert.deepEqual(duplicate.terrainCorners, cutting.terrainCorners);
+  for (const [ix, iz, raw] of cutting.terrainCorners) {
+    const index = ix + mapSize / 2 + (iz + mapSize / 2) * (mapSize + 1);
+    assert.equal(raw, original[index]);
+    assert.equal(quantized[index], 41);
+  }
+  assert.equal(quantized[0], original[0], 'surrounding terrain changed');
 });
 
 function readHeights() {
@@ -51,8 +77,43 @@ test('baked Melbourne terrain pins water and keeps roads drivable', () => {
       }
     }
   }
-  assert.ok(maxRoadGrade(heights, grid) <= MAX_GRADE, 'road grade exceeds terrain contract');
+  // The cutting deliberately introduces retaining-wall discontinuities in the
+  // final lattice. Restore its captured natural samples to assess ordinary roads.
+  const gradeHeights = heights.slice();
+  const objects = readObjectIndex(new URL('../../public/maps', import.meta.url).pathname, 'melbourne');
+  const cutting = Object.values(objects.chunks).flat().find((object) => object.kind === 'terrain-cutting');
+  assert.ok(cutting?.terrainCorners?.length > 0, 'reviewed cutting samples are absent');
+  for (const [ix, iz, raw] of cutting.terrainCorners) {
+    gradeHeights[ix + MAP_SIZE / 2 + (iz + MAP_SIZE / 2) * width] = raw * 0.1;
+  }
+  assert.ok(maxRoadGrade(gradeHeights, grid) <= MAX_GRADE, 'ordinary road grade exceeds terrain contract');
   assert.ok(maxDryHeight <= 65, `urban surface spike remains in terrain: ${maxDryHeight}m`);
+});
+
+test('committed Flinders override has surveyed floor, open canopy, and isolated terrain changes', () => {
+  const objects = readObjectIndex(new URL('../../public/maps', import.meta.url).pathname, 'melbourne');
+  const authored = Object.values(objects.chunks).flat();
+  const unique = (kind) => [...new Map(authored.filter((object) => object.kind === kind)
+    .map((object) => [object.sourceId, object])).values()];
+  const [cutting] = unique('terrain-cutting');
+  const [canopy] = unique('station-canopy');
+  assert.equal(cutting.sourceId, 'terrain-cutting:flinders-street-station');
+  assert.equal(cutting.floorAhd, 4.1);
+  // The baked SRTM water datum is displayed as 1.05 m but is slightly higher
+  // internally, so the committed 0.1 m payload resolves to 3.0 m.
+  assert.equal(cutting.floorY, 3);
+  assert.equal(canopy.sourceId, 'building:804817:1139');
+  assert.deepEqual({ floorY: canopy.floorY, roofY: canopy.roofY }, { floorY: 3, roofY: 9.3 });
+  assert.ok(!authored.some((object) => object.kind === 'building' && object.sourceId === canopy.sourceId),
+    'station canopy still compiles as a solid generic building');
+
+  const heights = readHeights();
+  const width = MAP_SIZE + 1;
+  assert.ok(cutting.terrainCorners.some(([, , raw]) => raw > 100), 'natural terrain provenance was not retained');
+  for (const [ix, iz] of cutting.terrainCorners) {
+    const value = heights[ix + MAP_SIZE / 2 + (iz + MAP_SIZE / 2) * width];
+    assert.equal(value, 3, `cutting corner ${ix},${iz} does not match surveyed grade`);
+  }
 });
 
 test('HGT source selection includes every crossed one-degree tile', () => {

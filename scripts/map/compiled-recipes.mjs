@@ -4,6 +4,7 @@ import { stableStringify } from './compiled-format.mjs';
 import {
   CHUNK_SIZE,
   CHUNK_TILES,
+  COLLISION_FLAGS,
   COVERAGE_FLAGS,
   MAP_SIZE,
   MAX_CHUNK,
@@ -21,6 +22,7 @@ const COVERAGE_PARKING = COVERAGE_FLAGS.Parking;
 export const COVERAGE_BUILDING_SOURCE = COVERAGE_FLAGS.BuildingSource;
 const TRANSPORT_BRIDGE = TRANSPORT_FLAGS.Bridge;
 const TRANSPORT_TUNNEL = TRANSPORT_FLAGS.Tunnel;
+const COLLISION_CUSTOM_TERRAIN = COLLISION_FLAGS.CustomTerrain;
 const BRIDGE_APPROACH_LENGTH = 24;
 
 /** Resolve the authored cell represented by an encoded centimetre coordinate. */
@@ -256,6 +258,126 @@ function triangulate(points) {
   return ShapeUtils.triangulateShape(vectors, []);
 }
 
+function interpolatePoint(a, b, t) {
+  return a.map((value, index) => value + (b[index] - value) * t);
+}
+
+function clipPolygonHalfPlane(points, a, b, keepInside, orientation) {
+  const signed = (point) => orientation * ((b[0] - a[0]) * (point[1] - a[1]) - (b[1] - a[1]) * (point[0] - a[0]));
+  const output = [];
+  for (let index = 0; index < points.length; index++) {
+    const current = points[index];
+    const previous = points[(index + points.length - 1) % points.length];
+    const currentValue = signed(current);
+    const previousValue = signed(previous);
+    const currentInside = keepInside ? currentValue >= -1e-7 : currentValue <= 1e-7;
+    const previousInside = keepInside ? previousValue >= -1e-7 : previousValue <= 1e-7;
+    if (currentInside !== previousInside) {
+      const denominator = previousValue - currentValue;
+      const t = Math.abs(denominator) > 1e-9 ? previousValue / denominator : 0;
+      output.push(interpolatePoint(previous, current, t));
+    }
+    if (currentInside) output.push(current);
+  }
+  return output;
+}
+
+/** Return the non-overlapping pieces of a polygon outside one convex cutter. */
+function subtractConvexPolygon(points, cutter) {
+  const orientation = polygonTwiceArea(cutter) >= 0 ? 1 : -1;
+  let candidates = [points];
+  const outside = [];
+  for (let edge = 0; edge < cutter.length && candidates.length > 0; edge++) {
+    const a = cutter[edge];
+    const b = cutter[(edge + 1) % cutter.length];
+    const next = [];
+    for (const candidate of candidates) {
+      const exterior = clipPolygonHalfPlane(candidate, a, b, false, orientation);
+      if (exterior.length >= 3) outside.push(exterior);
+      const interior = clipPolygonHalfPlane(candidate, a, b, true, orientation);
+      if (interior.length >= 3) next.push(interior);
+    }
+    candidates = next;
+  }
+  return outside;
+}
+
+function subtractTerrainCutters(points, cutters) {
+  let pieces = [points];
+  for (const cutter of cutters) pieces = pieces.flatMap((piece) => subtractConvexPolygon(piece, cutter));
+  return pieces;
+}
+
+function clipPolygonToChunk(points, bounds) {
+  let result = points;
+  const planes = [
+    [[bounds.minX, bounds.minZ], [bounds.maxX, bounds.minZ]],
+    [[bounds.maxX, bounds.minZ], [bounds.maxX, bounds.maxZ]],
+    [[bounds.maxX, bounds.maxZ], [bounds.minX, bounds.maxZ]],
+    [[bounds.minX, bounds.maxZ], [bounds.minX, bounds.minZ]],
+  ];
+  for (const [a, b] of planes) result = clipPolygonHalfPlane(result, a, b, true, 1);
+  return result;
+}
+
+function clipLineToChunk(a, b, bounds) {
+  const dx = b[0] - a[0];
+  const dz = b[1] - a[1];
+  let t0 = 0;
+  let t1 = 1;
+  for (const [p, q] of [
+    [-dx, a[0] - bounds.minX], [dx, bounds.maxX - a[0]],
+    [-dz, a[1] - bounds.minZ], [dz, bounds.maxZ - a[1]],
+  ]) {
+    if (Math.abs(p) < 1e-9) {
+      if (q < 0) return null;
+      continue;
+    }
+    const t = q / p;
+    if (p < 0) t0 = Math.max(t0, t);
+    else t1 = Math.min(t1, t);
+    if (t0 > t1) return null;
+  }
+  return [interpolatePoint(a, b, t0), interpolatePoint(a, b, t1)];
+}
+
+function captureTriangle(bucket, capture, a, b, c) {
+  addTriangle(bucket, a, b, c);
+  recordTriangle(capture, a, b, c);
+}
+
+function recordTriangle(capture, a, b, c) {
+  const start = capture.positions.length / 3;
+  capture.positions.push(...a, ...b, ...c);
+  capture.indices.push(start, start + 1, start + 2);
+}
+
+function addPolygonTriangles(bucket, capture, points, heightAt) {
+  for (const face of triangulate(points)) {
+    const vertices = face.map((index) => [points[index][0], heightAt(points[index]), points[index][1]]);
+    const crossY = (vertices[1][2] - vertices[0][2]) * (vertices[2][0] - vertices[0][0]) -
+      (vertices[1][0] - vertices[0][0]) * (vertices[2][2] - vertices[0][2]);
+    if (crossY >= 0) captureTriangle(bucket, capture, ...vertices);
+    else captureTriangle(bucket, capture, vertices[0], vertices[2], vertices[1]);
+  }
+}
+
+function absoluteOutline(object) {
+  return object.outline.map(([x, z]) => [object.x + x, object.z + z]);
+}
+
+function absolutePath(object) {
+  return object.points.map(([x, z]) => [object.x + x, object.z + z]);
+}
+
+function portalRampOutline(portal) {
+  if (portal.covered || portal.points.length !== 2) return null;
+  const points = absolutePath(portal);
+  const direction = portal.side === 'west' ? -1 : 1;
+  const shifted = points.map(([x, z]) => [x + direction * portal.approachLength, z]);
+  return [...points, ...shifted.reverse()];
+}
+
 function subdivideTerrainFace(a, b, c, emit, shouldRefine = null, depth = 0, maxDepth = 8) {
   const distanceSq = (left, right) => (left[0] - right[0]) ** 2 + (left[1] - right[1]) ** 2;
   const abLength = distanceSq(a, b);
@@ -448,6 +570,28 @@ function pointInOutline(x, z, object) {
     if ((az > z) !== (bz > z) && x < ((bx - ax) * (z - az)) / (bz - az) + ax) inside = !inside;
   }
   return inside;
+}
+
+function distanceToSegment(x, z, ax, az, bx, bz) {
+  const dx = bx - ax;
+  const dz = bz - az;
+  const lengthSq = dx * dx + dz * dz;
+  const t = lengthSq > 0 ? Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / lengthSq)) : 0;
+  return Math.hypot(x - (ax + dx * t), z - (az + dz * t));
+}
+
+function distanceToObjectPath(x, z, object) {
+  let result = Infinity;
+  for (let index = 0; index + 1 < object.points.length; index++) {
+    const a = object.points[index];
+    const b = object.points[index + 1];
+    result = Math.min(result, distanceToSegment(
+      x, z,
+      object.x + a[0], object.z + a[1],
+      object.x + b[0], object.z + b[1]
+    ));
+  }
+  return result;
 }
 
 function bridgeProfileHeightAt(x, z, object, terrainHeightAt) {
@@ -697,10 +841,10 @@ function bufferWriter() {
   };
 }
 
-function encodeColliders(cuboids, meshes, sourceIndices) {
+function encodeColliders(cuboids, meshes, sourceIndices, flags = 0) {
   const writer = bufferWriter();
   writer.u16(NBCH_SECTIONS.COL1);
-  writer.u16(0);
+  writer.u16(flags);
   writer.u32(cuboids.length);
   writer.u32(meshes.length);
   for (const collider of cuboids) {
@@ -766,6 +910,16 @@ function encodeGameplay(cells, parked, sources, sourceIndices) {
 }
 
 export function createCompilerContext({ meta, grid, heights, coverage, transport, speed, objectIndex }) {
+  const authored = Object.values(objectIndex.chunks ?? {}).flat();
+  const uniqueBySource = (kind) => [...new Map(
+    authored.filter((object) => object.kind === kind).map((object) => [sourceId(object), object])
+  ).values()];
+  const terrainCuttings = uniqueBySource('terrain-cutting');
+  const terrainPortals = uniqueBySource('terrain-portal');
+  const naturalCorners = new Map();
+  for (const cutting of terrainCuttings) {
+    for (const corner of cutting.terrainCorners ?? []) naturalCorners.set(`${corner[0]},${corner[1]}`, corner[2]);
+  }
   const index = (cx, cz) => {
     const gx = cx + MAP_SIZE / 2;
     const gz = cz + MAP_SIZE / 2;
@@ -794,23 +948,28 @@ export function createCompilerContext({ meta, grid, heights, coverage, transport
     if (gx < 0 || gz < 0 || gx > MAP_SIZE || gz > MAP_SIZE) return -16;
     return heights[gx + gz * (MAP_SIZE + 1)];
   };
-  const terrainHeightAt = (x, z) => {
+  const naturalCornerRaw = (ix, iz) => naturalCorners.get(`${ix},${iz}`) ?? cornerRaw(ix, iz);
+  const interpolateHeight = (x, z, sampleCorner) => {
     const fx = x / TILE + 0.5;
     const fz = z / TILE + 0.5;
     const ix = Math.floor(fx);
     const iz = Math.floor(fz);
     const tx = fx - ix;
     const tz = fz - iz;
-    const a = cornerRaw(ix, iz) * 0.1;
-    const b = cornerRaw(ix + 1, iz) * 0.1;
-    const c = cornerRaw(ix, iz + 1) * 0.1;
-    const d = cornerRaw(ix + 1, iz + 1) * 0.1;
+    const a = sampleCorner(ix, iz) * 0.1;
+    const b = sampleCorner(ix + 1, iz) * 0.1;
+    const c = sampleCorner(ix, iz + 1) * 0.1;
+    const d = sampleCorner(ix + 1, iz + 1) * 0.1;
     // Match addQuad's a-c-d / a-d-b diagonal exactly. Bilinear sampling can
     // fall below either rendered terrain triangle on a twisted height cell.
     return tz >= tx
       ? a + tx * (d - c) + tz * (c - a)
       : a + tx * (b - a) + tz * (d - b);
   };
+  const naturalTerrainHeightAt = (x, z) => interpolateHeight(x, z, naturalCornerRaw);
+  const cuttingAt = (x, z) => terrainCuttings.find((cutting) => pointInOutline(x, z, cutting)) ?? null;
+  const cuttingProfileHeightAt = (x, z) => cuttingAt(x, z)?.floorY ?? null;
+  const terrainHeightAt = (x, z) => cuttingProfileHeightAt(x, z) ?? naturalTerrainHeightAt(x, z);
   const bridgeSurfaceHeightAt = (x, z) => {
     let result = terrainHeightAt(x, z);
     const cx = Math.round(x / TILE);
@@ -828,11 +987,30 @@ export function createCompilerContext({ meta, grid, heights, coverage, transport
     }
     return result;
   };
-  const tunnelSurfaceHeightAt = (x, z) => terrainHeightAt(x, z) - TUNNEL_SURFACE_DEPTH;
+  const tunnelSurfaceHeightAt = (x, z) => naturalTerrainHeightAt(x, z) - TUNNEL_SURFACE_DEPTH;
+  const portalFloor = (portal) => terrainCuttings.find((cutting) => cutting.cuttingId === portal.cuttingId)?.floorY;
+  const railSurfaceHeightAt = (x, z, structure) => {
+    const reviewed = cuttingProfileHeightAt(x, z);
+    if (reviewed !== null) return reviewed;
+    if (structure !== 'tunnel') return bridgeSurfaceHeightAt(x, z);
+    let result = tunnelSurfaceHeightAt(x, z);
+    for (const portal of terrainPortals) {
+      const floor = portalFloor(portal);
+      if (!Number.isFinite(floor)) continue;
+      const portalX = portal.x + portal.points.reduce((sum, point) => sum + point[0], 0) / portal.points.length;
+      if ((portal.side === 'east' && x < portalX - 2) || (portal.side === 'west' && x > portalX + 2)) continue;
+      const distance = distanceToObjectPath(x, z, portal);
+      if (distance > portal.approachLength) continue;
+      result = Math.max(floor, Math.min(result, floor + distance * portal.maxGrade));
+    }
+    return result;
+  };
   return {
     meta, grid, heights, coverage, transport, speed, objectIndex,
-    index, codeAt, coverageAt, transportAt, isRoad, cornerRaw,
-    terrainHeightAt, bridgeSurfaceHeightAt, tunnelSurfaceHeightAt, heightAt: terrainHeightAt,
+    index, codeAt, coverageAt, transportAt, isRoad, cornerRaw, naturalCornerRaw,
+    terrainCuttings, terrainPortals, naturalTerrainHeightAt, cuttingProfileHeightAt,
+    terrainHeightAt, bridgeSurfaceHeightAt, tunnelSurfaceHeightAt, railSurfaceHeightAt,
+    heightAt: terrainHeightAt,
   };
 }
 
@@ -892,9 +1070,11 @@ function navigationFromPaths(context, objects, kx, kz) {
   for (const object of objects) {
     if (object.kind !== 'nav-path' || !Array.isArray(object.points) || object.points.length < 2) continue;
     const flags = flagFor(object.mode) | (object.flags ?? 0);
-    const heightAt = object.structure === 'tunnel'
-      ? context.tunnelSurfaceHeightAt
-      : context.bridgeSurfaceHeightAt;
+    const heightAt = object.mode === 'train'
+      ? (x, z) => context.railSurfaceHeightAt(x, z, object.structure)
+      : object.structure === 'tunnel'
+        ? context.tunnelSurfaceHeightAt
+        : context.bridgeSurfaceHeightAt;
     const source = object.points.map(([x, z]) => ({ x: object.x + x, z: object.z + z }));
     const points = [source[0]];
     for (let i = 1; i < source.length; i++) {
@@ -946,6 +1126,94 @@ function navigationFromPaths(context, objects, kx, kz) {
   return { nodes: [...nodes.values()], edges };
 }
 
+function chunkBounds(kx, kz) {
+  return {
+    minX: (kx * CHUNK_TILES - 0.5) * TILE,
+    minZ: (kz * CHUNK_TILES - 0.5) * TILE,
+    maxX: ((kx + 1) * CHUNK_TILES - 0.5) * TILE,
+    maxZ: ((kz + 1) * CHUNK_TILES - 0.5) * TILE,
+  };
+}
+
+function boundaryIsPortal(a, b, cutting, portals) {
+  return portals.some((portal) => portal.cuttingId === cutting.cuttingId &&
+    distanceToObjectPath(a[0], a[1], portal) < 0.2 &&
+    distanceToObjectPath(b[0], b[1], portal) < 0.2);
+}
+
+function addReviewedCuttingGeometry(context, cutting, kx, kz, buckets, capture) {
+  const bounds = chunkBounds(kx, kz);
+  const outline = absoluteOutline(cutting);
+  const clippedFloor = clipPolygonToChunk(outline, bounds);
+  if (clippedFloor.length >= 3) {
+    addPolygonTriangles(buckets.get(cutting.surface === 'concrete' ? 'concrete' : 'ballast'), capture, clippedFloor, () => cutting.floorY);
+  }
+  for (let edge = 0; edge < outline.length; edge++) {
+    const start = outline[edge];
+    const end = outline[(edge + 1) % outline.length];
+    if (boundaryIsPortal(start, end, cutting, context.terrainPortals)) continue;
+    const clipped = clipLineToChunk(start, end, bounds);
+    if (!clipped) continue;
+    const length = Math.hypot(clipped[1][0] - clipped[0][0], clipped[1][1] - clipped[0][1]);
+    const parts = Math.max(1, Math.ceil(length / 6));
+    for (let part = 0; part < parts; part++) {
+      const a = interpolatePoint(clipped[0], clipped[1], part / parts);
+      const b = interpolatePoint(clipped[0], clipped[1], (part + 1) / parts);
+      const topA = Math.max(cutting.floorY + 0.2, context.naturalTerrainHeightAt(a[0], a[1]));
+      const topB = Math.max(cutting.floorY + 0.2, context.naturalTerrainHeightAt(b[0], b[1]));
+      const lowA = [a[0], cutting.floorY, a[1]];
+      const lowB = [b[0], cutting.floorY, b[1]];
+      const highA = [a[0], topA, a[1]];
+      const highB = [b[0], topB, b[1]];
+      captureTriangle(buckets.get('concrete'), capture, lowA, lowB, highB);
+      captureTriangle(buckets.get('concrete'), capture, lowA, highB, highA);
+    }
+  }
+}
+
+function addPortalRampGeometry(context, portal, kx, kz, buckets, capture) {
+  const outline = portalRampOutline(portal);
+  if (!outline) return;
+  const cutting = context.terrainCuttings.find((candidate) => candidate.cuttingId === portal.cuttingId);
+  if (!cutting) return;
+  const clipped = clipPolygonToChunk(outline, chunkBounds(kx, kz));
+  if (clipped.length < 3) return;
+  addPolygonTriangles(buckets.get('ballast'), capture, clipped, ([x, z]) => Math.min(
+    context.naturalTerrainHeightAt(x, z),
+    cutting.floorY + distanceToObjectPath(x, z, portal) * portal.maxGrade
+  ));
+}
+
+function addStationCanopyGeometry(object, kx, kz, buckets, cuboids, collisionMeshes) {
+  if (!Number.isFinite(object.floorY) || !Number.isFinite(object.roofY) || object.roofY <= object.floorY + 0.5) return;
+  const outline = absoluteOutline(object);
+  const clipped = clipPolygonToChunk(outline, chunkBounds(kx, kz));
+  if (clipped.length >= 3) {
+    const roof = { positions: [], indices: [] };
+    addPolygonTriangles(buckets.get('roof-metal'), roof, clipped, () => object.roofY);
+    collisionMeshes.push({ sourceId: object.sourceId, ...roof });
+  }
+  const bounds = chunkBounds(kx, kz);
+  for (let edge = 0; edge < outline.length; edge++) {
+    const a = outline[edge];
+    const b = outline[(edge + 1) % outline.length];
+    const length = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const supports = Math.max(1, Math.ceil(length / 22));
+    for (let support = 0; support < supports; support++) {
+      const t = (support + 0.5) / supports;
+      const x = a[0] + (b[0] - a[0]) * t;
+      const z = a[1] + (b[1] - a[1]) * t;
+      if (x < bounds.minX || x >= bounds.maxX || z < bounds.minZ || z >= bounds.maxZ) continue;
+      const height = object.roofY - object.floorY;
+      addBox(buckets.get('concrete'), x, object.floorY + height / 2, z, 0.22, height / 2, 0.22);
+      cuboids.push({
+        sourceId: object.sourceId, x, y: object.floorY + height / 2, z,
+        hx: 0.22, hy: height / 2, hz: 0.22, rotation: 0,
+      });
+    }
+  }
+}
+
 export function compileChunkRecipe(context, kx, kz) {
   if (kx < MIN_CHUNK || kx > MAX_CHUNK || kz < MIN_CHUNK || kz > MAX_CHUNK) throw new Error(`chunk ${kx},${kz} is outside Melbourne bounds`);
   const c0x = kx * CHUNK_TILES;
@@ -964,12 +1232,29 @@ export function compileChunkRecipe(context, kx, kz) {
   for (const object of objects) {
     if (!objectsByKind.has(object.kind)) objectsByKind.set(object.kind, []);
     objectsByKind.get(object.kind).push(object);
-    sources.add(object.sourceId);
+    // Portal copies cover their possible approach envelope, but most do not
+    // emit anything in a given chunk. Add their source only when a local ramp
+    // actually contributes geometry below.
+    if (object.kind !== 'terrain-portal') sources.add(object.sourceId);
   }
   // Retain the object-level guard for older inputs that predate the explicit
   // source-coverage bit.
   const authoredBuildingArea = objectsByKind.has('building');
   const authoredNavigation = objectsByKind.has('nav-path');
+  const localCuttings = [...new Map((objectsByKind.get('terrain-cutting') ?? []).map((object) => [object.sourceId, object])).values()];
+  const localPortalRamps = [...new Map((objectsByKind.get('terrain-portal') ?? [])
+    .filter((object) => !object.covered)
+    .filter((object) => {
+      const outline = portalRampOutline(object);
+      return outline && clipPolygonToChunk(outline, chunkBounds(kx, kz)).length >= 3;
+    })
+    .map((object) => [object.sourceId, object])).values()];
+  const customTerrainCollision = localCuttings.length > 0 || localPortalRamps.length > 0;
+  const terrainCapture = { positions: [], indices: [] };
+  const terrainCutters = [
+    ...localCuttings.map(absoluteOutline),
+    ...localPortalRamps.map(portalRampOutline).filter(Boolean),
+  ];
 
   // Terrain recipe: one quantized heightfield shared by render and Rapier.
   const heightBytes = Buffer.alloc((CHUNK_TILES + 1) ** 2 * 2);
@@ -1005,6 +1290,14 @@ export function compileChunkRecipe(context, kx, kz) {
       const z1 = (cz + 0.5) * TILE;
       if (code === 5) {
         addQuad(bucket, [x0, 0.015, z0], [x0, 0.015, z1], [x1, 0.015, z1], [x1, 0.015, z0]);
+        if (customTerrainCollision) {
+          const y00 = context.naturalCornerRaw(cx, cz) * 0.1;
+          const y10 = context.naturalCornerRaw(cx + 1, cz) * 0.1;
+          const y01 = context.naturalCornerRaw(cx, cz + 1) * 0.1;
+          const y11 = context.naturalCornerRaw(cx + 1, cz + 1) * 0.1;
+          recordTriangle(terrainCapture, [x0, y00, z0], [x0, y01, z1], [x1, y11, z1]);
+          recordTriangle(terrainCapture, [x0, y00, z0], [x1, y11, z1], [x1, y10, z0]);
+        }
         for (const [ox, oz] of [[0, -1], [1, 0], [0, 1], [-1, 0]]) {
           if (context.codeAt(cx + ox, cz + oz) === 5) continue;
           const id = fallbackId('shoreline', cx, cz, (ox + 1) * 3 + oz + 1);
@@ -1012,11 +1305,27 @@ export function compileChunkRecipe(context, kx, kz) {
           cuboids.push({ sourceId: id, x: cx * TILE + ox * TILE / 2, y: 2.5, z: cz * TILE + oz * TILE / 2, hx: ox === 0 ? TILE / 2 : 0.25, hy: 2.5, hz: oz === 0 ? TILE / 2 : 0.25, rotation: 0 });
         }
       } else {
-        const y00 = context.cornerRaw(cx, cz) * 0.1;
-        const y10 = context.cornerRaw(cx + 1, cz) * 0.1;
-        const y01 = context.cornerRaw(cx, cz + 1) * 0.1;
-        const y11 = context.cornerRaw(cx + 1, cz + 1) * 0.1;
-        addQuad(bucket, [x0, y00, z0], [x0, y01, z1], [x1, y11, z1], [x1, y10, z0]);
+        const sample = customTerrainCollision ? context.naturalCornerRaw : context.cornerRaw;
+        const y00 = sample(cx, cz) * 0.1;
+        const y10 = sample(cx + 1, cz) * 0.1;
+        const y01 = sample(cx, cz + 1) * 0.1;
+        const y11 = sample(cx + 1, cz + 1) * 0.1;
+        if (customTerrainCollision) {
+          const triangles = [
+            [[x0, z0, y00], [x0, z1, y01], [x1, z1, y11]],
+            [[x0, z0, y00], [x1, z1, y11], [x1, z0, y10]],
+          ];
+          for (const triangle of triangles) {
+            for (const piece of subtractTerrainCutters(triangle, terrainCutters)) {
+              for (let vertex = 1; vertex + 1 < piece.length; vertex++) {
+                const toWorldVertex = (point) => [point[0], point[2], point[1]];
+                captureTriangle(bucket, terrainCapture, toWorldVertex(piece[0]), toWorldVertex(piece[vertex]), toWorldVertex(piece[vertex + 1]));
+              }
+            }
+          }
+        } else {
+          addQuad(bucket, [x0, y00, z0], [x0, y01, z1], [x1, y11, z1], [x1, y10, z0]);
+        }
       }
 
       if (context.isRoad(cx, cz) && !authoredNavigation) {
@@ -1086,6 +1395,14 @@ export function compileChunkRecipe(context, kx, kz) {
     }
   }
 
+  if (customTerrainCollision) {
+    for (const cutting of localCuttings) addReviewedCuttingGeometry(context, cutting, kx, kz, buckets, terrainCapture);
+    for (const portal of localPortalRamps) addPortalRampGeometry(context, portal, kx, kz, buckets, terrainCapture);
+    const terrainSource = localCuttings[0]?.sourceId ?? localPortalRamps[0].sourceId;
+    sources.add(terrainSource);
+    collisionMeshes.push({ sourceId: terrainSource, ...terrainCapture });
+  }
+
   for (const object of objects) {
     if (object.kind === 'road-surface' && Array.isArray(object.outline) && object.outline.length >= 3) {
       const points = object.outline.map(([x, z]) => [object.x + x, object.z + z]);
@@ -1093,9 +1410,12 @@ export function compileChunkRecipe(context, kx, kz) {
       const elevation = object.elevation ?? 0.025;
       const sitsOnBridge = object.structure === 'bridge' ||
         (object.structure !== 'tunnel' && material === 'pavement');
-      const surfaceHeightAt = object.structure === 'tunnel'
-        ? context.tunnelSurfaceHeightAt
-        : sitsOnBridge ? context.bridgeSurfaceHeightAt : context.terrainHeightAt;
+      const isTrainSurface = object.sourceId.startsWith('train:') || /^train-/.test(object.role ?? '');
+      const surfaceHeightAt = isTrainSurface
+        ? (x, z) => context.railSurfaceHeightAt(x, z, object.structure)
+        : object.structure === 'tunnel'
+          ? context.tunnelSurfaceHeightAt
+          : sitsOnBridge ? context.bridgeSurfaceHeightAt : context.terrainHeightAt;
       if (elevation >= 0.1 && ['pavement', 'concrete'].includes(material)) {
         const collision = addRaisedPolygon(buckets.get(material), points, surfaceHeightAt, elevation);
         collisionMeshes.push({ sourceId: object.sourceId, ...collision });
@@ -1147,6 +1467,8 @@ export function compileChunkRecipe(context, kx, kz) {
           cuboids.push({ sourceId: object.sourceId, ...box, rotation });
         }
       }
+    } else if (object.kind === 'station-canopy') {
+      addStationCanopyGeometry(object, kx, kz, buckets, cuboids, collisionMeshes);
     } else if (object.kind === 'building') {
       const baseY = Number.isFinite(object.baseY) ? object.baseY : context.heightAt(object.x, object.z);
       const bucket = buckets.get(buildingWallMaterialFor(object));
@@ -1187,14 +1509,17 @@ export function compileChunkRecipe(context, kx, kz) {
     } else if (object.kind === 'parking') {
       parked.push({ sourceId: object.sourceId, x: object.x, z: object.z, rotation: object.rotation ?? 0, seed: Number.parseInt(createHash('sha256').update(object.sourceId).digest('hex').slice(0, 8), 16) });
     } else if (object.kind === 'transit-stop') {
+      const stopHeight = object.mode === 'train'
+        ? context.railSurfaceHeightAt(object.x, object.z, object.structure)
+        : context.bridgeSurfaceHeightAt(object.x, object.z);
       transitStops.push({
         sourceId: object.sourceId, mode: object.mode, name: object.name ?? '', x: object.x,
-        y: context.bridgeSurfaceHeightAt(object.x, object.z) + 0.05, z: object.z,
+        y: stopHeight + 0.05, z: object.z,
       });
-      const base = context.bridgeSurfaceHeightAt(object.x, object.z);
+      const base = stopHeight;
       addBox(buckets.get('prop'), object.x, base + 1.25, object.z, 0.07, 1.25, 0.07);
       addBox(buckets.get('prop'), object.x, base + 2.25, object.z, 0.28, 0.18, 0.04);
-    } else if (object.kind !== 'road-surface' && object.kind !== 'nav-path') {
+    } else if (!['road-surface', 'nav-path', 'terrain-cutting', 'terrain-portal'].includes(object.kind)) {
       const base = context.bridgeSurfaceHeightAt(object.x, object.z);
       addPointPropRecipe(buckets, cuboids, object, base);
     }
@@ -1228,7 +1553,7 @@ export function compileChunkRecipe(context, kx, kz) {
     primitives,
     sections: {
       HGT1: heightBytes,
-      COL1: encodeColliders(cuboids, collisionMeshes, sourceIndices),
+      COL1: encodeColliders(cuboids, collisionMeshes, sourceIndices, customTerrainCollision ? COLLISION_CUSTOM_TERRAIN : 0),
       NAV3: encodeNavigation(nodes, edges),
       GME1: encodeGameplay(cells, parked, sourceList, sourceIndices),
       TRN1: encodeTransit(transitStops, sourceIndices),

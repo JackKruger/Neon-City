@@ -12,6 +12,7 @@ import {
   type CompiledChunkData,
   type CompiledChunkManifest,
   type CompiledManifest,
+  usesDefaultTerrainHeightfield,
   validateCompiledManifest,
 } from './CompiledFormat';
 import { CompiledRoadNetwork, setRoadNetwork } from './RoadGraph';
@@ -235,11 +236,13 @@ export class CompiledCity implements CityStreamer {
     const c0x = data.kx * CHUNK_TILES;
     const c0z = data.kz * CHUNK_TILES;
     const midpoint = (CHUNK_TILES - 1) / 2;
-    this.game.world.createCollider(
-      RAPIER.ColliderDesc.heightfield(CHUNK_TILES, CHUNK_TILES, heights, { x: CHUNK_SIZE, y: 1, z: CHUNK_SIZE }, RAPIER.HeightFieldFlags.FIX_INTERNAL_EDGES)
-        .setTranslation((c0x + midpoint) * TILE, 0, (c0z + midpoint) * TILE),
-      body
-    );
+    if (usesDefaultTerrainHeightfield(data.collisionFlags)) {
+      this.game.world.createCollider(
+        RAPIER.ColliderDesc.heightfield(CHUNK_TILES, CHUNK_TILES, heights, { x: CHUNK_SIZE, y: 1, z: CHUNK_SIZE }, RAPIER.HeightFieldFlags.FIX_INTERNAL_EDGES)
+          .setTranslation((c0x + midpoint) * TILE, 0, (c0z + midpoint) * TILE),
+        body
+      );
+    }
     for (const collider of data.cuboids) {
       this.game.world.createCollider(
         RAPIER.ColliderDesc.cuboid(collider.hx, collider.hy, collider.hz)

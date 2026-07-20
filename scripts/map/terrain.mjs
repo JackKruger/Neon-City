@@ -365,17 +365,85 @@ export function maxRoadGrade(heights, grid) {
 
 /** Convert source AHD structure levels into the game's sea-relative Y axis. */
 export function normalizeInfrastructureElevations(objectChunks, seaDatum) {
+  const relativeAhd = (value) => Math.round(((value - seaDatum) + 1e-8) * 10) / 10;
   let count = 0;
   for (const object of Object.values(objectChunks ?? {}).flat()) {
+    if (object.kind === 'terrain-cutting') {
+      if (Number.isFinite(object.floorAhd)) object.floorY = relativeAhd(object.floorAhd);
+      count++;
+      continue;
+    }
+    if (object.kind === 'station-canopy') {
+      if (Number.isFinite(object.floorAhd)) object.floorY = relativeAhd(object.floorAhd);
+      if (Number.isFinite(object.roofAhd)) object.roofY = relativeAhd(object.roofAhd);
+      count++;
+      continue;
+    }
     if (object.kind !== 'transport-structure') continue;
-    if (Number.isFinite(object.minAhd)) object.baseY = Math.round((object.minAhd - seaDatum) * 10) / 10;
-    if (Number.isFinite(object.maxAhd)) object.topY = Math.round((object.maxAhd - seaDatum) * 10) / 10;
+    if (Number.isFinite(object.minAhd)) object.baseY = relativeAhd(object.minAhd);
+    if (Number.isFinite(object.maxAhd)) object.topY = relativeAhd(object.maxAhd);
     if (Number.isFinite(object.baseY) && Number.isFinite(object.topY) && object.topY <= object.baseY) {
       object.topY = Math.round((object.baseY + 0.4) * 10) / 10;
     }
     count++;
   }
   return count;
+}
+
+function pointInAuthoredOutline(x, z, object) {
+  let inside = false;
+  for (let i = 0, j = object.outline.length - 1; i < object.outline.length; j = i++) {
+    const ax = object.x + object.outline[i][0];
+    const az = object.z + object.outline[i][1];
+    const bx = object.x + object.outline[j][0];
+    const bz = object.z + object.outline[j][1];
+    if ((az > z) !== (bz > z) && x < ((bx - ax) * (z - az)) / (bz - az) + ax) inside = !inside;
+  }
+  return inside;
+}
+
+/** Pin the reviewed cutting core to rail grade while preserving the original
+ * corner samples in the authored record. The compiler uses those backups for
+ * the terrain surrounding the exact vertical cut boundary. */
+export function applyTerrainCuttings(
+  quantized,
+  objectChunks,
+  { mapSize = MAP_SIZE, tile = TILE } = {}
+) {
+  const copies = new Map();
+  for (const object of Object.values(objectChunks ?? {}).flat()) {
+    if (object.kind !== 'terrain-cutting' || !Array.isArray(object.outline) || !Number.isFinite(object.floorY)) continue;
+    const key = object.sourceId ?? object.cuttingId;
+    const group = copies.get(key) ?? [];
+    group.push(object);
+    copies.set(key, group);
+  }
+  let changedCorners = 0;
+  for (const group of copies.values()) {
+    const cutting = group[0];
+    const floorRaw = Math.round(cutting.floorY / HEIGHT_SCALE);
+    const absolute = cutting.outline.map(([x, z]) => [cutting.x + x, cutting.z + z]);
+    const minX = Math.max(0, Math.floor(Math.min(...absolute.map(([x]) => x)) / tile + mapSize / 2));
+    const maxX = Math.min(mapSize, Math.ceil(Math.max(...absolute.map(([x]) => x)) / tile + mapSize / 2 + 1));
+    const minZ = Math.max(0, Math.floor(Math.min(...absolute.map(([, z]) => z)) / tile + mapSize / 2));
+    const maxZ = Math.min(mapSize, Math.ceil(Math.max(...absolute.map(([, z]) => z)) / tile + mapSize / 2 + 1));
+    const terrainCorners = [];
+    for (let gx = minX; gx <= maxX; gx++) {
+      for (let gz = minZ; gz <= maxZ; gz++) {
+        const ix = gx - mapSize / 2;
+        const iz = gz - mapSize / 2;
+        const x = (ix - 0.5) * tile;
+        const z = (iz - 0.5) * tile;
+        if (!pointInAuthoredOutline(x, z, cutting)) continue;
+        const index = gx + gz * (mapSize + 1);
+        terrainCorners.push([ix, iz, quantized[index]]);
+        if (quantized[index] !== floorRaw) changedCorners++;
+        quantized[index] = floorRaw;
+      }
+    }
+    for (const copy of group) copy.terrainCorners = terrainCorners;
+  }
+  return { cuttings: copies.size, changedCorners };
 }
 
 /** Build the 721x721 processed terrain lattice from SRTM and the final cell grid. */
@@ -458,6 +526,8 @@ export function buildTerrainHeights(grid, tiles, { objectChunks = null } = {}) {
     quantized[i] = Math.round(value / HEIGHT_SCALE);
   }
   relaxQuantizedRoadGrades(quantized, frozen, grid, width);
+  const roadGrade = maxRoadGrade(Float64Array.from(quantized, (value) => value * HEIGHT_SCALE), grid);
+  const cuttingResult = applyTerrainCuttings(quantized, objectChunks);
   let min = Infinity;
   let max = -Infinity;
   for (let i = 0; i < heights.length; i++) {
@@ -484,7 +554,9 @@ export function buildTerrainHeights(grid, tiles, { objectChunks = null } = {}) {
     heights: quantizedMeters,
     min,
     max,
-    maxGrade: maxRoadGrade(quantizedMeters, grid),
+    maxGrade: roadGrade,
+    terrainCuttingCount: cuttingResult.cuttings,
+    terrainCuttingCornerCount: cuttingResult.changedCorners,
     maxFootprintTerrainSpread,
     buildingBaseCount: buildingBases.length,
     seaDatum,
