@@ -12,10 +12,8 @@ import { CompiledCity } from '../world/CompiledCity';
 import {
   cellAt,
   bridgeSurfaceHeightAt,
-  cellToWorld,
   getAuthoredMap,
   heightAt,
-  nearestRoadCell,
   roadInfoAt,
   speedLimitAt,
   suburbNameAt,
@@ -34,7 +32,7 @@ import { Combat } from '../gameplay/Combat';
 import { Fx } from '../render/Fx';
 import { Pickup } from '../entities/Pickup';
 import { WEAPONS, WEAPON_ORDER, type WeaponId } from '../gameplay/Weapons';
-import { randomRoadCellNear } from '../world/RoadGraph';
+import { nearestRoadPoint, pointWorld, randomRoadCellNear } from '../world/RoadGraph';
 import { Settings } from './Settings';
 import { WorldLighting, type WeatherKind } from '../world/WorldLighting';
 import { DevStats, type DevStatsSnapshot } from './DevStats';
@@ -233,12 +231,11 @@ export class Game {
   private async initialize(initialSave?: GameSaveV1): Promise<void> {
     const map = getAuthoredMap();
     const requestedSpawn = initialSave?.player.position ?? map?.spawn ?? { x: 0, z: 0 };
-    const requestedCell = worldToCell(requestedSpawn.x, requestedSpawn.z);
-    const safeSpawnCell = initialSave ? null : nearestRoadCell(requestedCell.cx, requestedCell.cz);
-    const spawn = safeSpawnCell
-      ? cellToWorld(safeSpawnCell.cx, safeSpawnCell.cz)
-      : requestedSpawn;
-    await this.city.prewarm(spawn.x, spawn.z);
+    await this.city.prewarm(requestedSpawn.x, requestedSpawn.z);
+    const safeSpawnPoint = initialSave
+      ? null
+      : nearestRoadPoint(requestedSpawn.x, requestedSpawn.z, 'pedestrian');
+    const spawn = safeSpawnPoint ? pointWorld(safeSpawnPoint) : requestedSpawn;
     // Register freshly-created fixed colliders with Rapier's scene queries so
     // the first character can raycast its exact spawn surface immediately.
     this.world.step(this.eventQueue);
@@ -476,14 +473,32 @@ export class Game {
     const wanted = WEAPON_ORDER.filter(
       (weapon): weapon is Exclude<WeaponId, 'fists'> => weapon !== 'fists'
     );
+    const placed: { x: number; z: number }[] = [];
     for (let i = 0; i < wanted.length; i++) {
       const weapon = wanted[i];
       const def = WEAPONS[weapon];
       const angle = -Math.PI * 0.8 + (i / Math.max(1, wanted.length - 1)) * Math.PI * 1.6;
       const px = x + Math.sin(angle) * 5;
       const pz = z + Math.cos(angle) * 5;
+      const footpath = nearestRoadPoint(px, pz, 'pedestrian');
+      const snapped = footpath ? pointWorld(footpath) : null;
+      // A sparse graph can return the player's own node for several nearby
+      // targets. Keep the original ring point rather than stacking pickups or
+      // awarding one immediately at startup.
+      const position = snapped && Math.hypot(snapped.x - x, snapped.z - z) >= 2.5 &&
+        placed.every((other) => Math.hypot(snapped.x - other.x, snapped.z - other.z) >= 1.5)
+        ? snapped
+        : { x: px, z: pz };
+      placed.push(position);
       const ammo = def.kind === 'gun' ? def.magSize * 5 : 0;
-      this.pickups.push(new Pickup(this, weapon, ammo, px, heightAt(px, pz), pz));
+      this.pickups.push(new Pickup(
+        this,
+        weapon,
+        ammo,
+        position.x,
+        heightAt(position.x, position.z),
+        position.z
+      ));
     }
   }
 
@@ -493,7 +508,7 @@ export class Game {
     for (let attempt = 1; !cell && attempt < 10; attempt++) {
       cell = randomRoadCellNear(x, z, 10, 24);
     }
-    const spot = cell ? cellToWorld(cell.cx, cell.cz) : { x: x + 12, z };
+    const spot = cell ? pointWorld(cell) : { x: x + 12, z };
     this.addVehicle(new Helicopter(this, spot.x, spot.z, 0));
   }
 

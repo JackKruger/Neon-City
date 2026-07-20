@@ -132,9 +132,9 @@
     }
   ],
   "results": {
-    "osmTransportPaths": 110488,
+    "osmTransportPaths": 110465,
     "footpaths": 11053,
-    "suppressedInferredFootpaths": 20864,
+    "suppressedInferredFootpaths": 20936,
     "tramTracks": 0,
     "streetOverrides": 0,
     "landuse": 0,

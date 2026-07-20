@@ -313,10 +313,16 @@ function classifyBuildingStyle(landUse, height) {
 
 function buildingHeight(properties) {
   return (
+    numeric(properties, 'footprint_extrusion') ??
+    (() => {
+      const max = numeric(properties, 'footprint_max_elevation');
+      const min = numeric(properties, 'footprint_min_elevation');
+      return max !== null && min !== null ? max - min : null;
+    })() ??
     numeric(properties, 'structure_extrusion', 'structure_height', 'height', 'height_m') ??
     (() => {
-      const max = numeric(properties, 'structure_max_elevation', 'footprint_max_elevation', 'max_elevation');
-      const min = numeric(properties, 'structure_min_elevation', 'footprint_min_elevation', 'min_elevation');
+      const max = numeric(properties, 'structure_max_elevation', 'max_elevation');
+      const min = numeric(properties, 'structure_min_elevation', 'min_elevation');
       return max !== null && min !== null ? max - min : null;
     })()
   );
@@ -638,19 +644,31 @@ function importBuildings(features, chunks, coverage, heightLayer, landUseLayer, 
       continue;
     }
     const id = explicitId || `${bounds.x},${bounds.z}`;
-    const previous = byStructure.get(id);
-    if (!previous || bounds.width * bounds.depth > previous.bounds.width * previous.bounds.depth) {
-      byStructure.set(id, { feature, ring, bounds });
-    }
+    const componentId = textValue(feature.properties, 'objectid', 'component_id') || featureIndex;
+    const group = byStructure.get(id) ?? { components: [], minAhd: Infinity };
+    const componentMin = numeric(feature.properties, 'footprint_min_elevation');
+    if (componentMin !== null) group.minAhd = Math.min(group.minAhd, componentMin);
+    group.components.push({ feature, ring, bounds, componentId, componentMin });
+    byStructure.set(id, group);
   }
   const pending = [];
-  for (const [id, { feature, ring, bounds }] of byStructure) {
-    const grid = toGrid(bounds.x, bounds.z);
-    const landUse = grid ? landUseLayer[grid.index] : LAND_USE.UNKNOWN;
-    let height = buildingHeight(feature.properties);
-    const sourceId = `building:${id}`;
-    if (!height && dsm) pending.push({ feature, ring, bounds, landUse, sourceId });
-    else addBuilding(feature, ring, bounds, landUse, height, chunks, coverage, heightLayer, sourceId);
+  for (const [id, group] of byStructure) {
+    const structureId = `building:${id}`;
+    for (const component of group.components) {
+      const { feature, ring, bounds, componentId, componentMin } = component;
+      const grid = toGrid(bounds.x, bounds.z);
+      const landUse = grid ? landUseLayer[grid.index] : LAND_USE.UNKNOWN;
+      const height = buildingHeight(feature.properties);
+      const sourceId = `${structureId}:${componentId}`;
+      const baseOffset = Number.isFinite(group.minAhd) && componentMin !== null
+        ? Math.max(0, componentMin - group.minAhd)
+        : 0;
+      const structureHeight = numeric(feature.properties, 'structure_extrusion', 'structure_height') ??
+        baseOffset + (Number(height) || 0);
+      const placement = { sourceId, structureId, baseOffset, structureHeight };
+      if (!height && dsm) pending.push({ feature, ring, bounds, landUse, ...placement });
+      else addBuilding(feature, ring, bounds, landUse, height, chunks, coverage, heightLayer, placement);
+    }
   }
   return {
     accepted: byStructure.size,
@@ -661,16 +679,21 @@ function importBuildings(features, chunks, coverage, heightLayer, landUseLayer, 
   };
 }
 
-function addBuilding(feature, ring, bounds, landUse, rawHeight, chunks, coverage, heightLayer, sourceId) {
-  const height = Math.max(3, Math.min(255, Number(rawHeight) || Math.max(5, Math.sqrt(bounds.width * bounds.depth) * 0.7)));
-  const style = classifyBuildingStyle(landUse, height);
+function addBuilding(feature, ring, bounds, landUse, rawHeight, chunks, coverage, heightLayer, placement) {
+  const measuredHeight = Number(rawHeight);
+  const height = Number.isFinite(measuredHeight) && measuredHeight > 0
+    ? Math.max(0.25, Math.min(255, measuredHeight))
+    : Math.max(3, Math.min(255, Math.max(5, Math.sqrt(bounds.width * bounds.depth) * 0.7)));
+  const totalHeight = Math.max(height, Math.min(255, Number(placement.structureHeight) || height));
+  const style = classifyBuildingStyle(landUse, totalHeight);
+  const { structureHeight: _structureHeight, ...objectPlacement } = placement;
   const outline = simplifyWorldRing(ring).map((point) => [
     round(point.x - bounds.x),
     round(point.z - bounds.z),
   ]);
   addObject(chunks, {
     kind: 'building',
-    sourceId,
+    ...objectPlacement,
     x: round(bounds.x),
     z: round(bounds.z),
     rotation: round(bounds.rotation),
@@ -684,7 +707,7 @@ function addBuilding(feature, ring, bounds, landUse, rawHeight, chunks, coverage
   for (const polygon of [ring]) {
     fillPolygon(coverage, polygon, coverageBuilding(coverage));
     const temp = new Uint8Array(heightLayer.length);
-    fillPolygon(temp, polygon, Math.round(height));
+    fillPolygon(temp, polygon, Math.round(totalHeight));
     for (let i = 0; i < temp.length; i++) if (temp[i]) heightLayer[i] = Math.max(heightLayer[i], temp[i]);
   }
 }
@@ -909,9 +932,16 @@ function importParking(features, chunks, coverage, roadMask) {
     coverage[road.index] |= COVERAGE.PARKING;
     // Keep one representative parked car per four mapped bays.
     if ((i * 2654435761 >>> 0) % 4 !== 0) continue;
-    const x = (road.gx - MAP_SIZE / 2) * TILE;
-    const z = (road.gz - MAP_SIZE / 2) * TILE;
-    addObject(chunks, { kind: 'parking', x, z, rotation: roadOrientation(roadMask, road.gx, road.gz) });
+    // The source point is already the mapped kerbside location. Keep it at
+    // centimetre precision; snapping to a 12 m cell centre can move a parked
+    // car into a traffic lane or onto the opposite side of the street.
+    addObject(chunks, {
+      kind: 'parking',
+      sourceId: `parking:${textValue(feature.properties, 'bay_id', 'kerbsideid', 'roadsegmentid') || i}:${round(world.x)}:${round(world.z)}`,
+      x: round(world.x),
+      z: round(world.z),
+      rotation: roadOrientation(roadMask, road.gx, road.gz),
+    });
     accepted++;
   }
   return accepted;
@@ -1024,7 +1054,12 @@ async function finishDsmBuildings(pending, dsm, chunks, coverage, heightLayer) {
     // Without a DTM, use the footprint's minimum AHD as ground when supplied.
     const ground = numeric(item.feature.properties, 'structure_min_elevation', 'footprint_min_elevation', 'min_elevation');
     const height = roof !== null && ground !== null ? roof - ground : null;
-    addBuilding(item.feature, item.ring, item.bounds, item.landUse, height, chunks, coverage, heightLayer, item.sourceId);
+    addBuilding(item.feature, item.ring, item.bounds, item.landUse, height, chunks, coverage, heightLayer, {
+      sourceId: item.sourceId,
+      structureId: item.structureId,
+      baseOffset: item.baseOffset,
+      structureHeight: item.structureHeight,
+    });
   }
 }
 
@@ -1095,7 +1130,22 @@ export async function enrichMelbourneMap({ root, grid, roadSurfaces = [], baseSu
   report.sources.push({ key: 'dsm', title: 'City of Melbourne Digital Surface Model', status: dsm ? 'loaded' : 'missing', file: basename(dsmPath) });
   const buildingResult = importBuildings(await loadSource(cacheDir, 'buildings', options, report), chunks, layers.coverage, layers.height, layers.landuse, dsm);
   if (dsm) await finishDsmBuildings(buildingResult.pending, dsm, chunks, layers.coverage, layers.height);
-  else for (const item of buildingResult.pending ?? []) addBuilding(item.feature, item.ring, item.bounds, item.landUse, null, chunks, layers.coverage, layers.height, item.sourceId);
+  else for (const item of buildingResult.pending ?? []) addBuilding(
+    item.feature,
+    item.ring,
+    item.bounds,
+    item.landUse,
+    null,
+    chunks,
+    layers.coverage,
+    layers.height,
+    {
+      sourceId: item.sourceId,
+      structureId: item.structureId,
+      baseOffset: item.baseOffset,
+      structureHeight: item.structureHeight,
+    }
+  );
   const buildingSourceCoverage = markBuildingSourceCoverage(layers.coverage, chunks);
   report.results.buildings = {
     accepted: buildingResult.accepted,

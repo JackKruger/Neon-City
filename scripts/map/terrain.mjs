@@ -273,6 +273,25 @@ function relaxQuantizedRoadGrades(values, frozen, grid, width) {
 }
 
 /** Place authored buildings on the final terrain without modifying that terrain. */
+function buildingFootprint(object) {
+  if (Array.isArray(object.outline) && object.outline.length >= 3) {
+    return object.outline.map(([x, z]) => [object.x + x, object.z + z]);
+  }
+  if (!Number.isFinite(object.width) || !Number.isFinite(object.depth)) return null;
+  const cos = Math.cos(object.rotation ?? 0);
+  const sin = Math.sin(object.rotation ?? 0);
+  const points = [];
+  for (const [x, z] of [
+    [-object.width / 2, -object.depth / 2],
+    [object.width / 2, -object.depth / 2],
+    [object.width / 2, object.depth / 2],
+    [-object.width / 2, object.depth / 2],
+  ]) {
+    points.push([object.x + x * cos + z * sin, object.z - x * sin + z * cos]);
+  }
+  return points;
+}
+
 export function placeBuildingsOnTerrain(
   heights,
   frozen,
@@ -283,8 +302,10 @@ export function placeBuildingsOnTerrain(
   if (heights.length !== width * width) throw new Error('building-pad height size mismatch');
   const groups = new Map();
   for (const object of Object.values(objectChunks ?? {}).flat()) {
-    if (object.kind !== 'building' || object.outline?.length < 3) continue;
-    const sourceId = object.sourceId ??
+    if (object.kind !== 'building') continue;
+    const polygon = buildingFootprint(object);
+    if (!polygon) continue;
+    const sourceId = object.structureId ?? object.sourceId ??
       `building:${object.x}:${object.z}:${object.rotation ?? 0}:${object.width ?? 0}:${object.depth ?? 0}`;
     let group = groups.get(sourceId);
     if (!group) {
@@ -292,7 +313,6 @@ export function placeBuildingsOnTerrain(
       groups.set(sourceId, group);
     }
     group.objects.push(object);
-    const polygon = object.outline.map(([x, z]) => [object.x + x, object.z + z]);
     const xs = polygon.map(([x]) => x);
     const zs = polygon.map(([, z]) => z);
     const minCx = Math.max(-mapSize / 2, Math.floor(Math.min(...xs) / tile + 0.5));
@@ -323,7 +343,9 @@ export function placeBuildingsOnTerrain(
     if (movable.length === 0) continue;
     const base = Math.min(...movable.map((index) => heights[index]));
     group.corners = new Set(movable);
-    for (const object of group.objects) object.baseY = Math.round(base * 10) / 10;
+    for (const object of group.objects) {
+      object.baseY = Math.round((base + (object.baseOffset ?? 0)) * 10) / 10;
+    }
   }
   return [...groups.values()];
 }
@@ -453,7 +475,9 @@ export function buildTerrainHeights(grid, tiles, { objectChunks = null } = {}) {
     if (samples.length === 0) continue;
     const base = Math.min(...samples);
     maxFootprintTerrainSpread = Math.max(maxFootprintTerrainSpread, Math.max(...samples) - base);
-    for (const object of group.objects) object.baseY = Math.round(base * 10) / 10;
+    for (const object of group.objects) {
+      object.baseY = Math.round((base + (object.baseOffset ?? 0)) * 10) / 10;
+    }
   }
   return {
     quantized,

@@ -29,6 +29,7 @@ test('open data enrichment emits all runtime contracts', async () => {
     const writeGeo = (name, features) => writeFileSync(join(cache, name), JSON.stringify({ type: 'FeatureCollection', features }));
     const block = [[144.9596, -37.8346], [144.9604, -37.8346], [144.9604, -37.8354], [144.9596, -37.8354], [144.9596, -37.8346]];
     const building = [[144.9599, -37.8349], [144.9601, -37.8349], [144.9601, -37.8351], [144.9599, -37.8351], [144.9599, -37.8349]];
+    const buildingRoof = [[144.95995, -37.83495], [144.96005, -37.83495], [144.96005, -37.83505], [144.95995, -37.83505], [144.95995, -37.83495]];
     const bridgeFootprint = [[144.9596, -37.83498], [144.9604, -37.83498], [144.9604, -37.83502], [144.9596, -37.83502], [144.9596, -37.83498]];
     const tunnelFootprint = [[144.9596, -37.83508], [144.9604, -37.83508], [144.9604, -37.83512], [144.9596, -37.83512], [144.9596, -37.83508]];
     const bridgeCompanion = [[144.95955, -37.83496], [144.96045, -37.83496], [144.96045, -37.83504], [144.95955, -37.83504], [144.95955, -37.83496]];
@@ -38,7 +39,14 @@ test('open data enrichment emits all runtime contracts', async () => {
     writeGeo('vicmap-transport.geojson', [line({ feature_type: 'Road Bridge' }, road)]);
     writeGeo('speed-zones.geojson', [line({ speed_zone: 40 }, road)]);
     writeGeo('building-footprints.geojson', [
-      polygon('building', building, { structure_id: 'A', structure_extrusion: 28, roof_type: 'Flat' }),
+      polygon('building', building, {
+        objectid: 'A1', structure_id: 'A', footprint_extrusion: 28,
+        footprint_min_elevation: 2, footprint_max_elevation: 30, roof_type: 'Flat',
+      }),
+      polygon('building roof', buildingRoof, {
+        objectid: 'A2', structure_id: 'A', footprint_extrusion: 5,
+        footprint_min_elevation: 20, footprint_max_elevation: 25, roof_type: 'Flat',
+      }),
       polygon('bridge', bridgeFootprint, {
         structure_id: 'B', footprint_type: 'Bridge', structure_extrusion: 4,
         footprint_min_elevation: 2, footprint_max_elevation: 6,
@@ -106,6 +114,18 @@ test('open data enrichment emits all runtime contracts', async () => {
     for (const kind of ['road-surface', 'building', 'tree', 'bollard', 'art', 'parking']) assert.ok(authored.some((item) => item.kind === kind), kind);
     assert.equal(objects.roadSurfaces, true);
     assert.ok(authored.find((item) => item.kind === 'building')?.outline?.length >= 3);
+    const buildingComponents = new Map(
+      authored
+        .filter((item) => item.kind === 'building' && item.structureId === 'building:A')
+        .map((item) => [item.sourceId, item])
+    );
+    assert.equal(buildingComponents.size, 2);
+    assert.equal(buildingComponents.get('building:A:A1')?.baseOffset, 0);
+    assert.equal(buildingComponents.get('building:A:A2')?.baseOffset, 18);
+    assert.equal(buildingComponents.get('building:A:A2')?.height, 5);
+    const parking = authored.find((item) => item.kind === 'parking');
+    assert.ok(parking?.sourceId?.startsWith('parking:'));
+    assert.notEqual(parking.x % 12, 0, 'mapped parking was snapped to a road-cell centre');
     assert.ok(!authored.some((item) => item.sourceId === 'building:B' || item.sourceId === 'building:T'));
     const infrastructure = authored.filter((item) => item.kind === 'transport-structure');
     assert.ok(infrastructure.some((item) => item.structure === 'bridge' && item.component === 'bridge' && item.roadDeck));

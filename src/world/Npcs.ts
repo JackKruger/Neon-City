@@ -16,11 +16,13 @@ import {
   roadNeighbors,
 } from './RoadGraph';
 
-const MAX_PEDS = 26;
+const MAX_PEDS = 42;
 const MAX_TRAFFIC = 12;
 const MAX_TRAFFIC_BODIES = MAX_TRAFFIC + 8;
-const SPAWN_MIN = 45;
-const SPAWN_MAX = 100;
+const PED_SPAWN_MIN = 32;
+const PED_SPAWN_MAX = 92;
+const TRAFFIC_SPAWN_MIN = 45;
+const TRAFFIC_SPAWN_MAX = 100;
 const DESPAWN = 140;
 const MIN_CONTACT_SPEED = 0.65;
 const RAGDOLL_IMPACT_SPEED = 4.5;
@@ -86,7 +88,7 @@ export class Npcs {
 
     this.spawnTimer -= dt;
     if (this.spawnTimer <= 0) {
-      this.spawnTimer = 0.4;
+      this.spawnTimer = 0.3;
       this.recycle();
       if (this.peds.length < MAX_PEDS) this.spawnPed();
       const activeTraffic = this.traffic.filter(
@@ -111,13 +113,15 @@ export class Npcs {
 
   private randomSpawnEdge(mode: NavigationMode): { from: CellRef; to: CellRef } | null {
     const players = this.game.playerPositions();
+    const minDistance = mode === 'pedestrian' ? PED_SPAWN_MIN : TRAFFIC_SPAWN_MIN;
+    const maxDistance = mode === 'pedestrian' ? PED_SPAWN_MAX : TRAFFIC_SPAWN_MAX;
     for (let tries = 0; tries < 12; tries++) {
       const p = players[Math.floor(Math.random() * players.length)];
-      const cell = randomRoadCellNear(p.x, p.z, SPAWN_MIN, SPAWN_MAX, mode);
+      const cell = randomRoadCellNear(p.x, p.z, minDistance, maxDistance, mode);
       if (!cell) continue;
       // The ring is relative to one player; keep clear of the other too.
       const { x, z } = pointWorld(cell);
-      if (this.distToPlayers(x, z) < SPAWN_MIN) continue;
+      if (this.distToPlayers(x, z) < minDistance) continue;
       const neighbors = roadNeighbors(cell, mode);
       if (neighbors.length === 0) continue;
       const to = neighbors[Math.floor(Math.random() * neighbors.length)];

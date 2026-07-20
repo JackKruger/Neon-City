@@ -14,7 +14,8 @@ import { Inventory } from '../gameplay/Inventory';
 import type { CombatTarget } from '../gameplay/Combat';
 import { MeleeDef, PLAYER_ARMOUR_MAX, PLAYER_HEALTH, VEHICLE_IMPACT, WeaponDef, WeaponId } from '../gameplay/Weapons';
 import { buildWeaponMesh } from './WeaponMeshes';
-import { cellToWorld, heightAt, nearestRoadCell, worldToCell } from '../world/CityMap';
+import { heightAt } from '../world/CityMap';
+import { nearestRoadPoint, pointWorld } from '../world/RoadGraph';
 import type { PlayerSaveState } from '../save/GameSave';
 
 const ENTER_RADIUS = 3.5;
@@ -205,9 +206,8 @@ export class Player implements Entity, CameraTarget, CombatTarget {
 
   private respawn(): void {
     const deathPos = this.position();
-    const { cx, cz } = worldToCell(deathPos.x, deathPos.z);
-    const cell = nearestRoadCell(cx, cz);
-    const spot = cell ? cellToWorld(cell.cx, cell.cz) : { x: deathPos.x, z: deathPos.z };
+    const point = nearestRoadPoint(deathPos.x, deathPos.z, 'pedestrian');
+    const spot = point ? pointWorld(point) : { x: deathPos.x, z: deathPos.z };
     this.rebuildCharacter(spot.x, spot.z, undefined, this.character.getFacing());
     this.health = PLAYER_HEALTH;
     this.armour = 0;

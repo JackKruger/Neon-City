@@ -118,6 +118,28 @@ test('authored buildings derive their base without changing terrain', () => {
   assert.equal(building.baseY, Math.min(...padHeights));
 });
 
+test('multi-level building components retain source-relative elevation offsets', () => {
+  const mapSize = 4;
+  const width = mapSize + 1;
+  const heights = new Float64Array(width * width).fill(7.2);
+  const lower = {
+    kind: 'building', sourceId: 'building:station:lower', structureId: 'building:station',
+    baseOffset: 0, x: 0, z: 0, outline: [[-4, -4], [4, -4], [4, 4], [-4, 4]],
+  };
+  const tower = {
+    kind: 'building', sourceId: 'building:station:tower', structureId: 'building:station',
+    baseOffset: 18.5, x: 0, z: 0, outline: [[-2, -2], [2, -2], [2, 2], [-2, 2]],
+  };
+  placeBuildingsOnTerrain(
+    heights,
+    new Uint8Array(heights.length),
+    { '0,0': [lower, tower] },
+    { mapSize, tile: 10 }
+  );
+  assert.equal(lower.baseY, 7.2);
+  assert.equal(tower.baseY, 25.7);
+});
+
 test('compiled map manifest and object index declare compatible formats', () => {
   const meta = JSON.parse(readFileSync(new URL('../../public/maps/melbourne.json', import.meta.url), 'utf8'));
   const objects = readObjectIndex(new URL('../../public/maps', import.meta.url).pathname, 'melbourne');
