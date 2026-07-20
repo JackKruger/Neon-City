@@ -44,6 +44,14 @@ export interface Entity {
 }
 
 const ACTOR_ASSETS = [...CIVILIAN_CARS, 'cars/police', 'cars/debris-door-window'];
+const MAX_FIXED_STEPS_PER_FRAME = 3;
+
+interface FixedUpdateTiming {
+  npcMs: number;
+  actorMs: number;
+  physicsMs: number;
+  postPhysicsMs: number;
+}
 
 export class Game {
   readonly scene = new THREE.Scene();
@@ -343,7 +351,10 @@ export class Game {
     const frameMs = frameStarted - this.previousFrameStart;
     this.previousFrameStart = frameStarted;
     let simulationMs = 0;
+    let npcMs = 0;
+    let actorMs = 0;
     let physicsMs = 0;
+    let postPhysicsMs = 0;
     let fixedSteps = 0;
     const dt = Math.min(this.clock.getDelta(), 0.1);
     this.input.poll();
@@ -373,13 +384,21 @@ export class Game {
     if (this.mapOverlay?.isOpen) this.input.clearGameplayEdges();
     if (!this.paused) {
       this.accumulator += dt;
-      while (this.accumulator >= STEP) {
+      while (this.accumulator >= STEP && fixedSteps < MAX_FIXED_STEPS_PER_FRAME) {
         const simulationStarted = performance.now();
-        physicsMs += this.fixedUpdate();
+        const timing = this.fixedUpdate();
+        npcMs += timing.npcMs;
+        actorMs += timing.actorMs;
+        physicsMs += timing.physicsMs;
+        postPhysicsMs += timing.postPhysicsMs;
         simulationMs += performance.now() - simulationStarted;
         fixedSteps++;
         this.accumulator -= STEP;
       }
+      // A busy frame must not create an ever-growing simulation backlog. All
+      // gameplay still advances in fixed STEP increments; excess wall time is
+      // deliberately dropped after the bounded catch-up attempt.
+      if (this.accumulator >= STEP) this.accumulator %= STEP;
     }
     const positions = this.playerPositions();
     const streamingStarted = performance.now();
@@ -452,7 +471,10 @@ export class Game {
         frameMs,
         cpuMs: performance.now() - frameStarted,
         simulationMs,
+        npcMs,
+        actorMs,
         physicsMs,
+        postPhysicsMs,
         streamingMs,
         renderMs,
         fixedSteps,
@@ -555,22 +577,28 @@ export class Game {
     );
   }
 
-  private fixedUpdate(): number {
+  private fixedUpdate(): FixedUpdateTiming {
     for (const p of this.players) {
       p.input = this.input.read(p.index);
       p.cameraYaw = this.viewports.cameras[p.index]?.yaw() ?? 0;
     }
+    const npcStarted = performance.now();
     this.npcs.update(STEP);
+    const npcMs = performance.now() - npcStarted;
+    const actorStarted = performance.now();
     for (const e of this.entities) e.update(STEP);
     for (let i = this.pickups.length - 1; i >= 0; i--) {
       this.pickups[i].update(STEP);
       if (this.pickups[i].collected) this.pickups.splice(i, 1);
     }
+    const actorMs = performance.now() - actorStarted;
     const physicsStarted = performance.now();
     this.world.step(this.eventQueue);
     const physicsMs = performance.now() - physicsStarted;
+    const postPhysicsStarted = performance.now();
     for (const vehicle of this.vehicles) vehicle.afterPhysics();
     this.npcs.afterPhysics();
-    return physicsMs;
+    const postPhysicsMs = performance.now() - postPhysicsStarted;
+    return { npcMs, actorMs, physicsMs, postPhysicsMs };
   }
 }

@@ -319,6 +319,13 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
   }
 
   update(dt: number): void {
+    // Once a parked chassis has settled, Rapier can keep it asleep until an
+    // impact or driver wakes it. Avoid touching its body, controller and wheel
+    // visuals on every 60 Hz step in the meantime.
+    if (this.isDormantParked()) {
+      this.updateHeadlights();
+      return;
+    }
     this.impactCooldown = Math.max(0, this.impactCooldown - dt);
     const before = this.body.linvel();
     this.preStepVelocity.set(before.x, before.y, before.z);
@@ -330,9 +337,7 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     this.updateDoors(dt);
     this.updateHeadlights();
     const { steer, throttle, brake, handbrake } = this.command;
-    const parked =
-      !this.destroyed && !this.burning &&
-      this.driver === null && handbrake && steer === 0 && throttle === 0 && brake === 0;
+    const parked = this.hasParkedCommand();
     this.pinWhileParked(parked);
     if (parked) {
       this.parkedTime += dt;
@@ -453,6 +458,7 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
       this.root.add(lamp);
     }
     const beam = new THREE.SpotLight(0xffe6b0, 0, 34, Math.PI / 7, 0.55, 1.5);
+    beam.visible = false;
     beam.position.set(this.chassisCenter.x, this.chassisCenter.y + 0.05, this.chassisCenter.z + this.chassisHalfSize.z);
     beam.target.position.set(this.chassisCenter.x, this.chassisCenter.y - 0.35, this.chassisCenter.z + 18);
     this.root.add(beam, beam.target);
@@ -466,7 +472,9 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
     // Restrict actual illumination to player cars; traffic retains emissive
     // lamps without multiplying split-screen shadow/light cost.
     const playerDriven = this.game.players.some((player) => player === this.driver);
-    this.headlightBeam!.intensity = working && playerDriven ? amount * 95 : 0;
+    const beamActive = working && playerDriven && amount > 0.01;
+    this.headlightBeam!.visible = beamActive;
+    this.headlightBeam!.intensity = beamActive ? amount * 95 : 0;
   }
 
   private updateDoors(dt: number): void {
@@ -615,6 +623,7 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
 
   /** Apply post-step parking constraints, then render the final physics pose. */
   afterPhysics(): void {
+    if (this.isDormantParked()) return;
     if (this.parkingAnchor) this.restoreParkingAnchor();
     this.recordImpactDamage();
     this.syncVisuals();
@@ -659,6 +668,16 @@ export class Vehicle implements Entity, CameraTarget, Drivable, CombatTarget {
         rotation: { x: rotation.x, y: rotation.y, z: rotation.z, w: rotation.w },
       };
     } else this.restoreParkingAnchor();
+  }
+
+  private hasParkedCommand(): boolean {
+    const { steer, throttle, brake, handbrake } = this.command;
+    return !this.destroyed && !this.burning && this.driver === null &&
+      handbrake && steer === 0 && throttle === 0 && brake === 0;
+  }
+
+  private isDormantParked(): boolean {
+    return this.parkedTime >= 1 && this.hasParkedCommand() && this.body.isSleeping();
   }
 
   private restoreParkingAnchor(): void {

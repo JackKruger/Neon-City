@@ -33,7 +33,10 @@ export interface FrameTiming {
   frameMs: number;
   cpuMs: number;
   simulationMs: number;
+  npcMs: number;
+  actorMs: number;
   physicsMs: number;
+  postPhysicsMs: number;
   streamingMs: number;
   renderMs: number;
   fixedSteps: number;
@@ -56,7 +59,10 @@ export interface DevStatsSnapshot {
   frame: ReturnType<RollingMetric['summary']>;
   cpu: ReturnType<RollingMetric['summary']>;
   simulation: ReturnType<RollingMetric['summary']>;
+  npc: ReturnType<RollingMetric['summary']>;
+  actor: ReturnType<RollingMetric['summary']>;
   physics: ReturnType<RollingMetric['summary']>;
+  postPhysics: ReturnType<RollingMetric['summary']>;
   streaming: ReturnType<RollingMetric['summary']>;
   render: ReturnType<RollingMetric['summary']>;
   fixedSteps: ReturnType<RollingMetric['summary']>;
@@ -76,7 +82,10 @@ export class DevStats {
   private frame = new RollingMetric();
   private cpu = new RollingMetric();
   private simulation = new RollingMetric();
+  private npc = new RollingMetric();
+  private actor = new RollingMetric();
   private physics = new RollingMetric();
+  private postPhysics = new RollingMetric();
   private streaming = new RollingMetric();
   private render = new RollingMetric();
   private fixedSteps = new RollingMetric();
@@ -123,7 +132,10 @@ export class DevStats {
     this.frame.add(timing.frameMs);
     this.cpu.add(timing.cpuMs);
     this.simulation.add(timing.simulationMs);
+    this.npc.add(timing.npcMs);
+    this.actor.add(timing.actorMs);
     this.physics.add(timing.physicsMs);
+    this.postPhysics.add(timing.postPhysicsMs);
     this.streaming.add(timing.streamingMs);
     this.render.add(timing.renderMs);
     this.fixedSteps.add(timing.fixedSteps);
@@ -139,7 +151,10 @@ export class DevStats {
       frame: this.frame.summary(),
       cpu: this.cpu.summary(),
       simulation: this.simulation.summary(),
+      npc: this.npc.summary(),
+      actor: this.actor.summary(),
       physics: this.physics.summary(),
+      postPhysics: this.postPhysics.summary(),
       streaming: this.streaming.summary(),
       render: this.render.summary(),
       fixedSteps: this.fixedSteps.summary(),
@@ -167,6 +182,7 @@ export class DevStats {
       `NEON BAY DEV  F3 hide`,
       `FPS ${fmt(fps)}   frame p50 ${fmt(frame.p50)}  p95 ${fmt(frame.p95)}  p99 ${fmt(frame.p99)} ms`,
       `CPU ${fmt(snapshot.cpu.p95)}   sim ${fmt(snapshot.simulation.p95)}  physics ${fmt(snapshot.physics.p95)} ms p95`,
+      `sim p95  NPC ${fmt(snapshot.npc.p95)}  actors ${fmt(snapshot.actor.p95)}  post ${fmt(snapshot.postPhysics.p95)} ms`,
       `stream ${fmt(snapshot.streaming.p95)}   render submit ${fmt(snapshot.render.p95)} ms p95`,
       `fixed steps avg ${snapshot.fixedSteps.average.toFixed(2)}  max ${snapshot.fixedSteps.max.toFixed(0)}   >50ms frames ${snapshot.longFrames}`,
       `draw calls ${count(snapshot.renderer.calls)}   triangles ${count(snapshot.renderer.triangles)}`,
