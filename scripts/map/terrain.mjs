@@ -397,6 +397,21 @@ export function maxRoadGrade(heights, grid) {
   return max;
 }
 
+/** Convert source AHD structure levels into the game's sea-relative Y axis. */
+export function normalizeInfrastructureElevations(objectChunks, seaDatum) {
+  let count = 0;
+  for (const object of Object.values(objectChunks ?? {}).flat()) {
+    if (object.kind !== 'transport-structure') continue;
+    if (Number.isFinite(object.minAhd)) object.baseY = Math.round((object.minAhd - seaDatum) * 10) / 10;
+    if (Number.isFinite(object.maxAhd)) object.topY = Math.round((object.maxAhd - seaDatum) * 10) / 10;
+    if (Number.isFinite(object.baseY) && Number.isFinite(object.topY) && object.topY <= object.baseY) {
+      object.topY = Math.round((object.baseY + 0.4) * 10) / 10;
+    }
+    count++;
+  }
+  return count;
+}
+
 /** Build the 721x721 processed terrain lattice from SRTM and the final cell grid. */
 export function buildTerrainHeights(grid, tiles, { objectChunks = null } = {}) {
   if (grid.length !== MAP_SIZE * MAP_SIZE) throw new Error('terrain build grid size mismatch');
@@ -424,6 +439,7 @@ export function buildTerrainHeights(grid, tiles, { objectChunks = null } = {}) {
   }
   const seaDatum = seaCount > 0 ? seaSum / seaCount : 0;
   for (let i = 0; i < heights.length; i++) heights[i] -= seaDatum;
+  normalizeInfrastructureElevations(objectChunks, seaDatum);
   const spikeFilter = removeUrbanSurfaceSpikes(heights, width);
   blur(heights, null, width, 2);
 

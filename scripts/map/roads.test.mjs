@@ -33,6 +33,21 @@ test('road centerlines become bounded polygon strips', () => {
   assert.equal(width, 8);
 });
 
+test('bridge and tunnel tags survive in road surfaces and navigation', () => {
+  for (const [tag, structure] of [['bridge', 'bridge'], ['tunnel', 'tunnel']]) {
+    const features = roadSurfacesFromOverpass({ elements: [{
+      type: 'way', id: structure, tags: { highway: 'primary', [tag]: 'yes' }, geometry: [
+        { lat: -37.835, lon: 144.9598 }, { lat: -37.835, lon: 144.9602 },
+      ],
+    }] });
+    const carriageway = features.find((item) => item.kind === 'road-surface' && item.role === 'carriageway');
+    const vehiclePaths = features.filter((item) => item.kind === 'nav-path' && item.mode === 'vehicle');
+    assert.equal(carriageway?.structure, structure);
+    assert.ok(vehiclePaths.length > 0);
+    assert.ok(vehiclePaths.every((item) => item.structure === structure));
+  }
+});
+
 test('tram centrelines generate standard-gauge rails and a tram graph', () => {
   const features = roadSurfacesFromOverpass({ elements: [{
     type: 'way', id: 9, tags: { railway: 'tram' }, geometry: [

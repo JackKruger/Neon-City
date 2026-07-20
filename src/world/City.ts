@@ -507,14 +507,28 @@ export class City implements CityStreamer {
 
     const meshes: THREE.Mesh[] = [];
     for (const [mat, geos] of buckets) {
-      const merged = mergeGeometries(geos, false);
+      // Three.js cannot merge indexed and non-indexed geometry together.
+      // Real footprint extrusions are non-indexed, while the planar/box
+      // geometry sharing their material is indexed, so flatten only mixed
+      // buckets before batching the chunk.
+      const hasIndexed = geos.some((geometry) => geometry.index !== null);
+      const hasNonIndexed = geos.some((geometry) => geometry.index === null);
+      const compatible = hasIndexed && hasNonIndexed
+        ? geos.map((geometry) => {
+            if (geometry.index === null) return geometry;
+            const flattened = geometry.toNonIndexed();
+            geometry.dispose();
+            return flattened;
+          })
+        : geos;
+      const merged = mergeGeometries(compatible, false);
       if (merged) {
         const mesh = new THREE.Mesh(merged, mat);
         this.game.scene.add(mesh);
         meshes.push(mesh);
-        for (const g of geos) g.dispose();
+        for (const g of compatible) g.dispose();
       } else {
-        for (const g of geos) {
+        for (const g of compatible) {
           const mesh = new THREE.Mesh(g, mat);
           this.game.scene.add(mesh);
           meshes.push(mesh);
@@ -594,6 +608,8 @@ export class City implements CityStreamer {
       this.authoredRoadSurface(feature, buckets);
     } else if (feature.kind === 'nav-path') {
       return;
+    } else if (feature.kind === 'transport-structure') {
+      this.authoredTransportStructure(feature, body, buckets);
     } else if (feature.kind === 'building') {
       this.authoredBuilding(feature, body, buckets);
     } else if (feature.kind === 'tree') {
@@ -624,6 +640,106 @@ export class City implements CityStreamer {
     coarse.dispose();
     this.displaceTerrain(geometry);
     this.bucket(this.groundMats[feature.surface], geometry, buckets);
+  }
+
+  private authoredTransportStructure(
+    feature: Extract<AuthoredObject, { kind: 'transport-structure' }>,
+    body: RAPIER.RigidBody,
+    buckets: Buckets
+  ): void {
+    if (feature.structure === 'tunnel') {
+      if (feature.roadDeck) this.authoredTunnelShell(feature, body, buckets);
+      return;
+    }
+    if (feature.outline.length < 3) return;
+    const sampledTop = Math.max(
+      heightAt(feature.x, feature.z),
+      ...feature.outline.map(([x, z]) => heightAt(feature.x + x, feature.z + z))
+    );
+    const topY = Number.isFinite(feature.topY) ? Math.max(sampledTop, feature.topY as number) : sampledTop + 0.1;
+    const sourceBase = Number.isFinite(feature.baseY) ? feature.baseY as number : topY - 0.8;
+    const baseY = feature.roadDeck
+      ? topY - Math.max(0.45, Math.min(1.5, topY - sourceBase))
+      : Math.min(sourceBase, topY - 0.25);
+    const shape = new THREE.Shape();
+    for (let i = 0; i < feature.outline.length; i++) {
+      const [x, z] = feature.outline[i];
+      if (i === 0) shape.moveTo(x, -z);
+      else shape.lineTo(x, -z);
+    }
+    shape.closePath();
+    const geometry = new THREE.ExtrudeGeometry(shape, {
+      depth: topY - baseY,
+      bevelEnabled: false,
+      steps: 1,
+      curveSegments: 1,
+    });
+    geometry.rotateX(-Math.PI / 2);
+    geometry.translate(feature.x, baseY, feature.z);
+    geometry.computeVertexNormals();
+    const position = geometry.getAttribute('position');
+    const vertices = new Float32Array(position.count * 3);
+    for (let i = 0; i < position.count; i++) {
+      vertices[i * 3] = position.getX(i);
+      vertices[i * 3 + 1] = position.getY(i);
+      vertices[i * 3 + 2] = position.getZ(i);
+    }
+    const indices = geometry.index
+      ? Uint32Array.from(geometry.index.array)
+      : Uint32Array.from({ length: position.count }, (_, i) => i);
+    this.game.world.createCollider(RAPIER.ColliderDesc.trimesh(vertices, indices), body);
+    this.bucket(this.groundMats.concrete, geometry, buckets);
+  }
+
+  private authoredTunnelShell(
+    feature: Extract<AuthoredObject, { kind: 'transport-structure' }>,
+    body: RAPIER.RigidBody,
+    buckets: Buckets
+  ): void {
+    const alongWidth = feature.width >= feature.depth;
+    const length = Math.max(feature.width, feature.depth);
+    const outerWidth = Math.max(5, Math.min(24, Math.min(feature.width, feature.depth)));
+    const rotation = feature.rotation + (alongWidth ? 0 : Math.PI / 2);
+    const floorY = heightAt(feature.x, feature.z);
+    const measuredTop = Number.isFinite(feature.topY) ? feature.topY as number : floorY + 5;
+    const clearance = Math.max(3.6, Math.min(6.5, measuredTop - floorY));
+    const wall = 0.38;
+    const innerHalf = Math.max(2.2, outerWidth / 2 - wall);
+    this.authoredInfrastructureBox(
+      feature.x, floorY + clearance + wall / 2, feature.z,
+      length / 2, wall / 2, outerWidth / 2, rotation, body, buckets
+    );
+    const sideOffset = innerHalf + wall / 2;
+    for (const side of [-1, 1]) {
+      const x = feature.x + Math.sin(rotation) * sideOffset * side;
+      const z = feature.z + Math.cos(rotation) * sideOffset * side;
+      this.authoredInfrastructureBox(x, floorY + clearance / 2, z, length / 2, clearance / 2, wall / 2, rotation, body, buckets);
+    }
+  }
+
+  private authoredInfrastructureBox(
+    x: number,
+    y: number,
+    z: number,
+    hx: number,
+    hy: number,
+    hz: number,
+    rotation: number,
+    body: RAPIER.RigidBody,
+    buckets: Buckets
+  ): void {
+    // Authored footprint and raised-road concrete is non-indexed. Keep tunnel
+    // shell boxes compatible with that shared material bucket so legacy-mode
+    // chunk batching can merge every concrete component.
+    const geometry = new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2).toNonIndexed();
+    geometry.applyMatrix4(new THREE.Matrix4().makeRotationY(rotation).setPosition(x, y, z));
+    this.bucket(this.groundMats.concrete, geometry, buckets);
+    this.game.world.createCollider(
+      RAPIER.ColliderDesc.cuboid(hx, hy, hz)
+        .setTranslation(x, y, z)
+        .setRotation({ x: 0, y: Math.sin(rotation / 2), z: 0, w: Math.cos(rotation / 2) }),
+      body
+    );
   }
 
   private authoredBuilding(
@@ -817,7 +933,7 @@ export class City implements CityStreamer {
   }
 
   private authoredProp(
-    feature: Exclude<AuthoredObject, { kind: 'road-surface' | 'nav-path' | 'building' | 'tree' | 'parking' }>,
+    feature: Exclude<AuthoredObject, { kind: 'road-surface' | 'nav-path' | 'transport-structure' | 'building' | 'tree' | 'parking' }>,
     body: RAPIER.RigidBody,
     buckets: Buckets
   ): void {

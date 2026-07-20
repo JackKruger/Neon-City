@@ -132,6 +132,7 @@
     }
   ],
   "results": {
+    "osmTransportPaths": 110488,
     "footpaths": 11053,
     "suppressedInferredFootpaths": 20864,
     "tramTracks": 0,
@@ -140,9 +141,11 @@
     "transport": 0,
     "speeds": 0,
     "buildings": {
-      "accepted": 11990,
-      "rejected": 15360,
-      "sourceCoverageChunks": 1988
+      "accepted": 11847,
+      "rejected": 15347,
+      "excludedInfrastructure": 203,
+      "infrastructureComponents": 209,
+      "sourceCoverageChunks": 1959
     },
     "trees": 41955,
     "canopyFallbackTrees": 5302,

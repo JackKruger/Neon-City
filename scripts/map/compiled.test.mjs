@@ -177,6 +177,37 @@ test('pitched roofs cap the render mesh at the ridge while collision stays flat'
     'flat roofs emit no roof material');
 });
 
+test('real transport structures compile as concrete geometry with collision', () => {
+  const base = {
+    meta: {},
+    grid: new Uint8Array(MAP_SIZE ** 2),
+    heights: new Int16Array((MAP_SIZE + 1) ** 2),
+    coverage: new Uint8Array(MAP_SIZE ** 2),
+    transport: new Uint8Array(MAP_SIZE ** 2),
+    speed: new Uint8Array(MAP_SIZE ** 2),
+  };
+  const bridge = {
+    kind: 'transport-structure', sourceId: 'infrastructure:bridge:test:deck',
+    structure: 'bridge', component: 'bridge', roadDeck: true,
+    x: 48, z: 48, rotation: 0, width: 20, depth: 8, baseY: 1, topY: 3,
+    outline: [[-10, -4], [10, -4], [10, 4], [-10, 4]],
+  };
+  const tunnel = {
+    kind: 'transport-structure', sourceId: 'infrastructure:tunnel:test:shell',
+    structure: 'tunnel', component: 'tunnel', roadDeck: true,
+    x: 72, z: 48, rotation: 0, width: 20, depth: 8, baseY: 0, topY: 5,
+    outline: [[-10, -4], [10, -4], [10, 4], [-10, 4]],
+  };
+  const result = compileChunkRecipe(createCompilerContext({
+    ...base,
+    objectIndex: { chunks: { '0,0': [bridge, tunnel] } },
+  }), 0, 0);
+  assert.ok(result.primitives.some((primitive) => primitive.material === 'concrete'));
+  assert.equal(result.counts.meshes, 1, 'bridge outline should compile to one collision mesh');
+  assert.equal(result.counts.cuboids, 3, 'tunnel shell should compile to a ceiling and two walls');
+  assert.equal(result.recipe.colliderCount, 4);
+});
+
 test('committed spawn compilation has valid hashes, GLBs, containers, and navigation', () => {
   const root = join(import.meta.dirname, '..', '..', 'public', 'maps');
   const result = validateCompiledMap(root);

@@ -173,6 +173,18 @@ function speedKmh(tags, highway) {
   return ({ motorway: 100, trunk: 80, primary: 60, secondary: 60, living_street: 20 }[highway] ?? 50);
 }
 
+function enabledTag(value) {
+  if (value === undefined || value === null) return false;
+  return !['', 'no', 'false', '0'].includes(String(value).trim().toLowerCase());
+}
+
+/** Grade separation shared by render features, transport cells and nav paths. */
+function roadStructure(tags) {
+  if (enabledTag(tags.bridge)) return 'bridge';
+  if (enabledTag(tags.tunnel) || enabledTag(tags.covered)) return 'tunnel';
+  return null;
+}
+
 /** Compact, chunk-indexed road names and limits for the in-game HUD. */
 export function roadInfoFromOverpass(data) {
   const rawSegments = [];
@@ -253,6 +265,7 @@ export function roadSurfacesFromOverpass(data) {
     const railway = String(tags.railway ?? '');
     const platform = railway === 'platform' || tags.public_transport === 'platform';
     const areaHighway = String(tags['area:highway'] ?? '');
+    const structure = roadStructure(tags);
     if (!highway && railway !== 'tram' && !platform && !areaHighway) continue;
     const points = element.geometry
       .filter((point) => Number.isFinite(point?.lat) && Number.isFinite(point?.lon))
@@ -271,6 +284,7 @@ export function roadSurfacesFromOverpass(data) {
         surface: platform || highway === 'pedestrian' ? 'pavement' : 'asphalt',
         elevation: platform ? 0.18 : ROAD_CLEARANCE, x: rounded(center.x), z: rounded(center.z),
         outline: ring.map((point) => [rounded(point.x - center.x), rounded(point.z - center.z)]),
+        ...(structure ? { structure } : {}),
       });
       continue;
     }
@@ -283,11 +297,15 @@ export function roadSurfacesFromOverpass(data) {
         const polygon = roadPath(stripPoints, stripWidth);
         if (polygon) features.push({
           kind: 'road-surface', sourceId: `${source}:${partId}:${role}`, role, surface, elevation, ...polygon,
+          ...(structure ? { structure } : {}),
         });
       };
       const addNav = (mode, navPoints, speed = 0, flags = 0) => {
         if (navPoints.length >= 2) features.push({
-          kind: 'nav-path', sourceId: `${source}:${partId}:nav:${mode}:${features.length}`, mode, speed, flags, ...relativePath(navPoints),
+          kind: 'nav-path', sourceId: `${source}:${partId}:nav:${mode}:${features.length}`, mode, speed,
+          flags,
+          ...relativePath(navPoints),
+          ...(structure ? { structure } : {}),
         });
       };
 

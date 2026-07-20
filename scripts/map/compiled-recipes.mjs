@@ -405,7 +405,7 @@ export function createCompilerContext({ meta, grid, heights, coverage, transport
     if (gx < 0 || gz < 0 || gx > MAP_SIZE || gz > MAP_SIZE) return -16;
     return heights[gx + gz * (MAP_SIZE + 1)];
   };
-  const heightAt = (x, z) => {
+  const terrainHeightAt = (x, z) => {
     const fx = x / TILE + 0.5;
     const fz = z / TILE + 0.5;
     const ix = Math.floor(fx);
@@ -421,6 +421,27 @@ export function createCompilerContext({ meta, grid, heights, coverage, transport
     return tz >= tx
       ? a + tx * (d - c) + tz * (c - a)
       : a + tx * (b - a) + tz * (d - b);
+  };
+  const pointInOutline = (x, z, object) => {
+    let inside = false;
+    for (let i = 0, j = object.outline.length - 1; i < object.outline.length; j = i++) {
+      const ax = object.x + object.outline[i][0];
+      const az = object.z + object.outline[i][1];
+      const bx = object.x + object.outline[j][0];
+      const bz = object.z + object.outline[j][1];
+      if ((az > z) !== (bz > z) && x < ((bx - ax) * (z - az)) / (bz - az) + ax) inside = !inside;
+    }
+    return inside;
+  };
+  const heightAt = (x, z) => {
+    let result = terrainHeightAt(x, z);
+    const cx = Math.round(x / TILE);
+    const cz = Math.round(z / TILE);
+    for (const object of objectIndex.chunks[`${Math.floor(cx / CHUNK_TILES)},${Math.floor(cz / CHUNK_TILES)}`] ?? []) {
+      if (object.kind !== 'transport-structure' || object.structure !== 'bridge' || !object.roadDeck || !Number.isFinite(object.topY)) continue;
+      if (pointInOutline(x, z, object)) result = Math.max(result, object.topY);
+    }
+    return result;
   };
   return { meta, grid, heights, coverage, transport, speed, objectIndex, index, codeAt, coverageAt, transportAt, isRoad, cornerRaw, heightAt };
 }
@@ -640,6 +661,42 @@ export function compileChunkRecipe(context, kx, kz) {
         collisionMeshes.push({ sourceId: object.sourceId, ...collision });
       } else {
         addPolygonTop(buckets.get(material), points, ([x, z]) => context.heightAt(x, z) + elevation);
+      }
+    } else if (object.kind === 'transport-structure') {
+      if (object.structure === 'bridge' && Array.isArray(object.outline) && object.outline.length >= 3) {
+        const points = object.outline.map(([x, z]) => [object.x + x, object.z + z]);
+        const sampledTop = Math.max(context.heightAt(object.x, object.z), ...points.map(([x, z]) => context.heightAt(x, z)));
+        const topY = Number.isFinite(object.topY) ? Math.max(sampledTop, object.topY) : sampledTop + 0.1;
+        const sourceBase = Number.isFinite(object.baseY) ? object.baseY : topY - 0.8;
+        const baseY = object.roadDeck
+          ? topY - Math.max(0.45, Math.min(1.5, topY - sourceBase))
+          : Math.min(sourceBase, topY - 0.25);
+        addPrism(buckets.get('concrete'), points, baseY, topY - baseY);
+        collisionMeshes.push({ sourceId: object.sourceId, ...prismTriangles(points, baseY, topY - baseY) });
+      } else if (object.structure === 'tunnel' && object.roadDeck) {
+        const alongWidth = object.width >= object.depth;
+        const length = Math.max(object.width, object.depth);
+        const outerWidth = Math.max(5, Math.min(24, Math.min(object.width, object.depth)));
+        const rotation = (object.rotation ?? 0) + (alongWidth ? 0 : Math.PI / 2);
+        const floorY = context.heightAt(object.x, object.z);
+        const measuredTop = Number.isFinite(object.topY) ? object.topY : floorY + 5;
+        const clearance = Math.max(3.6, Math.min(6.5, measuredTop - floorY));
+        const wall = 0.38;
+        const innerHalf = Math.max(2.2, outerWidth / 2 - wall);
+        const boxes = [{
+          x: object.x, y: floorY + clearance + wall / 2, z: object.z,
+          hx: length / 2, hy: wall / 2, hz: outerWidth / 2,
+        }];
+        for (const side of [-1, 1]) boxes.push({
+          x: object.x + Math.sin(rotation) * (innerHalf + wall / 2) * side,
+          y: floorY + clearance / 2,
+          z: object.z + Math.cos(rotation) * (innerHalf + wall / 2) * side,
+          hx: length / 2, hy: clearance / 2, hz: wall / 2,
+        });
+        for (const box of boxes) {
+          addBox(buckets.get('concrete'), box.x, box.y, box.z, box.hx, box.hy, box.hz, rotation);
+          cuboids.push({ sourceId: object.sourceId, ...box, rotation });
+        }
       }
     } else if (object.kind === 'building') {
       const baseY = Number.isFinite(object.baseY) ? object.baseY : context.heightAt(object.x, object.z);

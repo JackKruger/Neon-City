@@ -212,7 +212,11 @@ async function loadSource(cacheDir, key, options, report) {
 }
 
 function addObject(chunks, object) {
-  if ((object.kind === 'road-surface' || object.kind === 'building') && object.outline?.length >= 3) {
+  if (
+    (object.kind === 'road-surface' || object.kind === 'building' ||
+      (object.kind === 'transport-structure' && object.structure === 'bridge')) &&
+    object.outline?.length >= 3
+  ) {
     const sourceId = object.sourceId ??
       `${object.kind}:${object.x}:${object.z}:${object.rotation ?? 0}:${object.width ?? 0}:${object.depth ?? 0}`;
     const polygon = object.outline.map(([x, z]) => [object.x + x, object.z + z]);
@@ -316,6 +320,55 @@ function buildingHeight(properties) {
   );
 }
 
+function buildingStructureId(properties) {
+  return textValue(properties, 'structure_id', 'structureid', 'building_id', 'objectid');
+}
+
+function isInfrastructureFootprint(properties) {
+  const footprintType = textValue(
+    properties,
+    'footprint_type',
+    'footprinttype',
+    'structure_type',
+    'structuretype'
+  ).toLowerCase();
+  return /\b(bridge|footbridge|overpass|tunnel|underpass)\b/.test(footprintType);
+}
+
+function infrastructureKind(properties) {
+  const footprintType = textValue(properties, 'footprint_type', 'footprinttype').toLowerCase();
+  return /tunnel|underpass/.test(footprintType) ? 'tunnel' : 'bridge';
+}
+
+function addTransportStructure(feature, ring, bounds, structure, chunks, sourceId) {
+  const outline = simplifyWorldRing(ring).map((point) => [
+    round(point.x - bounds.x),
+    round(point.z - bounds.z),
+  ]);
+  if (outline.length < 3) return false;
+  const properties = feature.properties ?? {};
+  const component = textValue(properties, 'footprint_type', 'footprinttype', 'structure_type', 'structuretype')
+    .toLowerCase() || 'structure';
+  const minAhd = numeric(properties, 'footprint_min_elevation', 'structure_min_elevation', 'min_elevation');
+  const maxAhd = numeric(properties, 'footprint_max_elevation', 'structure_max_elevation', 'max_elevation');
+  addObject(chunks, {
+    kind: 'transport-structure',
+    sourceId,
+    structure,
+    component,
+    roadDeck: isInfrastructureFootprint(properties),
+    x: round(bounds.x),
+    z: round(bounds.z),
+    rotation: round(bounds.rotation),
+    width: round(Math.max(1, bounds.width)),
+    depth: round(Math.max(1, bounds.depth)),
+    ...(minAhd !== null ? { minAhd: round(minAhd) } : {}),
+    ...(maxAhd !== null ? { maxAhd: round(maxAhd) } : {}),
+    outline,
+  });
+  return true;
+}
+
 function importLandUse(features, layer, codeGrid) {
   if (!features) return 0;
   let accepted = 0;
@@ -364,6 +417,50 @@ function importTransport(features, layer, codeGrid) {
       layer[i] |= featureLayer[i];
       if (featureLayer[i] & TRANSPORT.ROAD) codeGrid[i] = 1;
     }
+    accepted++;
+  }
+  return accepted;
+}
+
+function markWorldTransport(layer, points, flags) {
+  let previous = null;
+  for (let i = 0; i + 1 < points.length; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    const steps = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / (TILE / 3)));
+    for (let step = 0; step <= steps; step++) {
+      const t = step / steps;
+      const cell = toGrid(a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t);
+      if (!cell) {
+        previous = null;
+        continue;
+      }
+      if (previous && cell.gx !== previous.gx && cell.gz !== previous.gz) {
+        layer[previous.gx + cell.gz * MAP_SIZE] |= flags;
+      }
+      layer[cell.index] |= flags;
+      previous = cell;
+    }
+  }
+}
+
+/** Seed semantic transport flags from the same OSM paths used to render roads. */
+function importRoadObjectTransport(objects, layer) {
+  let accepted = 0;
+  for (const object of objects) {
+    if (object.kind !== 'nav-path' || !Array.isArray(object.points) || object.points.length < 2) continue;
+    let flags = object.mode === 'vehicle'
+      ? TRANSPORT.ROAD
+      : object.mode === 'tram'
+        ? TRANSPORT.RAIL | TRANSPORT.TRAM
+        : TRANSPORT.FOOTPATH;
+    if (object.structure === 'bridge') flags |= TRANSPORT.BRIDGE;
+    else if (object.structure === 'tunnel') flags |= TRANSPORT.TUNNEL;
+    markWorldTransport(
+      layer,
+      object.points.map(([x, z]) => ({ x: object.x + x, z: object.z + z })),
+      flags
+    );
     accepted++;
   }
   return accepted;
@@ -491,17 +588,54 @@ function importStreetOverrides(features, chunks) {
 }
 
 function importBuildings(features, chunks, coverage, heightLayer, landUseLayer, dsm) {
-  if (!features) return { accepted: 0, rejected: 0 };
+  if (!features) return { accepted: 0, rejected: 0, excludedInfrastructure: 0, infrastructureComponents: 0 };
   const byStructure = new Map();
   let rejected = 0;
+  let anonymousInfrastructure = 0;
+  let infrastructureComponents = 0;
+  const infrastructureIds = new Map();
   for (const feature of features) {
+    if (!isInfrastructureFootprint(feature.properties)) continue;
+    const id = buildingStructureId(feature.properties);
+    if (id) {
+      const kind = infrastructureKind(feature.properties);
+      if (kind === 'tunnel' || !infrastructureIds.has(id)) infrastructureIds.set(id, kind);
+    }
+    else anonymousInfrastructure++;
+  }
+  for (let featureIndex = 0; featureIndex < features.length; featureIndex++) {
+    const feature = features[featureIndex];
+    // This source is named "Building Footprints", but it also contains bridge
+    // decks and tunnel structures. Exclude their whole structure_id group:
+    // one bridge can also have Jetty, Tram Stop or generic Structure pieces.
+    // Treating any of those records as solid prisms blocks the OSM road.
+    const explicitId = buildingStructureId(feature.properties);
     const ring = featureRing(feature);
     const bounds = ring && orientedBounds(ring);
+    const groupedKind = explicitId ? infrastructureIds.get(explicitId) : null;
+    const directKind = isInfrastructureFootprint(feature.properties) ? infrastructureKind(feature.properties) : null;
+    const structure = groupedKind ?? directKind;
+    if (structure) {
+      if (!ring || !bounds || !toGrid(bounds.x, bounds.z) || bounds.width * bounds.depth < 2) {
+        rejected++;
+        continue;
+      }
+      const componentId = textValue(feature.properties, 'objectid', 'component_id') || featureIndex;
+      if (addTransportStructure(
+        feature,
+        ring,
+        bounds,
+        structure,
+        chunks,
+        `infrastructure:${structure}:${explicitId || componentId}:${componentId}`
+      )) infrastructureComponents++;
+      continue;
+    }
     if (!ring || !bounds || !toGrid(bounds.x, bounds.z) || bounds.width * bounds.depth < 12) {
       rejected++;
       continue;
     }
-    const id = textValue(feature.properties, 'structure_id', 'structureid', 'building_id', 'objectid') || `${bounds.x},${bounds.z}`;
+    const id = explicitId || `${bounds.x},${bounds.z}`;
     const previous = byStructure.get(id);
     if (!previous || bounds.width * bounds.depth > previous.bounds.width * previous.bounds.depth) {
       byStructure.set(id, { feature, ring, bounds });
@@ -516,7 +650,13 @@ function importBuildings(features, chunks, coverage, heightLayer, landUseLayer, 
     if (!height && dsm) pending.push({ feature, ring, bounds, landUse, sourceId });
     else addBuilding(feature, ring, bounds, landUse, height, chunks, coverage, heightLayer, sourceId);
   }
-  return { accepted: byStructure.size, rejected, pending };
+  return {
+    accepted: byStructure.size,
+    rejected,
+    excludedInfrastructure: infrastructureIds.size + anonymousInfrastructure,
+    infrastructureComponents,
+    pending,
+  };
 }
 
 function addBuilding(feature, ring, bounds, landUse, rawHeight, chunks, coverage, heightLayer, sourceId) {
@@ -932,6 +1072,7 @@ export async function enrichMelbourneMap({ root, grid, roadSurfaces = [], baseSu
   };
   const chunks = {};
   for (const surface of roadSurfaces) addObject(chunks, surface);
+  report.results.osmTransportPaths = importRoadObjectTransport(roadSurfaces, layers.transport);
 
   report.results.footpaths = importFootpathSurfaces(await loadSource(cacheDir, 'footpaths', options, report), chunks);
   report.results.suppressedInferredFootpaths = suppressInferredFootpaths(chunks);
@@ -957,6 +1098,8 @@ export async function enrichMelbourneMap({ root, grid, roadSurfaces = [], baseSu
   report.results.buildings = {
     accepted: buildingResult.accepted,
     rejected: buildingResult.rejected,
+    excludedInfrastructure: buildingResult.excludedInfrastructure,
+    infrastructureComponents: buildingResult.infrastructureComponents,
     sourceCoverageChunks: buildingSourceCoverage.coveredChunks,
   };
 

@@ -28,12 +28,29 @@ test('open data enrichment emits all runtime contracts', async () => {
     const writeGeo = (name, features) => writeFileSync(join(cache, name), JSON.stringify({ type: 'FeatureCollection', features }));
     const block = [[144.9596, -37.8346], [144.9604, -37.8346], [144.9604, -37.8354], [144.9596, -37.8354], [144.9596, -37.8346]];
     const building = [[144.9599, -37.8349], [144.9601, -37.8349], [144.9601, -37.8351], [144.9599, -37.8351], [144.9599, -37.8349]];
+    const bridgeFootprint = [[144.9596, -37.83498], [144.9604, -37.83498], [144.9604, -37.83502], [144.9596, -37.83502], [144.9596, -37.83498]];
+    const tunnelFootprint = [[144.9596, -37.83508], [144.9604, -37.83508], [144.9604, -37.83512], [144.9596, -37.83512], [144.9596, -37.83508]];
+    const bridgeCompanion = [[144.95955, -37.83496], [144.96045, -37.83496], [144.96045, -37.83504], [144.95955, -37.83504], [144.95955, -37.83496]];
     const road = [[144.9595, -37.835], [144.9605, -37.835]];
 
     writeGeo('vicmap-planning.geojson', [polygon('Commercial 1 Zone', block)]);
     writeGeo('vicmap-transport.geojson', [line({ feature_type: 'Road Bridge' }, road)]);
     writeGeo('speed-zones.geojson', [line({ speed_zone: 40 }, road)]);
-    writeGeo('building-footprints.geojson', [polygon('building', building, { structure_id: 'A', structure_extrusion: 28, roof_type: 'Flat' })]);
+    writeGeo('building-footprints.geojson', [
+      polygon('building', building, { structure_id: 'A', structure_extrusion: 28, roof_type: 'Flat' }),
+      polygon('bridge', bridgeFootprint, {
+        structure_id: 'B', footprint_type: 'Bridge', structure_extrusion: 4,
+        footprint_min_elevation: 2, footprint_max_elevation: 6,
+      }),
+      polygon('bridge companion', bridgeCompanion, {
+        structure_id: 'B', footprint_type: 'Jetty', structure_extrusion: 1,
+        footprint_min_elevation: 1, footprint_max_elevation: 5,
+      }),
+      polygon('tunnel', tunnelFootprint, {
+        structure_id: 'T', footprint_type: 'Tunnel', structure_extrusion: 4,
+        footprint_min_elevation: -2, footprint_max_elevation: 3,
+      }),
+    ]);
     writeGeo('urban-forest-trees.geojson', [point({ common_name: 'Elm', tree_height: 9 }, [144.96025, -37.8348])]);
     writeGeo('street-furniture.geojson', [point({ asset_type: 'Bollard' }, [144.9603, -37.8349])]);
     writeGeo('public-art.geojson', [point({ asset_type: 'Monument' }, [144.96035, -37.8349])]);
@@ -51,6 +68,15 @@ test('open data enrichment emits all runtime contracts', async () => {
         x: 0,
         z: 0,
         outline: [[-8, -4], [8, -4], [8, 4], [-8, 4]],
+      }, {
+        kind: 'nav-path',
+        sourceId: 'road:test:nav',
+        mode: 'vehicle',
+        speed: 40,
+        structure: 'bridge',
+        x: 0,
+        z: 0,
+        points: [[-8, 0], [8, 0]],
       }],
       baseSuburbs: null,
     });
@@ -72,10 +98,19 @@ test('open data enrichment emits all runtime contracts', async () => {
     assert.ok(coverage.some((value) => (value & COVERAGE.BUILDING) !== 0));
     assert.ok(coverage.some((value) => (value & COVERAGE.BUILDING_SOURCE) !== 0));
     assert.ok(result.report.results.buildings.sourceCoverageChunks > 0);
+    assert.equal(result.report.results.buildings.excludedInfrastructure, 2);
+    assert.equal(result.report.results.buildings.infrastructureComponents, 3);
+    assert.ok(result.report.results.osmTransportPaths > 0);
     const authored = Object.values(objects.chunks).flat();
     for (const kind of ['road-surface', 'building', 'tree', 'bollard', 'art', 'parking']) assert.ok(authored.some((item) => item.kind === kind), kind);
     assert.equal(objects.roadSurfaces, true);
     assert.ok(authored.find((item) => item.kind === 'building')?.outline?.length >= 3);
+    assert.ok(!authored.some((item) => item.sourceId === 'building:B' || item.sourceId === 'building:T'));
+    const infrastructure = authored.filter((item) => item.kind === 'transport-structure');
+    assert.ok(infrastructure.some((item) => item.structure === 'bridge' && item.component === 'bridge' && item.roadDeck));
+    assert.ok(infrastructure.some((item) => item.structure === 'bridge' && item.component === 'jetty' && !item.roadDeck));
+    assert.ok(infrastructure.some((item) => item.structure === 'tunnel' && item.roadDeck));
+    assert.ok(infrastructure.every((item) => Number.isFinite(item.minAhd) && Number.isFinite(item.maxAhd)));
     assert.equal(result.suburbs?.[0]?.name, 'Melbourne');
   } finally {
     rmSync(root, { recursive: true, force: true });

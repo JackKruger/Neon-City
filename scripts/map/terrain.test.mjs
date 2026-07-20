@@ -8,8 +8,18 @@ import {
   flattenBuildingPads,
   hgtTileNamesForBounds,
   maxRoadGrade,
+  normalizeInfrastructureElevations,
   removeUrbanSurfaceSpikes,
 } from './terrain.mjs';
+
+test('infrastructure AHD levels normalize to the game sea datum', () => {
+  const bridge = { kind: 'transport-structure', minAhd: 2.05, maxAhd: 4.95 };
+  const duplicatePiece = { kind: 'transport-structure', minAhd: 2.05, maxAhd: 4.95 };
+  const count = normalizeInfrastructureElevations({ '0,0': [bridge], '1,0': [duplicatePiece] }, 1.05);
+  assert.equal(count, 2);
+  assert.deepEqual({ baseY: bridge.baseY, topY: bridge.topY }, { baseY: 1, topY: 3.9 });
+  assert.deepEqual({ baseY: duplicatePiece.baseY, topY: duplicatePiece.topY }, { baseY: 1, topY: 3.9 });
+});
 
 function readHeights() {
   const bytes = readFileSync(new URL('../../public/maps/melbourne-height.bin', import.meta.url));

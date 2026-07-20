@@ -39,8 +39,9 @@ export const CoverageFlag = {
 } as const;
 
 export type AuthoredObject =
-  | { kind: 'road-surface'; sourceId?: string; role?: string; elevation?: number; x: number; z: number; surface: 'asphalt' | 'pavement' | 'marking' | 'rail' | 'concrete' | 'cycleway'; outline: [number, number][] }
-  | { kind: 'nav-path'; sourceId?: string; x: number; z: number; mode: 'vehicle' | 'pedestrian' | 'tram'; speed: number; flags?: number; points: [number, number][] }
+  | { kind: 'road-surface'; sourceId?: string; role?: string; elevation?: number; structure?: 'bridge' | 'tunnel'; x: number; z: number; surface: 'asphalt' | 'pavement' | 'marking' | 'rail' | 'concrete' | 'cycleway'; outline: [number, number][] }
+  | { kind: 'nav-path'; sourceId?: string; x: number; z: number; mode: 'vehicle' | 'pedestrian' | 'tram'; speed: number; flags?: number; structure?: 'bridge' | 'tunnel'; points: [number, number][] }
+  | { kind: 'transport-structure'; sourceId?: string; structure: 'bridge' | 'tunnel'; component: string; roadDeck: boolean; x: number; z: number; rotation: number; width: number; depth: number; minAhd?: number; maxAhd?: number; baseY?: number; topY?: number; outline: [number, number][] }
   | { kind: 'building'; sourceId?: string; x: number; z: number; rotation: number; width: number; depth: number; height: number; baseY?: number; style: 'commercial' | 'skyscraper' | 'suburban' | 'industrial'; roof?: string; outline?: [number, number][] }
   | { kind: 'tree'; x: number; z: number; height: number; variant: 'small' | 'large' }
   | { kind: 'parking'; x: number; z: number; rotation: number }
@@ -303,8 +304,7 @@ export function cornerHeight(ix: number, iz: number): number {
   return authored.heights[gx + gz * (authored.width + 1)] * authored.heightScale;
 }
 
-/** Bilinear terrain height at an arbitrary world-space XZ point. */
-export function heightAt(x: number, z: number): number {
+function terrainHeightAt(x: number, z: number): number {
   const fx = x / TILE + 0.5;
   const fz = z / TILE + 0.5;
   const ix = Math.floor(fx);
@@ -318,6 +318,40 @@ export function heightAt(x: number, z: number): number {
   return tz >= tx
     ? a + tx * (d - c) + tz * (c - a)
     : a + tx * (b - a) + tz * (d - b);
+}
+
+function pointInOutline(x: number, z: number, object: Extract<AuthoredObject, { kind: 'transport-structure' }>): boolean {
+  let inside = false;
+  const outline = object.outline;
+  for (let i = 0, j = outline.length - 1; i < outline.length; j = i++) {
+    const ax = object.x + outline[i][0];
+    const az = object.z + outline[i][1];
+    const bx = object.x + outline[j][0];
+    const bz = object.z + outline[j][1];
+    if ((az > z) !== (bz > z) && x < ((bx - ax) * (z - az)) / (bz - az) + ax) inside = !inside;
+  }
+  return inside;
+}
+
+/** Real bridge decks override the terrain surface without changing its lattice. */
+function bridgeDeckHeightAt(x: number, z: number, fallback: number): number {
+  if (!authored?.objectChunks) return fallback;
+  // Keep synchronized with authored/compiled chunk ownership (10 cells).
+  const cx = Math.round(x / TILE);
+  const cz = Math.round(z / TILE);
+  const objects = authored.objectChunks[`${Math.floor(cx / 10)},${Math.floor(cz / 10)}`] ?? [];
+  let result = fallback;
+  for (const object of objects) {
+    if (object.kind !== 'transport-structure' || object.structure !== 'bridge' || !object.roadDeck || !Number.isFinite(object.topY)) continue;
+    if (pointInOutline(x, z, object)) result = Math.max(result, object.topY as number);
+  }
+  return result;
+}
+
+/** Render/gameplay surface height, including real bridge deck elevations. */
+export function heightAt(x: number, z: number): number {
+  const terrain = terrainHeightAt(x, z);
+  return bridgeDeckHeightAt(x, z, terrain);
 }
 
 export function cellCornerHeights(cx: number, cz: number): [number, number, number, number] {
