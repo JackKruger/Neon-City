@@ -448,6 +448,70 @@ export class HumanRig {
     this.legR.knee.rotation.x = mix(this.legR.knee.rotation.x, 0.22, w);
   }
 
+  /** Curl, brace, kneel, and unfold while the rig root rolls upright. */
+  poseGetUp(progress: number, faceUp: boolean): void {
+    const p = THREE.MathUtils.clamp(progress, 0, 1);
+    const fold = Math.sin(Math.PI * THREE.MathUtils.smoothstep(p, 0.04, 0.92));
+    const brace = Math.sin(Math.PI * THREE.MathUtils.smoothstep(p, 0, 0.78));
+    const roll = (1 - THREE.MathUtils.smoothstep(p, 0.48, 0.9)) * Math.sin(Math.PI * p);
+    const mix = THREE.MathUtils.lerp;
+
+    this.pelvis.position.y = mix(this.pelvis.position.y, PELVIS_Y - 0.25, fold);
+    this.pelvis.rotation.z = mix(this.pelvis.rotation.z, (faceUp ? -0.32 : 0.26) * roll, brace);
+    this.spine.rotation.x = mix(this.spine.rotation.x, (faceUp ? -0.42 : 0.5) * fold, brace);
+    this.neck.rotation.x = mix(this.neck.rotation.x, faceUp ? 0.26 : -0.3, brace);
+
+    // Pull the knees underneath the hips before rising out of the crouch.
+    this.legL.hip.rotation.x = mix(this.legL.hip.rotation.x, -0.92, fold);
+    this.legR.hip.rotation.x = mix(this.legR.hip.rotation.x, -0.74, fold);
+    this.legL.knee.rotation.x = mix(this.legL.knee.rotation.x, 1.55, fold);
+    this.legR.knee.rotation.x = mix(this.legR.knee.rotation.x, 1.35, fold);
+    this.legL.ankle.rotation.x = mix(this.legL.ankle.rotation.x, -0.42, fold);
+    this.legR.ankle.rotation.x = mix(this.legR.ankle.rotation.x, -0.36, fold);
+
+    // Plant both hands, with a slight asymmetry so the recovery reads as a
+    // push off the ground rather than a mirrored squat.
+    this.armL.shoulder.rotation.x = mix(this.armL.shoulder.rotation.x, -1.22, brace);
+    this.armR.shoulder.rotation.x = mix(this.armR.shoulder.rotation.x, -1.02, brace);
+    this.armL.shoulder.rotation.z = mix(this.armL.shoulder.rotation.z, 0.34, brace);
+    this.armR.shoulder.rotation.z = mix(this.armR.shoulder.rotation.z, -0.24, brace);
+    this.armL.elbow.rotation.x = mix(this.armL.elbow.rotation.x, -0.72, brace);
+    this.armR.elbow.rotation.x = mix(this.armR.elbow.rotation.x, -0.96, brace);
+  }
+
+  /** Full-body lunge/brace used immediately before an on-foot arrest impact. */
+  poseTackle(role: 'attacker' | 'victim', progress: number): void {
+    const p = THREE.MathUtils.clamp(progress, 0, 1);
+    const mix = THREE.MathUtils.lerp;
+    if (role === 'attacker') {
+      const drive = Math.sin(Math.PI * THREE.MathUtils.smoothstep(p, 0, 1));
+      this.pelvis.position.y = mix(this.pelvis.position.y, PELVIS_Y - 0.18, drive);
+      this.spine.rotation.x = mix(this.spine.rotation.x, 0.52, drive);
+      this.neck.rotation.x = mix(this.neck.rotation.x, -0.2, drive);
+      this.armL.shoulder.rotation.x = mix(this.armL.shoulder.rotation.x, -1.42, drive);
+      this.armR.shoulder.rotation.x = mix(this.armR.shoulder.rotation.x, -1.42, drive);
+      this.armL.elbow.rotation.x = mix(this.armL.elbow.rotation.x, -0.18, drive);
+      this.armR.elbow.rotation.x = mix(this.armR.elbow.rotation.x, -0.18, drive);
+      this.legL.hip.rotation.x = mix(this.legL.hip.rotation.x, -0.48, drive);
+      this.legL.knee.rotation.x = mix(this.legL.knee.rotation.x, 0.72, drive);
+      this.legR.hip.rotation.x = mix(this.legR.hip.rotation.x, 0.34, drive);
+      this.legR.knee.rotation.x = mix(this.legR.knee.rotation.x, 0.18, drive);
+      return;
+    }
+
+    const impact = THREE.MathUtils.smootherstep(p, 0.08, 1);
+    this.pelvis.position.y = mix(this.pelvis.position.y, PELVIS_Y - 0.16, impact);
+    this.spine.rotation.x = mix(this.spine.rotation.x, 0.38, impact);
+    this.spine.rotation.z = mix(this.spine.rotation.z, 0.2, impact);
+    this.neck.rotation.x = mix(this.neck.rotation.x, -0.24, impact);
+    this.armL.shoulder.rotation.x = mix(this.armL.shoulder.rotation.x, -0.86, impact);
+    this.armR.shoulder.rotation.x = mix(this.armR.shoulder.rotation.x, -1.08, impact);
+    this.armL.elbow.rotation.x = mix(this.armL.elbow.rotation.x, -0.7, impact);
+    this.armR.elbow.rotation.x = mix(this.armR.elbow.rotation.x, -0.58, impact);
+    this.legL.knee.rotation.x = mix(this.legL.knee.rotation.x, 0.42, impact);
+    this.legR.knee.rotation.x = mix(this.legR.knee.rotation.x, 0.22, impact);
+  }
+
   /**
    * Overlay an attack swing on the locomotion pose (call after setLocomotion).
    * The right arm at side -1 sits at negative X; positive spine yaw brings it

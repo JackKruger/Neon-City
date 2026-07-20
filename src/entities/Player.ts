@@ -4,6 +4,7 @@ import type { PlayerInput } from '../core/Input';
 import { PEDESTRIAN_COLLISION_GROUPS } from '../core/const';
 import type { CameraTarget } from '../render/Viewports';
 import { Character } from './Character';
+import type { CopPed } from './CopPed';
 import type { Outfit } from './HumanRig';
 import { Ragdoll } from './Ragdoll';
 import { TrafficCar } from './TrafficCar';
@@ -23,6 +24,9 @@ const ENTER_VEHICLE_TIME = 0.9;
 const EXIT_VEHICLE_TIME = 0.75;
 const CARJACK_TIME = 1.6;
 const KNOCKDOWN_TIME = 2.6;
+const GET_UP_TIME = 1.25;
+const TACKLE_CONTACT_TIME = 0.48;
+const TACKLE_TOTAL_TIME = 1.05;
 const FALL_RAGDOLL_SPEED = 13;
 const FALL_FATAL_SPEED = 25;
 
@@ -36,6 +40,21 @@ interface VehicleTransition {
   startYaw: number;
   occupantEjected: boolean;
   occupantProfile?: TrafficCar['driverProfile'];
+}
+
+interface GetUpTransition {
+  elapsed: number;
+  feet: THREE.Vector3;
+  yaw: number;
+  faceUp: boolean;
+}
+
+interface BustTransition {
+  elapsed: number;
+  fine: number;
+  feet: THREE.Vector3;
+  yaw: number;
+  impacted: boolean;
 }
 
 function ease(t: number): number {
@@ -105,13 +124,16 @@ export class Player implements Entity, CameraTarget, CombatTarget {
   private ragdoll: Ragdoll | null = null;
   private airborneRagdoll = false;
   private airborneFallSpeed = 0;
+  private getUpTransition: GetUpTransition | null = null;
+  private bustTransition: BustTransition | null = null;
   private vehicleTransition: VehicleTransition | null = null;
   private vehicleDoorSide: 1 | -1 = 1;
   private respawnCost = 100;
   private nearbyVehicles: Drivable[] = [];
 
   get canSave(): boolean {
-    return !this.dead && !this.knockedDown && this.ragdoll === null && this.vehicleTransition === null;
+    return !this.dead && !this.knockedDown && this.ragdoll === null &&
+      this.getUpTransition === null && this.bustTransition === null && this.vehicleTransition === null;
   }
 
   constructor(
@@ -134,7 +156,7 @@ export class Player implements Entity, CameraTarget, CombatTarget {
 
   // CombatTarget
   alive(): boolean {
-    return !this.dead;
+    return !this.dead && !this.knockedDown && this.bustTransition === null;
   }
 
   position(): THREE.Vector3 {
@@ -142,7 +164,7 @@ export class Player implements Entity, CameraTarget, CombatTarget {
   }
 
   takeHit(damage: number, dir: THREE.Vector3, _weapon: WeaponDef, _attacker: Player | null): void {
-    if (this.invincible || this.dead || this.knockedDown || this.driving) return;
+    if (this.invincible || this.dead || this.knockedDown || this.bustTransition || this.driving) return;
     const absorbed = Math.min(this.armour, damage * 0.7);
     this.armour -= absorbed;
     this.health -= damage - absorbed;
@@ -179,6 +201,7 @@ export class Player implements Entity, CameraTarget, CombatTarget {
   private knockDown(impact: THREE.Vector3, initialVelocity = false): void {
     this.knockedDown = true;
     this.knockdownTimer = KNOCKDOWN_TIME;
+    this.getUpTransition = null;
     this.airborneRagdoll = false;
     this.airborneFallSpeed = 0;
     this.pendingMelee = null;
@@ -187,10 +210,45 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     this.character.setEnabled(false);
   }
 
-  private standUp(): void {
-    const landing = this.ragdoll?.position() ?? this.character.position();
-    this.rebuildCharacter(landing.x, landing.z, undefined, this.character.getFacing());
-    this.character.flinch();
+  private beginStandUp(): void {
+    const fallbackYaw = this.character.getFacing();
+    const recovery = this.ragdoll?.recoveryPose(fallbackYaw) ?? {
+      position: this.character.position(),
+      yaw: fallbackYaw,
+      faceUp: true,
+    };
+    const surfaceY = this.game.surfaceHeightBelow(
+      recovery.position.x,
+      recovery.position.z,
+      recovery.position.y + 1.5,
+      5
+    );
+    const feet = new THREE.Vector3(recovery.position.x, surfaceY, recovery.position.z);
+    this.rebuildCharacter(feet.x, feet.z, feet.y, recovery.yaw);
+    this.character.beginScriptedPose();
+    this.getUpTransition = {
+      elapsed: 0,
+      feet,
+      yaw: recovery.yaw,
+      faceUp: recovery.faceUp,
+    };
+    this.updateGetUpTransition(0);
+  }
+
+  private updateGetUpTransition(dt: number): void {
+    const transition = this.getUpTransition;
+    if (!transition) return;
+    transition.elapsed = Math.min(GET_UP_TIME, transition.elapsed + dt);
+    const progress = transition.elapsed / GET_UP_TIME;
+    this.character.setGetUpPose(
+      transition.feet,
+      transition.yaw,
+      progress,
+      transition.faceUp
+    );
+    if (progress < 1) return;
+    this.character.finishScriptedPose(transition.feet, transition.yaw);
+    this.getUpTransition = null;
     this.knockedDown = false;
     this.airborneRagdoll = false;
     this.airborneFallSpeed = 0;
@@ -201,6 +259,8 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     this.dead = true;
     this.health = 0;
     this.knockedDown = false;
+    this.getUpTransition = null;
+    this.bustTransition = null;
     this.airborneRagdoll = false;
     this.airborneFallSpeed = 0;
     this.hudMessage = 'WASTED';
@@ -223,6 +283,8 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     this.armour = 0;
     this.dead = false;
     this.knockdownTimer = 0;
+    this.getUpTransition = null;
+    this.bustTransition = null;
     this.hudMessage = null;
     this.balance = Math.max(0, this.balance - this.respawnCost);
     this.inventory.loseReserves();
@@ -300,14 +362,47 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     this.vehicleHitCooldown = 0;
     this.respawnTimer = 0;
     this.knockdownTimer = 0;
+    this.getUpTransition = null;
+    this.bustTransition = null;
     this.respawnCost = 100;
     this.wanted.reset();
     this.game.input.clearQueuedInput();
   }
 
   /** Resolve a close-range police arrest, including a star-scaled fine. */
-  bust(fine: number): void {
-    if (this.dead) return;
+  bust(fine: number, tackler: CopPed | null = null): void {
+    if (this.dead || this.bustTransition) return;
+    if (tackler && !this.vehicle && !this.knockedDown && !this.ragdoll) {
+      const feet = this.character.position();
+      feet.y = this.game.surfaceHeightBelow(feet.x, feet.z, feet.y + 1, 4);
+      const cop = tackler.position();
+      const direction = feet.clone().sub(cop).setY(0);
+      if (direction.lengthSq() < 0.01) {
+        direction.set(Math.sin(this.character.getFacing()), 0, Math.cos(this.character.getFacing()));
+      } else direction.normalize();
+      const yaw = Math.atan2(direction.x, direction.z);
+      this.vehicleTransition = null;
+      this.pendingMelee = null;
+      this.game.combat.unregister(this.character.collider);
+      this.character.setFacing(yaw);
+      this.character.beginScriptedPose();
+      this.bustTransition = {
+        elapsed: 0,
+        fine: Math.max(0, Math.floor(fine)),
+        feet,
+        yaw,
+        impacted: false,
+      };
+      tackler.beginTackle(feet, TACKLE_TOTAL_TIME);
+      this.wanted.clear();
+      this.updateBustTransition(0);
+      return;
+    }
+
+    this.finishBust(fine);
+  }
+
+  private finishBust(fine: number): void {
     const vehiclePos = this.vehicle?.body.translation();
     const arrestPos = vehiclePos
       ? new THREE.Vector3(vehiclePos.x, vehiclePos.y, vehiclePos.z)
@@ -326,10 +421,48 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     );
     this.character.setEnabled(false);
     this.dead = true;
+    this.knockedDown = false;
+    this.getUpTransition = null;
+    this.bustTransition = null;
     this.hudMessage = 'BUSTED';
     this.respawnTimer = 3;
     this.respawnCost = Math.max(0, Math.floor(fine));
     this.wanted.clear();
+    this.game.audio.busted();
+  }
+
+  private updateBustTransition(dt: number): void {
+    const transition = this.bustTransition;
+    if (!transition) return;
+    transition.elapsed = Math.min(TACKLE_TOTAL_TIME, transition.elapsed + dt);
+    if (!transition.impacted) {
+      const progress = Math.min(1, transition.elapsed / TACKLE_CONTACT_TIME);
+      const displacement = THREE.MathUtils.smootherstep(progress, 0, 1) * 0.18;
+      const feet = transition.feet.clone().add(new THREE.Vector3(
+        Math.sin(transition.yaw) * displacement,
+        0,
+        Math.cos(transition.yaw) * displacement
+      ));
+      this.character.setTacklePose(feet, transition.yaw, progress, 'victim');
+      if (progress >= 1) {
+        const impact = new THREE.Vector3(
+          Math.sin(transition.yaw) * 4.6,
+          0.8,
+          Math.cos(transition.yaw) * 4.6
+        );
+        this.ragdoll = new Ragdoll(this.game, this.character.rig, impact, true);
+        this.character.setEnabled(false);
+        transition.impacted = true;
+        this.game.audio.thwack();
+      }
+    }
+    this.ragdoll?.update();
+    if (transition.elapsed < TACKLE_TOTAL_TIME) return;
+    this.dead = true;
+    this.hudMessage = 'BUSTED';
+    this.respawnTimer = 3;
+    this.respawnCost = transition.fine;
+    this.bustTransition = null;
     this.game.audio.busted();
   }
 
@@ -373,6 +506,10 @@ export class Player implements Entity, CameraTarget, CombatTarget {
     this.vehicleHitCooldown = Math.max(0, this.vehicleHitCooldown - dt);
     const input = this.input;
     this.prompt = null;
+    if (this.bustTransition) {
+      this.updateBustTransition(dt);
+      return;
+    }
     if (this.dead) {
       this.ragdoll?.update();
       this.respawnTimer -= dt;
@@ -380,13 +517,17 @@ export class Player implements Entity, CameraTarget, CombatTarget {
       return;
     }
     if (this.knockedDown) {
+      if (this.getUpTransition) {
+        this.updateGetUpTransition(dt);
+        return;
+      }
       this.ragdoll?.update();
       if (this.airborneRagdoll) {
         this.updateAirborneRagdoll();
         return;
       }
       this.knockdownTimer -= dt;
-      if (this.knockdownTimer <= 0) this.standUp();
+      if (this.knockdownTimer <= 0) this.beginStandUp();
       return;
     }
     if (this.vehicleTransition) {
@@ -785,7 +926,8 @@ export class Player implements Entity, CameraTarget, CombatTarget {
 
   /** Vehicle contact damage is ignored while driving, downed, or on cooldown. */
   canReceiveVehicleImpact(): boolean {
-    return !this.dead && !this.knockedDown && !this.driving && this.vehicleHitCooldown <= 0;
+    return !this.dead && !this.knockedDown && !this.bustTransition &&
+      !this.driving && this.vehicleHitCooldown <= 0;
   }
 
   // CameraTarget

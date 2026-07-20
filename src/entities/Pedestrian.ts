@@ -15,6 +15,7 @@ import type { Drivable } from './Drivable';
 const WALK_DIR = new THREE.Vector3();
 const NPC_ENTER_TIME = 0.95;
 const NPC_EXIT_TIME = 0.8;
+const NPC_GET_UP_TIME = 1.25;
 
 interface NpcVehicleTransition {
   kind: 'enter' | 'exit';
@@ -25,6 +26,13 @@ interface NpcVehicleTransition {
   elapsed: number;
   startFeet: THREE.Vector3;
   startYaw: number;
+}
+
+interface NpcGetUpTransition {
+  elapsed: number;
+  feet: THREE.Vector3;
+  yaw: number;
+  faceUp: boolean;
 }
 
 function ease(t: number): number {
@@ -60,6 +68,7 @@ export class Pedestrian implements Entity, CombatTarget {
   private pendingPunch = false;
   private knockedDown = false;
   private knockdownTimer = 0;
+  private getUpTransition: NpcGetUpTransition | null = null;
   private vehicleTransition: NpcVehicleTransition | null = null;
   private nearbyVehicles: Drivable[] = [];
 
@@ -125,9 +134,13 @@ export class Pedestrian implements Entity, CombatTarget {
       return;
     }
     if (this.knockedDown) {
+      if (this.getUpTransition) {
+        this.updateGetUpTransition(dt);
+        return;
+      }
       this.ragdoll?.update();
       this.knockdownTimer -= dt;
-      if (this.knockdownTimer <= 0) this.standUp();
+      if (this.knockdownTimer <= 0) this.beginStandUp();
       return;
     }
     if (this.vehicleTransition) {
@@ -460,6 +473,7 @@ export class Pedestrian implements Entity, CombatTarget {
     this.impactCooldown = 3;
     this.knockedDown = true;
     this.knockdownTimer = 2.4;
+    this.getUpTransition = null;
     this.character.teleport(position.x, position.y, position.z);
     this.character.setVehicleTransitionPose(position, yaw, 0.9, side, true);
     this.game.combat.unregister(this.character.collider);
@@ -467,20 +481,56 @@ export class Pedestrian implements Entity, CombatTarget {
     this.character.setEnabled(false);
   }
 
-  private standUp(): void {
-    const landing = this.ragdoll?.position() ?? this.character.position();
+  private beginStandUp(): void {
+    const fallbackYaw = this.character.getFacing();
+    const recovery = this.ragdoll?.recoveryPose(fallbackYaw) ?? {
+      position: this.character.position(),
+      yaw: fallbackYaw,
+      faceUp: true,
+    };
+    const surfaceY = this.game.surfaceHeightBelow(
+      recovery.position.x,
+      recovery.position.z,
+      recovery.position.y + 1.5,
+      5
+    );
+    const feet = new THREE.Vector3(recovery.position.x, surfaceY, recovery.position.z);
     this.ragdoll?.dispose();
     this.ragdoll = null;
     this.character.dispose();
     this.character = new Character(
       this.game,
       this.outfit,
-      landing.x,
-      landing.z,
+      feet.x,
+      feet.z,
       this.heightScale,
       PEDESTRIAN_COLLISION_GROUPS
     );
     this.game.combat.register(this.character.collider, this);
+    this.character.beginScriptedPose();
+    this.getUpTransition = {
+      elapsed: 0,
+      feet,
+      yaw: recovery.yaw,
+      faceUp: recovery.faceUp,
+    };
+    this.updateGetUpTransition(0);
+  }
+
+  private updateGetUpTransition(dt: number): void {
+    const transition = this.getUpTransition;
+    if (!transition) return;
+    transition.elapsed = Math.min(NPC_GET_UP_TIME, transition.elapsed + dt);
+    const progress = transition.elapsed / NPC_GET_UP_TIME;
+    this.character.setGetUpPose(
+      transition.feet,
+      transition.yaw,
+      progress,
+      transition.faceUp
+    );
+    if (progress < 1) return;
+    this.character.finishScriptedPose(transition.feet, transition.yaw);
+    this.getUpTransition = null;
     this.knockedDown = false;
     this.impactCooldown = 0.8;
   }
@@ -499,6 +549,7 @@ export class Pedestrian implements Entity, CombatTarget {
   die(impact: THREE.Vector3): void {
     if (this.dead) return;
     this.dead = true;
+    this.getUpTransition = null;
     this.health = 0;
     this.impactCooldown = Infinity;
     this.game.combat.unregister(this.character.collider);

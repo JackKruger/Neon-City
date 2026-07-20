@@ -141,6 +141,29 @@ export class Ragdoll {
     return this.pieces[0]?.body.linvel().y ?? 0;
   }
 
+  /** Stable ground recovery data derived from the pelvis body's final pose. */
+  recoveryPose(fallbackYaw = 0): {
+    position: THREE.Vector3;
+    yaw: number;
+    faceUp: boolean;
+  } {
+    const pelvis = this.pieces[0];
+    if (!pelvis) return { position: new THREE.Vector3(), yaw: fallbackYaw, faceUp: true };
+    const t = pelvis.body.translation();
+    const r = pelvis.body.rotation();
+    Q.set(r.x, r.y, r.z, r.w);
+    const chestFacing = new THREE.Vector3(0, 0, 1).applyQuaternion(Q);
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(Q).setY(0);
+    const yaw = right.lengthSq() > 0.01
+      ? Math.atan2(-right.z, right.x)
+      : fallbackYaw;
+    return {
+      position: new THREE.Vector3(t.x, t.y, t.z),
+      yaw,
+      faceUp: chestFacing.y >= 0,
+    };
+  }
+
   dispose(): void {
     // Removing bodies also removes their joints and colliders.
     for (const piece of this.pieces) this.game.world.removeRigidBody(piece.body);

@@ -106,10 +106,15 @@ export class Wanted {
     if (this.stars > 0) {
       const nearestCar = Math.min(...this.police.filter((p) => !p.leaving).map((p) => p.distanceToTarget()), Infinity);
       const playerPos = this.player.position();
-      const nearestFoot = Math.min(...this.copPeds.filter((c) => !c.dead && !c.leaving).map((c) => {
-        const p = c.position();
-        return Math.hypot(playerPos.x - p.x, playerPos.z - p.z);
-      }), Infinity);
+      let nearestFootCop: CopPed | null = null;
+      let nearestFoot = Infinity;
+      for (const cop of this.copPeds.filter((candidate) => !candidate.dead && !candidate.leaving)) {
+        const p = cop.position();
+        const distance = Math.hypot(playerPos.x - p.x, playerPos.z - p.z);
+        if (distance >= nearestFoot) continue;
+        nearestFoot = distance;
+        nearestFootCop = cop;
+      }
       if (Math.min(nearestCar, nearestFoot) <= SIGHT_RADIUS) {
         this.lastKnown.copy(this.player.driving ? this.player.vehicle!.root.position : playerPos);
         this.unseenTimer = 0;
@@ -132,7 +137,7 @@ export class Wanted {
         this.arrestTimer += dt;
         if (this.arrestTimer > 1.35) {
           const fine = 50 + this.stars * 75;
-          this.player.bust(fine);
+          this.player.bust(fine, nearestFoot <= nearestCar ? nearestFootCop : null);
           return;
         }
       } else this.arrestTimer = 0;

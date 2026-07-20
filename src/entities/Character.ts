@@ -117,6 +117,12 @@ export class Character implements Entity {
     this.root.visible = visible;
   }
 
+  /** Disable collision and movement while keeping the procedural rig visible. */
+  beginScriptedPose(): void {
+    this.beginVehicleTransition(true);
+    this.resetRigRoot();
+  }
+
   /** Draw one frame of an enter/exit animation independently of the capsule. */
   setVehicleTransitionPose(
     feet: THREE.Vector3,
@@ -126,12 +132,55 @@ export class Character implements Entity {
     visible: boolean,
     carjackPull = 0
   ): void {
+    this.resetRigRoot();
     this.root.visible = visible;
     this.root.position.set(feet.x, feet.y + HALF_HEIGHT, feet.z);
     this.root.rotation.y = yaw;
     this.rig.setLocomotion(this.walkPhase, 0, 0, this.time);
     this.rig.poseVehicleTransition(seatBlend, side);
     if (carjackPull > 0) this.rig.poseCarjackPull(carjackPull, side);
+  }
+
+  /** Animate a prone replacement rig into its normal upright capsule pose. */
+  setGetUpPose(feet: THREE.Vector3, yaw: number, progress: number, faceUp: boolean): void {
+    const p = THREE.MathUtils.clamp(progress, 0, 1);
+    const upright = THREE.MathUtils.smootherstep(p, 0.16, 0.78);
+    const tilt = (faceUp ? -Math.PI / 2 : Math.PI / 2) * (1 - upright);
+    const horizontalPelvis = Math.sin(tilt) * 0.98;
+    const proneLift = Math.abs(Math.sin(tilt));
+    this.root.visible = true;
+    this.root.position.set(feet.x, feet.y + HALF_HEIGHT, feet.z);
+    this.root.rotation.y = yaw;
+    this.rig.root.position.set(0, -HALF_HEIGHT + proneLift * 0.27, -horizontalPelvis);
+    this.rig.root.rotation.set(tilt, 0, 0);
+    this.rig.setLocomotion(this.walkPhase, 0, 0, this.time);
+    this.rig.poseGetUp(p, faceUp);
+  }
+
+  /** Draw one side of the paired on-foot arrest tackle. */
+  setTacklePose(
+    feet: THREE.Vector3,
+    yaw: number,
+    progress: number,
+    role: 'attacker' | 'victim'
+  ): void {
+    const p = THREE.MathUtils.clamp(progress, 0, 1);
+    this.resetRigRoot();
+    this.root.visible = true;
+    this.root.position.set(feet.x, feet.y + HALF_HEIGHT, feet.z);
+    this.root.rotation.y = yaw;
+    this.rig.setLocomotion(this.walkPhase, 0, 0, this.time);
+    this.rig.root.rotation.x = (role === 'attacker' ? 0.22 : 0.12) * Math.sin(Math.PI * p);
+    this.rig.poseTackle(role, p);
+  }
+
+  /** Return a scripted rig to physics at the supplied feet position. */
+  finishScriptedPose(feet: THREE.Vector3, yaw: number): void {
+    this.resetRigRoot();
+    this.facing = yaw;
+    this.teleport(feet.x, feet.y, feet.z);
+    this.setEnabled(true);
+    this.syncVisuals();
   }
 
   setFacing(yaw: number): void {
@@ -314,6 +363,11 @@ export class Character implements Entity {
     if (this.flinchTime > 0) {
       this.rig.poseFlinch(Math.sin(Math.PI * Math.min(1, this.flinchTime / 0.28)));
     }
+  }
+
+  private resetRigRoot(): void {
+    this.rig.root.position.set(0, -HALF_HEIGHT, 0);
+    this.rig.root.rotation.set(0, 0, 0);
   }
 
   /** Find the highest walkable fixed surface close to the capsule's feet. */

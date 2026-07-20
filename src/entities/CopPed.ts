@@ -34,6 +34,15 @@ const DESPAWN_DIST = 110;
 
 const DIR = new THREE.Vector3();
 
+interface TackleTransition {
+  elapsed: number;
+  duration: number;
+  startFeet: THREE.Vector3;
+  endFeet: THREE.Vector3;
+  currentFeet: THREE.Vector3;
+  yaw: number;
+}
+
 /**
  * Armed on-foot officer deployed from a stopped police car at 2+ stars.
  * Pursues the wanted player, shoots at mid range, punches up close.
@@ -51,6 +60,7 @@ export class CopPed implements Entity, CombatTarget {
   private fireCooldown = 1.2; // grace period after deploying
   private punchCooldown = 0;
   private pendingPunch = false;
+  private tackle: TackleTransition | null = null;
 
   constructor(
     private game: Game,
@@ -75,7 +85,9 @@ export class CopPed implements Entity, CombatTarget {
   }
 
   position(): THREE.Vector3 {
-    return this.ragdoll ? this.ragdoll.position() : this.character.position();
+    return this.ragdoll
+      ? this.ragdoll.position()
+      : this.tackle?.currentFeet.clone() ?? this.character.position();
   }
 
   takeHit(damage: number, dir: THREE.Vector3, weapon: WeaponDef, attacker: Player | null): void {
@@ -92,19 +104,61 @@ export class CopPed implements Entity, CombatTarget {
   }
 
   private die(impact: THREE.Vector3): void {
+    const pos = this.position();
     this.dead = true;
+    this.tackle = null;
     this.health = 0;
     this.game.combat.unregister(this.character.collider);
-    const pos = this.character.position();
     this.ragdoll = new Ragdoll(this.game, this.character.rig, impact);
     this.character.setEnabled(false);
     this.game.pickups.push(new Pickup(this.game, 'pistol', 12, pos.x, pos.y, pos.z));
+  }
+
+  /** Lunge into the target before the player's arrest ragdoll takes over. */
+  beginTackle(targetFeet: THREE.Vector3, duration: number): void {
+    if (this.dead || this.tackle) return;
+    const startFeet = this.character.position();
+    const direction = targetFeet.clone().sub(startFeet).setY(0);
+    if (direction.lengthSq() < 0.01) direction.set(0, 0, 1);
+    else direction.normalize();
+    const endFeet = targetFeet.clone().addScaledVector(direction, -0.62);
+    const yaw = Math.atan2(direction.x, direction.z);
+    this.pendingPunch = false;
+    this.character.rig.setHeldItem(null);
+    this.character.setFacing(yaw);
+    this.character.beginScriptedPose();
+    this.tackle = {
+      elapsed: 0,
+      duration: Math.max(0.1, duration),
+      startFeet,
+      endFeet,
+      currentFeet: startFeet.clone(),
+      yaw,
+    };
+    this.updateTackle(0);
+  }
+
+  private updateTackle(dt: number): void {
+    const tackle = this.tackle;
+    if (!tackle) return;
+    tackle.elapsed = Math.min(tackle.duration, tackle.elapsed + dt);
+    const progress = tackle.elapsed / tackle.duration;
+    const lunge = THREE.MathUtils.smootherstep(progress, 0.02, 0.58);
+    tackle.currentFeet.lerpVectors(tackle.startFeet, tackle.endFeet, lunge);
+    this.character.setTacklePose(tackle.currentFeet, tackle.yaw, progress, 'attacker');
+    if (progress < 1) return;
+    this.character.finishScriptedPose(tackle.endFeet, tackle.yaw);
+    this.tackle = null;
   }
 
   update(dt: number): void {
     if (this.dead) {
       this.deadFor += dt;
       this.ragdoll?.update();
+      return;
+    }
+    if (this.tackle) {
+      this.updateTackle(dt);
       return;
     }
     this.fireCooldown = Math.max(0, this.fireCooldown - dt);

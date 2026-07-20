@@ -18,6 +18,8 @@
   - Transfer impact force to the NPC and vehicle based on speed and collision angle.
   - Trigger ragdoll above an appropriate impact threshold.
   - Keep low-speed contact from launching characters or stopping vehicles abruptly.
+  - Shipped: recoverable player and carjacked-driver ragdolls use a collision-safe,
+    face-up/face-down stand-up animation before returning to movement.
 - [x] Add player jumping.
   - Support keyboard and gamepad input.
   - Only jump while grounded, with stable landing and slope handling.
@@ -98,8 +100,9 @@
   - Add witnesses, crime reporting, a last-known-position search area, arrests, a busted state, and fines.
   - Scale responses from patrol cars to roadblocks and stronger units without spawning police directly in view.
   - Shipped: nearby civilians report and flee crimes, police switch between pursuit and a visible
-    last-known search state, close officers can bust and fine players, and response tiers scale to
-    off-screen patrols, stronger armed officers, and three-star roadblocks.
+    last-known search state, close officers can bust and fine players, on-foot arrests use a paired
+    tackle and ragdoll transition, and response tiers scale to off-screen patrols, stronger armed
+    officers, and three-star roadblocks.
 - [ ] Add map waypoints and GPS routing.
   - Let players place and clear waypoints on the full map.
   - Display the target on minimaps and calculate a road route with distance to destination.
