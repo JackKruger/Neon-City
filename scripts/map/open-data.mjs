@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -34,7 +35,7 @@ import {
   toWorld,
 } from './geo.mjs';
 import { roadSurfacesFromOverpass } from './roads.mjs';
-import { writeObjectIndex } from './object-index.mjs';
+import { readObjectIndex, writeObjectIndex } from './object-index.mjs';
 import { COVERAGE_FLAGS, TRANSPORT_FLAGS, VERSIONS } from './contract.mjs';
 
 export const TRANSPORT = {
@@ -877,13 +878,97 @@ function furnitureKind(properties) {
   if (/seat|picnic|bench/.test(value)) return 'seat';
   if (/planter|floral|crate/.test(value)) return 'planter';
   if (/barbeque|barbecue/.test(value)) return 'barbecue';
+  if (/tree guard/.test(value)) return 'tree-guard';
+  if (/information pillar/.test(value)) return 'information-pillar';
   return null;
+}
+
+const POINT_OBJECT_KINDS = new Set([
+  'bollard', 'bicycle-rail', 'bin', 'fountain', 'seat', 'planter',
+  'barbecue', 'art', 'tree-guard', 'information-pillar',
+]);
+
+function pointModel(properties) {
+  return textValue(
+    properties,
+    'model_no', 'model_number', 'model_descr', 'model_description',
+    'description', 'structure', 'asset_type'
+  ).slice(0, 120);
+}
+
+function pointSourceId(feature, kind, world, art) {
+  const properties = feature.properties ?? {};
+  const namespace = art ? 'art' : 'furniture';
+  const identifier = property(
+    properties,
+    'gis_id', 'asset_id', 'assetid', 'objectid', 'object_id', 'ufi', 'id', 'fid'
+  );
+  if (identifier !== undefined) {
+    const token = encodeURIComponent(String(identifier).trim()).slice(0, 160);
+    if (token) return `${namespace}:${token}`;
+  }
+  const stableProperties = Object.entries(properties)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => [key, value]);
+  const digest = createHash('sha256')
+    .update(JSON.stringify([kind, round(world.x), round(world.z), stableProperties]))
+    .digest('hex')
+    .slice(0, 20);
+  return `${namespace}:${kind}:${digest}`;
+}
+
+function sourceRotation(properties) {
+  const radians = numeric(properties, 'rotation_rad', 'rotation_radians', 'angle_rad', 'bearing_rad');
+  const degrees = numeric(
+    properties,
+    'rotation', 'rotation_deg', 'angle', 'angle_deg',
+    'bearing', 'bearing_deg', 'azimuth', 'orientation', 'heading'
+  );
+  if (radians === null && degrees === null) return null;
+  // Survey bearings are clockwise from north. Recipe rotation aligns the
+  // object's local X axis with the resulting world-space direction.
+  const rotation = radians !== null ? radians : Math.PI / 2 - degrees * Math.PI / 180;
+  return Math.atan2(Math.sin(rotation), Math.cos(rotation));
+}
+
+function nearestPathRotation(chunks, x, z, maximumDistance = 24) {
+  const [kx, kz] = chunkKeyForWorld(x, z).split(',').map(Number);
+  let closestDistanceSq = maximumDistance ** 2;
+  let closestRotation = null;
+  const seen = new Set();
+  for (let dz = -1; dz <= 1; dz++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      for (const path of chunks[`${kx + dx},${kz + dz}`] ?? []) {
+        if (path.kind !== 'nav-path' || !Array.isArray(path.points) || path.points.length < 2) continue;
+        const signature = path.sourceId ?? JSON.stringify(path);
+        if (seen.has(signature)) continue;
+        seen.add(signature);
+        for (let index = 0; index + 1 < path.points.length; index++) {
+          const [ax, az] = path.points[index];
+          const [bx, bz] = path.points[index + 1];
+          const startX = path.x + ax;
+          const startZ = path.z + az;
+          const deltaX = bx - ax;
+          const deltaZ = bz - az;
+          const lengthSq = deltaX ** 2 + deltaZ ** 2;
+          if (lengthSq < 0.0001) continue;
+          const t = Math.max(0, Math.min(1, ((x - startX) * deltaX + (z - startZ) * deltaZ) / lengthSq));
+          const distanceSq = (x - startX - deltaX * t) ** 2 + (z - startZ - deltaZ * t) ** 2;
+          if (distanceSq >= closestDistanceSq) continue;
+          closestDistanceSq = distanceSq;
+          closestRotation = Math.atan2(-deltaZ, deltaX);
+        }
+      }
+    }
+  }
+  return closestRotation;
 }
 
 function importPointObjects(features, chunks, coverage, art = false) {
   if (!features) return 0;
   let accepted = 0;
   const seen = new Set();
+  const candidates = [];
   for (const feature of features) {
     const point = pointCoordinates(feature);
     if (!point || !inMap(point[1], point[0])) continue;
@@ -892,11 +977,31 @@ function importPointObjects(features, chunks, coverage, art = false) {
     const world = toWorld(point[1], point[0]);
     const grid = toGrid(world.x, world.z);
     if (!grid) continue;
+    candidates.push({
+      feature,
+      kind,
+      world,
+      grid,
+      sourceId: pointSourceId(feature, kind, world, art),
+    });
+  }
+  candidates.sort((left, right) => left.sourceId.localeCompare(right.sourceId));
+  for (const candidate of candidates) {
+    const { feature, kind, world, grid, sourceId } = candidate;
     const spacing = kind === 'bollard' || kind === 'bicycle-rail' ? 2 : kind === 'art' ? 1.5 : 0.75;
     const dedupeKey = `${kind}:${Math.round(world.x / spacing)}:${Math.round(world.z / spacing)}`;
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
-    addObject(chunks, { kind, x: round(world.x), z: round(world.z), rotation: 0 });
+    const model = pointModel(feature.properties);
+    const rotation = sourceRotation(feature.properties) ?? nearestPathRotation(chunks, world.x, world.z) ?? 0;
+    addObject(chunks, {
+      kind,
+      sourceId,
+      ...(model ? { model } : {}),
+      x: round(world.x),
+      z: round(world.z),
+      rotation: round(rotation),
+    });
     coverage[grid.index] |= COVERAGE.PROP;
     accepted++;
   }
@@ -1188,6 +1293,60 @@ export async function enrichMelbourneMap({ root, grid, roadSurfaces = [], baseSu
     objectChunks: chunks,
     roadSurfaces: roadSurfaces.length > 0,
   };
+}
+
+/** Refresh only mapped street furniture/public art, preserving every other authored object. */
+export async function refreshMelbournePointObjects({ root, options = {} }) {
+  const cacheDir = join(root, '.map-cache', 'open-data');
+  const outputDir = join(root, 'public', 'maps');
+  const coveragePath = join(outputDir, 'melbourne.coverage.bin');
+  const sourceReportPath = join(outputDir, 'melbourne.sources.json');
+  const index = readObjectIndex(outputDir, 'melbourne');
+  const coverage = new Uint8Array(readFileSync(coveragePath));
+  if (coverage.length !== MAP_SIZE * MAP_SIZE) throw new Error('authored prop coverage size mismatch');
+  for (let index = 0; index < coverage.length; index++) coverage[index] &= ~COVERAGE.PROP;
+
+  const chunks = {};
+  for (const [key, objects] of Object.entries(index.chunks)) {
+    chunks[key] = objects.filter((object) => !POINT_OBJECT_KINDS.has(object.kind));
+  }
+  const pointReport = { version: 1, sources: [], results: {} };
+  pointReport.results.furniture = importPointObjects(
+    await loadSource(cacheDir, 'furniture', options, pointReport),
+    chunks,
+    coverage
+  );
+  pointReport.results.art = importPointObjects(
+    await loadSource(cacheDir, 'art', options, pointReport),
+    chunks,
+    coverage,
+    true
+  );
+  const thinnedPointObjects = thinChunkObjects(chunks);
+  if (Object.keys(thinnedPointObjects).length > 0) pointReport.results.thinnedPointObjects = thinnedPointObjects;
+  for (const values of Object.values(chunks)) {
+    values.sort((left, right) => left.kind.localeCompare(right.kind) || left.x - right.x || left.z - right.z);
+  }
+
+  writeObjectIndex(outputDir, 'melbourne', chunks, index.roadSurfaces);
+  writeLayer(outputDir, 'coverage', coverage);
+  const report = existsSync(sourceReportPath)
+    ? JSON.parse(readFileSync(sourceReportPath, 'utf8'))
+    : { version: 1, sources: [], results: {} };
+  const refreshedSources = new Map(pointReport.sources.map((source) => [source.key, source]));
+  report.sources = (report.sources ?? []).map((source) => refreshedSources.get(source.key) ?? source);
+  const existingSourceKeys = new Set(report.sources.map((source) => source.key));
+  report.sources.push(...pointReport.sources.filter((source) => !existingSourceKeys.has(source.key)));
+  report.results = {
+    ...(report.results ?? {}),
+    ...pointReport.results,
+  };
+  writeFileSync(sourceReportPath, JSON.stringify(report, null, 2) + '\n');
+  console.log(
+    `[open-data] refreshed ${pointReport.results.furniture} furniture and ` +
+    `${pointReport.results.art} art objects without rebuilding roads or buildings`
+  );
+  return { report: pointReport, coverage, objectChunks: chunks };
 }
 
 export function openDataInputsPresent(root) {

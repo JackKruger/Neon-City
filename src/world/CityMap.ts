@@ -29,7 +29,7 @@ export type AuthoredObject =
   | { kind: 'building'; sourceId?: string; structureId?: string; baseOffset?: number; x: number; z: number; rotation: number; width: number; depth: number; height: number; baseY?: number; style: 'commercial' | 'skyscraper' | 'suburban' | 'industrial'; roof?: string; outline?: [number, number][] }
   | { kind: 'tree'; x: number; z: number; height: number; variant: 'small' | 'large' }
   | { kind: 'parking'; sourceId?: string; x: number; z: number; rotation: number }
-  | { kind: 'bollard' | 'bicycle-rail' | 'bin' | 'fountain' | 'seat' | 'planter' | 'barbecue' | 'art'; x: number; z: number; rotation: number };
+  | { kind: 'bollard' | 'bicycle-rail' | 'bin' | 'fountain' | 'seat' | 'planter' | 'barbecue' | 'art' | 'tree-guard' | 'information-pillar'; sourceId?: string; model?: string; x: number; z: number; rotation: number };
 
 /** [name index, speed km/h, start x, start z, end x, end z]. */
 export type RoadInfoSegment = [number, number, number, number, number, number];

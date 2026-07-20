@@ -86,7 +86,7 @@
       "status": "loaded",
       "file": "street-furniture.geojson",
       "records": 23426,
-      "retrievedAt": "2026-07-19T01:13:54.128Z"
+      "retrievedAt": "2026-07-20T10:14:58.460Z"
     },
     {
       "key": "art",
@@ -95,7 +95,7 @@
       "status": "loaded",
       "file": "public-art.geojson",
       "records": 261,
-      "retrievedAt": "2026-07-19T01:13:54.491Z"
+      "retrievedAt": "2026-07-20T10:14:58.860Z"
     },
     {
       "key": "parking",
@@ -149,7 +149,7 @@
     },
     "trees": 41955,
     "canopyFallbackTrees": 5302,
-    "furniture": 16167,
+    "furniture": 16651,
     "art": 239,
     "parking": 5539,
     "addresses": 0,

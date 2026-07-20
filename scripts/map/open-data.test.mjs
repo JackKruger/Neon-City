@@ -11,6 +11,7 @@ import {
   TRANSPORT,
   enrichMelbourneMap,
   markBuildingSourceCoverage,
+  refreshMelbournePointObjects,
 } from './open-data.mjs';
 
 const polygon = (name, ring, extra = {}) => ({
@@ -61,8 +62,12 @@ test('open data enrichment emits all runtime contracts', async () => {
       }),
     ]);
     writeGeo('urban-forest-trees.geojson', [point({ common_name: 'Elm', tree_height: 9 }, [144.96025, -37.8348])]);
-    writeGeo('street-furniture.geojson', [point({ asset_type: 'Bollard' }, [144.9603, -37.8349])]);
-    writeGeo('public-art.geojson', [point({ asset_type: 'Monument' }, [144.96035, -37.8349])]);
+    writeGeo('street-furniture.geojson', [
+      point({ asset_type: 'Bollard', gis_id: 'F-123', model_no: 'BOL-7', bearing: 90 }, [144.9603, -37.8349]),
+      point({ asset_type: 'Tree Guard', gis_id: 'F-124' }, [144.96032, -37.83486]),
+      point({ asset_type: 'Information Pillar', gis_id: 'F-125' }, [144.96034, -37.83482]),
+    ]);
+    writeGeo('public-art.geojson', [point({ asset_type: 'Monument', asset_id: 'ART-9' }, [144.96035, -37.8349])]);
     writeGeo('parking-bays.geojson', Array.from({ length: 4 }, (_, i) => point({ bay_id: i }, [144.9597 + i * 0.0001, -37.835])));
     writeFileSync(join(cache, 'vicmap-address.csv'), 'LATITUDE,LONGITUDE,ROAD_NAME\n-37.83505,144.96005,Swanston Street\n');
     writeGeo('geoscape-localities.geojson', [polygon('Melbourne', block, { locality_name: 'Melbourne' })]);
@@ -111,7 +116,9 @@ test('open data enrichment emits all runtime contracts', async () => {
     assert.equal(result.report.results.buildings.infrastructureComponents, 3);
     assert.ok(result.report.results.osmTransportPaths > 0);
     const authored = Object.values(objects.chunks).flat();
-    for (const kind of ['road-surface', 'building', 'tree', 'bollard', 'art', 'parking']) assert.ok(authored.some((item) => item.kind === kind), kind);
+    for (const kind of ['road-surface', 'building', 'tree', 'bollard', 'tree-guard', 'information-pillar', 'art', 'parking']) {
+      assert.ok(authored.some((item) => item.kind === kind), kind);
+    }
     assert.equal(objects.roadSurfaces, true);
     assert.ok(authored.find((item) => item.kind === 'building')?.outline?.length >= 3);
     const buildingComponents = new Map(
@@ -126,6 +133,11 @@ test('open data enrichment emits all runtime contracts', async () => {
     const parking = authored.find((item) => item.kind === 'parking');
     assert.ok(parking?.sourceId?.startsWith('parking:'));
     assert.notEqual(parking.x % 12, 0, 'mapped parking was snapped to a road-cell centre');
+    const bollard = authored.find((item) => item.kind === 'bollard');
+    assert.equal(bollard?.sourceId, 'furniture:F-123');
+    assert.equal(bollard?.model, 'BOL-7');
+    assert.equal(bollard?.rotation, 0, 'east-facing survey bearing should align the local X axis east');
+    assert.equal(authored.find((item) => item.kind === 'art')?.sourceId, 'art:ART-9');
     assert.ok(!authored.some((item) => item.sourceId === 'building:B' || item.sourceId === 'building:T'));
     const infrastructure = authored.filter((item) => item.kind === 'transport-structure');
     assert.ok(infrastructure.some((item) => item.structure === 'bridge' && item.component === 'bridge' && item.roadDeck));
@@ -133,6 +145,17 @@ test('open data enrichment emits all runtime contracts', async () => {
     assert.ok(infrastructure.some((item) => item.structure === 'tunnel' && item.roadDeck));
     assert.ok(infrastructure.every((item) => Number.isFinite(item.minAhd) && Number.isFinite(item.maxAhd)));
     assert.equal(result.suburbs?.[0]?.name, 'Melbourne');
+
+    const buildingSnapshot = authored.filter((item) => item.kind === 'building');
+    writeGeo('street-furniture.geojson', [
+      point({ asset_type: 'Litter Bin', gis_id: 'F-200', model_no: 'BIN-2' }, [144.9603, -37.8349]),
+    ]);
+    await refreshMelbournePointObjects({ root });
+    const refreshed = Object.values(readObjectIndex(output, 'melbourne').chunks).flat();
+    assert.deepEqual(refreshed.filter((item) => item.kind === 'building'), buildingSnapshot,
+      'props-only refresh changed building records');
+    assert.ok(!refreshed.some((item) => item.sourceId === 'furniture:F-123'));
+    assert.equal(refreshed.find((item) => item.kind === 'bin')?.sourceId, 'furniture:F-200');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

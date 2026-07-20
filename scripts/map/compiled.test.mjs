@@ -369,8 +369,68 @@ test('real transport structures compile as concrete geometry with collision', ()
   assert.ok(props.positions.some((value, index) => index % 3 === 1 && value >= 3),
     'bridge furniture was not placed on the bridge deck');
   assert.equal(result.counts.meshes, 3, 'bridge, carriageway approach, and raised footpath should compile collision meshes');
-  assert.equal(result.counts.cuboids, 3, 'tunnel shell should compile to a ceiling and two walls');
-  assert.equal(result.recipe.colliderCount, 6);
+  assert.equal(result.counts.cuboids, 4, 'tunnel shell and bridge bollard should compile solid cuboids');
+  assert.equal(result.recipe.colliderCount, 7);
+});
+
+test('street furniture uses distinct low-poly recipes with matching solid collision', () => {
+  const base = {
+    meta: {},
+    grid: new Uint8Array(MAP_SIZE ** 2),
+    heights: new Int16Array((MAP_SIZE + 1) ** 2),
+    coverage: new Uint8Array(MAP_SIZE ** 2),
+    transport: new Uint8Array(MAP_SIZE ** 2),
+    speed: new Uint8Array(MAP_SIZE ** 2),
+  };
+  const kinds = [
+    ['bollard', 'Bollard'],
+    ['bicycle-rail', 'Hoop'],
+    ['bin', 'Litter Bin'],
+    ['fountain', 'Drinking Fountain'],
+    ['seat', 'Seat'],
+    ['planter', 'Planter'],
+    ['barbecue', 'Barbeque'],
+    ['art', 'Monument'],
+    ['tree-guard', 'Tree Guard'],
+    ['information-pillar', 'Information Pillar'],
+  ];
+  const objects = kinds.map(([kind, model], index) => ({
+    kind,
+    model,
+    sourceId: `furniture:test:${kind}`,
+    x: 5 + (index % 5) * 18,
+    z: 5 + Math.floor(index / 5) * 18,
+    rotation: index * 0.1,
+  }));
+  const result = compileChunkRecipe(createCompilerContext({
+    ...base,
+    objectIndex: { chunks: { '0,0': objects } },
+  }), 0, 0);
+  assert.equal(result.counts.cuboids, 21);
+  assert.equal(result.recipe.colliderCount, 21);
+  for (const material of ['prop', 'rail', 'concrete', 'vegetation', 'art']) {
+    assert.ok(result.primitives.some((primitive) => primitive.material === material), `${material} prop geometry is absent`);
+  }
+  assert.ok(result.primitives.find((primitive) => primitive.material === 'prop').positions.length > 36 * 3,
+    'props still resemble one generic box apiece');
+});
+
+test('generated streetlights have an arm, lamp head, and pole collision', () => {
+  const grid = new Uint8Array(MAP_SIZE ** 2);
+  const index = (cx, cz) => cx + MAP_SIZE / 2 + (cz + MAP_SIZE / 2) * MAP_SIZE;
+  for (const cz of [-1, 0, 1]) grid[index(0, cz)] = 1;
+  const result = compileChunkRecipe(createCompilerContext({
+    meta: {}, grid,
+    heights: new Int16Array((MAP_SIZE + 1) ** 2),
+    coverage: new Uint8Array(MAP_SIZE ** 2),
+    transport: new Uint8Array(MAP_SIZE ** 2),
+    speed: new Uint8Array(MAP_SIZE ** 2),
+    objectIndex: { chunks: {} },
+  }), 0, 0);
+  assert.ok(result.recipe.generatedSources.includes('generated:streetlight:0:0:0'));
+  assert.equal(result.counts.cuboids, 1);
+  assert.ok(result.primitives.some((primitive) => primitive.material === 'rail'));
+  assert.ok(result.primitives.some((primitive) => primitive.material === 'prop'));
 });
 
 test('committed spawn compilation has valid hashes, GLBs, containers, and navigation', () => {

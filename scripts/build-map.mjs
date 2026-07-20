@@ -19,6 +19,7 @@
  *   --roads-only    update polygon road objects without rebuilding other data
  *   --road-info-only update HUD road names and speed limits from cached OSM
  *   --heights-only  rebake terrain against the existing authored cell grid
+ *   --props-only    refresh street furniture/public art without rebuilding other sources
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -31,6 +32,7 @@ import {
   openDataHelp,
   openDataInputsPresent,
   rechunkObjectIndex,
+  refreshMelbournePointObjects,
 } from './map/open-data.mjs';
 import { CHUNK_TILES, MAP_CENTER, MAP_SIZE, TILE, toGrid, toWorld } from './map/geo.mjs';
 import { CELL_CODES as CODES, MAP_CONTRACT, MAP_ID, VERSIONS } from './map/contract.mjs';
@@ -429,6 +431,16 @@ async function main() {
     console.log('Place exported GeoJSON files in .map-cache/open-data using these names:\n');
     console.log(openDataHelp());
     console.log('\nUse --download-open-data to fetch supported City of Melbourne datasets.');
+    return;
+  }
+  if (process.argv.includes('--props-only')) {
+    await refreshMelbournePointObjects({
+      root: ROOT,
+      options: {
+        download: process.argv.includes('--download-open-data'),
+        refresh: process.argv.includes('--refresh-open-data'),
+      },
+    });
     return;
   }
   if (process.argv.includes('--heights-only')) {

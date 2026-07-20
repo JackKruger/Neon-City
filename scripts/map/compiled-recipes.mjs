@@ -142,6 +142,113 @@ function addBox(bucket, x, y, z, hx, hy, hz, rotation = 0) {
   addQuad(bucket, p[3], p[7], p[4], p[0]);
 }
 
+function addStreetlightRecipe(buckets, cuboids, sourceId, x, z, base, armRotation) {
+  const c = Math.cos(armRotation);
+  const s = Math.sin(armRotation);
+  const offset = (distance) => ({ x: x + distance * c, z: z - distance * s });
+  const arm = offset(0.48);
+  const lamp = offset(0.92);
+  addBox(buckets.get('rail'), x, base + 2.9, z, 0.085, 2.9, 0.085);
+  addBox(buckets.get('rail'), arm.x, base + 5.65, arm.z, 0.48, 0.055, 0.055, armRotation);
+  addBox(buckets.get('prop'), lamp.x, base + 5.55, lamp.z, 0.18, 0.1, 0.12, armRotation);
+  cuboids.push({ sourceId, x, y: base + 2.9, z, hx: 0.1, hy: 2.9, hz: 0.1, rotation: 0 });
+}
+
+function addPointPropRecipe(buckets, cuboids, object, base) {
+  const sourceId = object.sourceId;
+  const rotation = object.rotation ?? 0;
+  const place = (lx, lz) => ({
+    x: object.x + lx * Math.cos(rotation) + lz * Math.sin(rotation),
+    z: object.z - lx * Math.sin(rotation) + lz * Math.cos(rotation),
+  });
+  const box = (material, lx, y, lz, hx, hy, hz, extraRotation = 0) => {
+    const point = place(lx, lz);
+    addBox(buckets.get(material), point.x, base + y, point.z, hx, hy, hz, rotation + extraRotation);
+  };
+  const collider = (lx, y, lz, hx, hy, hz, extraRotation = 0) => {
+    const point = place(lx, lz);
+    cuboids.push({
+      sourceId, x: point.x, y: base + y, z: point.z,
+      hx, hy, hz, rotation: rotation + extraRotation,
+    });
+  };
+
+  if (object.kind === 'bollard') {
+    box('prop', 0, 0.45, 0, 0.13, 0.45, 0.13);
+    box('rail', 0, 0.94, 0, 0.17, 0.06, 0.17, Math.PI / 4);
+    collider(0, 0.5, 0, 0.15, 0.5, 0.15);
+  } else if (object.kind === 'bicycle-rail') {
+    for (const lx of [-0.62, 0.62]) {
+      box('rail', lx, 0.45, 0, 0.055, 0.45, 0.055);
+      collider(lx, 0.45, 0, 0.065, 0.45, 0.065);
+    }
+    box('rail', 0, 0.9, 0, 0.68, 0.055, 0.055);
+    collider(0, 0.9, 0, 0.68, 0.065, 0.065);
+  } else if (object.kind === 'bin') {
+    box('prop', 0, 0.42, 0, 0.3, 0.42, 0.27);
+    box('rail', 0, 0.88, 0, 0.34, 0.05, 0.3);
+    box('rail', 0, 0.68, -0.285, 0.16, 0.09, 0.025);
+    collider(0, 0.45, 0, 0.32, 0.45, 0.29);
+  } else if (object.kind === 'fountain' && sourceId.startsWith('art:')) {
+    box('concrete', 0, 0.22, 0, 1.2, 0.22, 1.2);
+    box('water', 0, 0.455, 0, 0.92, 0.015, 0.92);
+    box('art', 0, 0.86, 0, 0.18, 0.42, 0.18, Math.PI / 4);
+    collider(0, 0.22, 0, 1.2, 0.22, 1.2);
+    collider(0, 0.86, 0, 0.2, 0.42, 0.2);
+  } else if (object.kind === 'fountain' && /trough/i.test(object.model ?? '')) {
+    box('concrete', 0, 0.38, 0, 1.1, 0.38, 0.42);
+    box('water', 0, 0.77, 0, 0.86, 0.015, 0.27);
+    collider(0, 0.38, 0, 1.1, 0.38, 0.42);
+  } else if (object.kind === 'fountain') {
+    box('concrete', 0, 0.46, 0, 0.18, 0.46, 0.18);
+    box('prop', 0, 0.93, -0.08, 0.29, 0.06, 0.24);
+    box('rail', 0, 1.08, 0.08, 0.04, 0.16, 0.04);
+    collider(0, 0.46, 0, 0.19, 0.46, 0.19);
+    collider(0, 0.93, -0.08, 0.29, 0.06, 0.24);
+  } else if (object.kind === 'seat') {
+    box('prop', 0, 0.52, 0, 0.85, 0.08, 0.28);
+    box('prop', 0, 0.84, 0.24, 0.85, 0.31, 0.055);
+    for (const lx of [-0.58, 0.58]) box('rail', lx, 0.25, 0, 0.055, 0.25, 0.2);
+    collider(0, 0.52, 0, 0.85, 0.08, 0.28);
+    collider(0, 0.84, 0.24, 0.85, 0.31, 0.065);
+    for (const lx of [-0.58, 0.58]) collider(lx, 0.25, 0, 0.065, 0.25, 0.2);
+  } else if (object.kind === 'planter') {
+    box('concrete', 0, 0.32, 0, 0.56, 0.32, 0.56);
+    box('vegetation', 0, 0.69, 0, 0.47, 0.09, 0.47, Math.PI / 4);
+    collider(0, 0.32, 0, 0.56, 0.32, 0.56);
+  } else if (object.kind === 'barbecue') {
+    box('concrete', 0, 0.38, 0, 0.24, 0.38, 0.24);
+    box('prop', 0, 0.8, 0, 0.46, 0.07, 0.35);
+    box('rail', 0, 0.91, 0, 0.34, 0.04, 0.26);
+    collider(0, 0.38, 0, 0.24, 0.38, 0.24);
+    collider(0, 0.8, 0, 0.46, 0.07, 0.35);
+  } else if (object.kind === 'tree-guard') {
+    for (const lx of [-0.48, 0.48]) {
+      for (const lz of [-0.48, 0.48]) {
+        box('rail', lx, 0.52, lz, 0.04, 0.52, 0.04);
+        collider(lx, 0.52, lz, 0.05, 0.52, 0.05);
+      }
+    }
+    for (const lz of [-0.48, 0.48]) box('rail', 0, 0.92, lz, 0.52, 0.04, 0.04);
+    for (const lx of [-0.48, 0.48]) box('rail', lx, 0.92, 0, 0.52, 0.04, 0.04, Math.PI / 2);
+  } else if (object.kind === 'information-pillar') {
+    box('concrete', 0, 0.1, 0, 0.32, 0.1, 0.24);
+    box('prop', 0, 0.92, 0, 0.26, 0.72, 0.18);
+    box('rail', 0, 1.68, 0, 0.31, 0.04, 0.22);
+    collider(0, 0.9, 0, 0.27, 0.8, 0.2);
+  } else if (object.kind === 'art') {
+    const variant = Number.parseInt(createHash('sha256').update(sourceId).digest('hex').slice(0, 8), 16) / 0xffffffff;
+    box('concrete', 0, 0.16, 0, 0.5, 0.16, 0.5);
+    box('art', 0, 0.86, 0, 0.18, 0.54, 0.18, variant * Math.PI / 2);
+    box('art', 0.08, 1.42, 0, 0.46, 0.12, 0.16, -0.45 + variant * 0.9);
+    collider(0, 0.16, 0, 0.5, 0.16, 0.5);
+    collider(0, 0.88, 0, 0.25, 0.56, 0.25);
+  } else {
+    box('prop', 0, 0.45, 0, 0.3, 0.45, 0.3);
+    collider(0, 0.45, 0, 0.3, 0.45, 0.3);
+  }
+}
+
 function triangulate(points) {
   if (points.length < 3) return [];
   const vectors = points.map(([x, z]) => new Vector2(x, z));
@@ -938,8 +1045,11 @@ export function compileChunkRecipe(context, kx, kz) {
         const x = cx * TILE + (mask === 5 ? side * TILE * 0.46 : 0);
         const z = cz * TILE + (mask === 10 ? side * TILE * 0.46 : 0);
         const base = context.heightAt(x, z);
+        const armRotation = mask === 5
+          ? (side > 0 ? Math.PI : 0)
+          : (side > 0 ? Math.PI / 2 : -Math.PI / 2);
         sources.add(id);
-        addBox(buckets.get('prop'), x, base + 3, z, 0.09, 3, 0.09);
+        addStreetlightRecipe(buckets, cuboids, id, x, z, base, armRotation);
       }
       if (context.isRoad(cx, cz) && (coverage & COVERAGE_PARKING) === 0 && (mask === 5 || mask === 10) && hashNumber(cx, cz, 40) < 0.04) {
         const id = fallbackId('parking', cx, cz);
@@ -1050,11 +1160,7 @@ export function compileChunkRecipe(context, kx, kz) {
       parked.push({ sourceId: object.sourceId, x: object.x, z: object.z, rotation: object.rotation ?? 0, seed: Number.parseInt(createHash('sha256').update(object.sourceId).digest('hex').slice(0, 8), 16) });
     } else if (object.kind !== 'road-surface' && object.kind !== 'nav-path') {
       const base = context.bridgeSurfaceHeightAt(object.x, object.z);
-      const isArt = object.kind === 'art';
-      const height = object.kind === 'fountain' ? 0.8 : object.kind === 'bollard' ? 1.05 : 0.9;
-      const half = object.kind === 'fountain' ? 1.4 : object.kind === 'seat' ? 0.85 : 0.3;
-      addBox(buckets.get(isArt ? 'art' : 'prop'), object.x, base + height / 2, object.z, half, height / 2, half, object.rotation ?? 0);
-      if (['fountain', 'barbecue', 'art'].includes(object.kind)) cuboids.push({ sourceId: object.sourceId, x: object.x, y: base + height / 2, z: object.z, hx: half, hy: height / 2, hz: half, rotation: object.rotation ?? 0 });
+      addPointPropRecipe(buckets, cuboids, object, base);
     }
   }
 

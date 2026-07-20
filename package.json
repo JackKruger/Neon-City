@@ -11,6 +11,7 @@
     "test:map": "node --test scripts/map/*.test.mjs",
     "map:build": "node scripts/build-map.mjs --open-data && node scripts/compile-map.mjs --scope=all",
     "map:compile": "node scripts/compile-map.mjs",
+    "map:refresh-props": "node scripts/build-map.mjs --props-only",
     "map:validate": "node scripts/validate-compiled-map.mjs",
     "map:validate-streets": "node scripts/diagnose-streets.mjs",
     "map:download": "node scripts/build-map.mjs --download-open-data",
