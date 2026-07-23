@@ -916,6 +916,8 @@ export function createCompilerContext({ meta, grid, heights, coverage, transport
   ).values()];
   const terrainCuttings = uniqueBySource('terrain-cutting');
   const terrainPortals = uniqueBySource('terrain-portal');
+  const railStructures = uniqueBySource('rail-structure');
+  const railPortals = uniqueBySource('rail-portal');
   const naturalCorners = new Map();
   for (const cutting of terrainCuttings) {
     for (const corner of cutting.terrainCorners ?? []) naturalCorners.set(`${corner[0]},${corner[1]}`, corner[2]);
@@ -989,7 +991,32 @@ export function createCompilerContext({ meta, grid, heights, coverage, transport
   };
   const tunnelSurfaceHeightAt = (x, z) => naturalTerrainHeightAt(x, z) - TUNNEL_SURFACE_DEPTH;
   const portalFloor = (portal) => terrainCuttings.find((cutting) => cutting.cuttingId === portal.cuttingId)?.floorY;
+  // A rail structure owns its running surface directly: flat at railBedY inside
+  // the footprint, ramped up toward natural ground through a portal at the
+  // structure's maxGrade (one continuous transition, no cross-surface blends).
+  // Returns null where no structure applies, so the legacy cutting/tunnel path
+  // still resolves until the carve is retired. See docs/grade-separation-plan.md.
+  const railStructureAt = (x, z) => railStructures.find((structure) => pointInOutline(x, z, structure)) ?? null;
+  const railStructureBedHeightAt = (x, z) => {
+    const inside = railStructureAt(x, z);
+    // Flat bed inside the footprint. Outside, only a portal approach can carry
+    // the bed (climbing to ground); elsewhere there is no structural surface.
+    let result = inside && Number.isFinite(inside.railBedY) ? inside.railBedY : null;
+    for (const portal of railPortals) {
+      const structure = railStructures.find((candidate) => candidate.structureId === portal.structureId);
+      if (!structure || !Number.isFinite(structure.railBedY)) continue;
+      const portalX = portal.x + portal.points.reduce((sum, point) => sum + point[0], 0) / portal.points.length;
+      if ((portal.side === 'east' && x < portalX - 2) || (portal.side === 'west' && x > portalX + 2)) continue;
+      const distance = distanceToObjectPath(x, z, portal);
+      if (distance > portal.approachLength) continue;
+      const ramped = Math.min(naturalTerrainHeightAt(x, z), structure.railBedY + distance * portal.maxGrade);
+      result = result === null ? ramped : Math.min(result, ramped);
+    }
+    return result;
+  };
   const railSurfaceHeightAt = (x, z, structure) => {
+    const structural = railStructureBedHeightAt(x, z);
+    if (structural !== null) return structural;
     const reviewed = cuttingProfileHeightAt(x, z);
     if (reviewed !== null) return reviewed;
     if (structure !== 'tunnel') return bridgeSurfaceHeightAt(x, z);
@@ -1008,7 +1035,8 @@ export function createCompilerContext({ meta, grid, heights, coverage, transport
   return {
     meta, grid, heights, coverage, transport, speed, objectIndex,
     index, codeAt, coverageAt, transportAt, isRoad, cornerRaw, naturalCornerRaw,
-    terrainCuttings, terrainPortals, naturalTerrainHeightAt, cuttingProfileHeightAt,
+    terrainCuttings, terrainPortals, railStructures, railPortals,
+    naturalTerrainHeightAt, cuttingProfileHeightAt, railStructureBedHeightAt,
     terrainHeightAt, bridgeSurfaceHeightAt, tunnelSurfaceHeightAt, railSurfaceHeightAt,
     heightAt: terrainHeightAt,
   };

@@ -705,6 +705,36 @@ test('open-cut rail-structure punches a terrain hole but leaves heightAt intact'
   assert.ok(covers(grass, 100, 100), 'terrain outside the cut was wrongly removed');
 });
 
+// Phase 2: rail runs on the structure's own bed, ramping to ground through a
+// portal — one continuous surface, replacing the four-way min/max stitch.
+test('rail-structure bed resolves flat inside and ramps to ground at a portal', () => {
+  const grid = new Uint8Array(MAP_SIZE ** 2).fill(3);
+  const heights = new Int16Array((MAP_SIZE + 1) ** 2).fill(160); // natural ground ~16 m
+  const structure = {
+    kind: 'rail-structure', sourceId: 'rail:test:box', structure: 'open-cut', surface: 'ballast',
+    structureId: 'box', railBedY: 3, parapetY: 6, x: 60, z: 45,
+    outline: [[-50, -6], [50, -6], [50, 6], [-50, 6]], // spans x 10..110
+  };
+  const portal = { // west mouth at the box's west edge; approach runs west (x < 10)
+    kind: 'rail-portal', sourceId: 'rail-portal:test-west', structureId: 'box', side: 'west',
+    approachLength: 40, maxGrade: 0.1, x: 10, z: 45, points: [[0, -6], [0, 6]],
+  };
+  const context = createCompilerContext({
+    meta: {}, grid, heights,
+    coverage: new Uint8Array(MAP_SIZE ** 2), transport: new Uint8Array(MAP_SIZE ** 2),
+    speed: new Uint8Array(MAP_SIZE ** 2),
+    objectIndex: { chunks: { '0,0': [structure, portal] } },
+  });
+  // Deep inside the box: flat bed, well below the ~16 m road above.
+  assert.equal(context.railSurfaceHeightAt(60, 45, 'tunnel'), 3);
+  assert.ok(context.naturalTerrainHeightAt(60, 45) - context.railSurfaceHeightAt(60, 45, 'tunnel') >= 4.5);
+  // On the west approach (outside the box) the bed climbs above the flat floor,
+  // but never past the natural ground it rises to meet.
+  const ramp = context.railSurfaceHeightAt(4, 45, 'tunnel');
+  assert.ok(ramp > 3, 'bed did not ramp up toward the portal');
+  assert.ok(ramp <= context.naturalTerrainHeightAt(4, 45) + 1e-9, 'ramp overshot natural ground');
+});
+
 test('every custom-terrain chunk has complete, non-overlapping projected collision coverage', () => {
   const { context } = committedCompilerContext();
   let checked = 0;
