@@ -119,6 +119,18 @@ participation in `terrainHeightAt`. `terrain-portal` folds into
 **Invariant to enforce with a test:** `terrainHeightAt(x, z) ===
 naturalTerrainHeightAt(x, z)` for **all** `(x, z)`. Terrain is only terrain.
 
+**Open cuts need a terrain *hole*, not a carve.** A subtlety confirmed during
+Phase 1b: a covered tunnel keeps the ground whole and needs nothing from the
+terrain mesh, but a *visible* trench (open-cut, or an uncovered platform) must
+have a topological **hole** punched in the terrain render/collision mesh over
+its footprint — otherwise the single-surface ground draws straight over the
+trench and you cannot see or drop into it. This is distinct from the carve we
+are removing: the heightfield (`heightAt`) stays at natural ground; only the
+*mesh triangles* inside the outline are removed, and the structure's own bed
+fills the void. The machinery already exists — `terrainCutters` +
+`subtractTerrainCutters` — so open-cut `rail-structure` outlines simply join the
+cutter list. Covered tunnels never become cutters.
+
 ## 5. Height resolution after the change
 
 Collapse the four-way stitch into two independent, clean functions:

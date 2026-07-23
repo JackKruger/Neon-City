@@ -639,6 +639,72 @@ test('rail-structure emits an independent bed/roof and leaves terrain uncarved',
   assert.ok(concrete.some((y) => Math.abs(y - 3) < 0.01), 'tunnel walls do not reach the bed');
 });
 
+// Phase 1b: a station-platform stacks two walkable decks at one footprint.
+test('station-platform stacks platform and concourse decks over one footprint', () => {
+  const grid = new Uint8Array(MAP_SIZE ** 2).fill(3);
+  const heights = new Int16Array((MAP_SIZE + 1) ** 2).fill(120);
+  const platform = {
+    kind: 'station-platform', sourceId: 'platform:test', platformY: 3, concourseY: 12,
+    x: 45, z: 45, outline: [[-40, -6], [40, -6], [40, 6], [-40, 6]],
+  };
+  const context = createCompilerContext({
+    meta: {}, grid, heights,
+    coverage: new Uint8Array(MAP_SIZE ** 2), transport: new Uint8Array(MAP_SIZE ** 2),
+    speed: new Uint8Array(MAP_SIZE ** 2),
+    objectIndex: { chunks: { '0,0': [platform] } },
+  });
+  const result = compileChunkRecipe(context, 0, 0);
+  const concrete = result.primitives.find((entry) => entry.material === 'concrete');
+  const ys = concrete.positions.filter((_, index) => index % 3 === 1);
+  assert.ok(ys.some((y) => Math.abs(y - 3) < 0.01), 'platform deck missing at platformY');
+  assert.ok(ys.some((y) => Math.abs(y - 12) < 0.01), 'concourse deck missing at concourseY');
+  // Columns are solid cuboids spanning platformY..concourseY.
+  assert.ok(result.counts.cuboids > 0, 'support columns between the decks are missing');
+});
+
+// Phase 1b: an open-cut rail structure punches a real hole in the terrain mesh
+// (so the trench is visible) without carving the heightfield.
+test('open-cut rail-structure punches a terrain hole but leaves heightAt intact', () => {
+  const grid = new Uint8Array(MAP_SIZE ** 2).fill(3); // grass terrain everywhere
+  const heights = new Int16Array((MAP_SIZE + 1) ** 2).fill(120); // natural ground ~12 m
+  const openCut = {
+    kind: 'rail-structure', sourceId: 'rail:test:opencut', structure: 'open-cut', surface: 'ballast',
+    railBedY: 3, parapetY: 6, x: 45, z: 45, outline: [[-40, -6], [40, -6], [40, 6], [-40, 6]],
+  };
+  const context = createCompilerContext({
+    meta: {}, grid, heights,
+    coverage: new Uint8Array(MAP_SIZE ** 2), transport: new Uint8Array(MAP_SIZE ** 2),
+    speed: new Uint8Array(MAP_SIZE ** 2),
+    objectIndex: { chunks: { '0,0': [openCut] } },
+  });
+  // Heightfield untouched: no carve, terrain stays natural ground.
+  assert.equal(context.cuttingProfileHeightAt(45, 45), null);
+  assert.equal(context.terrainHeightAt(45, 45), context.naturalTerrainHeightAt(45, 45));
+
+  const result = compileChunkRecipe(context, 0, 0);
+  assert.ok((result.sections.COL1.readUInt16LE(2) & COLLISION_FLAGS.CustomTerrain) !== 0,
+    'open-cut did not switch the chunk to custom terrain');
+  const triangles = (material) => {
+    const primitive = result.primitives.find((entry) => entry.material === material);
+    if (!primitive) return [];
+    const out = [];
+    for (let i = 0; i < primitive.positions.length; i += 9) {
+      out.push([0, 3, 6].map((o) => [primitive.positions[i + o], primitive.positions[i + o + 2]]));
+    }
+    return out;
+  };
+  const covers = (tris, x, z) => tris.some(([a, b, c]) => {
+    const side = (p, q) => (q[0] - p[0]) * (z - p[1]) - (q[1] - p[1]) * (x - p[0]);
+    const s = [side(a, b), side(b, c), side(c, a)];
+    return s.every((v) => v >= -1e-6) || s.every((v) => v <= 1e-6);
+  });
+  const grass = triangles('grass');
+  const ballast = triangles('ballast');
+  assert.ok(!covers(grass, 45, 45), 'terrain was not holed inside the open cut');
+  assert.ok(covers(ballast, 45, 45), 'the trench floor does not fill the hole');
+  assert.ok(covers(grass, 100, 100), 'terrain outside the cut was wrongly removed');
+});
+
 test('every custom-terrain chunk has complete, non-overlapping projected collision coverage', () => {
   const { context } = committedCompilerContext();
   let checked = 0;

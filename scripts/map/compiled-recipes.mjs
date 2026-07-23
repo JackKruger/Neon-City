@@ -1283,6 +1283,46 @@ function addRailStructureGeometry(object, kx, kz, buckets, cuboids, collisionMes
   }
 }
 
+// A station platform stacks two independent walkable decks at one footprint:
+// the low platform at track level and the concourse/entrance above it, joined
+// by support columns. Neither touches the terrain heightfield — this is the
+// "entrance above the tracks" that a single-valued surface cannot express.
+function addStationPlatformGeometry(object, kx, kz, buckets, cuboids, collisionMeshes) {
+  const platformY = object.platformY;
+  if (!Number.isFinite(platformY) || !Array.isArray(object.outline) || object.outline.length < 3) return;
+  const outline = absoluteOutline(object);
+  const clipped = clipPolygonToChunk(outline, chunkBounds(kx, kz));
+  if (clipped.length < 3) return;
+
+  const platform = { positions: [], indices: [] };
+  addPolygonTriangles(buckets.get('concrete'), platform, clipped, () => platformY);
+  collisionMeshes.push({ sourceId: object.sourceId, ...platform });
+
+  if (Number.isFinite(object.concourseY) && object.concourseY > platformY + 1.5) {
+    const concourse = { positions: [], indices: [] };
+    addPolygonTriangles(buckets.get('concrete'), concourse, clipped, () => object.concourseY);
+    collisionMeshes.push({ sourceId: object.sourceId, ...concourse });
+    // Columns, not walls: the platform edges stay open so trains and passengers
+    // move through. Sample along the perimeter like station-canopy supports.
+    const bounds = chunkBounds(kx, kz);
+    const height = object.concourseY - platformY;
+    for (let edge = 0; edge < outline.length; edge++) {
+      const a = outline[edge];
+      const b = outline[(edge + 1) % outline.length];
+      const length = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      const columns = Math.max(1, Math.ceil(length / 12));
+      for (let column = 0; column < columns; column++) {
+        const t = (column + 0.5) / columns;
+        const x = a[0] + (b[0] - a[0]) * t;
+        const z = a[1] + (b[1] - a[1]) * t;
+        if (x < bounds.minX || x >= bounds.maxX || z < bounds.minZ || z >= bounds.maxZ) continue;
+        addBox(buckets.get('concrete'), x, platformY + height / 2, z, 0.3, height / 2, 0.3);
+        cuboids.push({ sourceId: object.sourceId, x, y: platformY + height / 2, z, hx: 0.3, hy: height / 2, hz: 0.3, rotation: 0 });
+      }
+    }
+  }
+}
+
 export function compileChunkRecipe(context, kx, kz) {
   if (kx < MIN_CHUNK || kx > MAX_CHUNK || kz < MIN_CHUNK || kz > MAX_CHUNK) throw new Error(`chunk ${kx},${kz} is outside Melbourne bounds`);
   const c0x = kx * CHUNK_TILES;
@@ -1320,11 +1360,21 @@ export function compileChunkRecipe(context, kx, kz) {
       return outline && clipPolygonToChunk(outline, chunkBounds(kx, kz)).length >= 3;
     })
     .map((object) => [object.sourceId, object])).values()];
-  const customTerrainCollision = localCuttings.length > 0 || localPortalRamps.length > 0;
+  // Open-cut rail structures are visible trenches: the terrain mesh must have a
+  // hole over their footprint so you can see and drop into the cut. This is a
+  // topological hole in the mesh, not a heightfield carve — heightAt is
+  // untouched; the structure's own bed fills the void. Covered tunnels keep the
+  // ground whole and so are never terrain cutters. See docs/grade-separation-plan.md.
+  const localRailOpenCuts = [...new Map((objectsByKind.get('rail-structure') ?? [])
+    .filter((object) => object.structure === 'open-cut' && Array.isArray(object.outline))
+    .filter((object) => clipPolygonToChunk(absoluteOutline(object), chunkBounds(kx, kz)).length >= 3)
+    .map((object) => [object.sourceId, object])).values()];
+  const customTerrainCollision = localCuttings.length > 0 || localPortalRamps.length > 0 || localRailOpenCuts.length > 0;
   const terrainCapture = { positions: [], indices: [] };
   const terrainCutters = [
     ...localCuttings.map(absoluteOutline),
     ...localPortalRamps.map(portalRampOutline).filter(Boolean),
+    ...localRailOpenCuts.map(absoluteOutline),
   ];
 
   // Terrain recipe: one quantized heightfield shared by render and Rapier.
@@ -1469,7 +1519,7 @@ export function compileChunkRecipe(context, kx, kz) {
   if (customTerrainCollision) {
     for (const cutting of localCuttings) addReviewedCuttingGeometry(context, cutting, kx, kz, buckets, terrainCapture);
     for (const portal of localPortalRamps) addPortalRampGeometry(context, portal, kx, kz, buckets, terrainCapture);
-    const terrainSource = localCuttings[0]?.sourceId ?? localPortalRamps[0].sourceId;
+    const terrainSource = localCuttings[0]?.sourceId ?? localPortalRamps[0]?.sourceId ?? localRailOpenCuts[0].sourceId;
     sources.add(terrainSource);
     collisionMeshes.push({ sourceId: terrainSource, ...terrainCapture });
   }
@@ -1540,6 +1590,8 @@ export function compileChunkRecipe(context, kx, kz) {
       }
     } else if (object.kind === 'rail-structure') {
       addRailStructureGeometry(object, kx, kz, buckets, cuboids, collisionMeshes);
+    } else if (object.kind === 'station-platform') {
+      addStationPlatformGeometry(object, kx, kz, buckets, cuboids, collisionMeshes);
     } else if (object.kind === 'station-canopy') {
       addStationCanopyGeometry(object, kx, kz, buckets, cuboids, collisionMeshes);
     } else if (object.kind === 'building') {
@@ -1592,7 +1644,7 @@ export function compileChunkRecipe(context, kx, kz) {
       const base = stopHeight;
       addBox(buckets.get('prop'), object.x, base + 1.25, object.z, 0.07, 1.25, 0.07);
       addBox(buckets.get('prop'), object.x, base + 2.25, object.z, 0.28, 0.18, 0.04);
-    } else if (!['road-surface', 'nav-path', 'terrain-cutting', 'terrain-portal', 'station-platform'].includes(object.kind)) {
+    } else if (!['road-surface', 'nav-path', 'terrain-cutting', 'terrain-portal'].includes(object.kind)) {
       const base = context.bridgeSurfaceHeightAt(object.x, object.z);
       addPointPropRecipe(buckets, cuboids, object, base);
     }
