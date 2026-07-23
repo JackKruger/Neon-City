@@ -85,30 +85,29 @@ test('baked Melbourne terrain pins water and caps urban surface spikes', () => {
   assert.ok(maxDryHeight <= 65, `urban surface spike remains in terrain: ${maxDryHeight}m`);
 });
 
-test('committed Flinders override has surveyed floor, open canopy, and isolated terrain changes', () => {
+test('committed Flinders override is a rail structure over intact natural terrain', () => {
   const objects = readObjectIndex(new URL('../../public/maps', import.meta.url).pathname, 'melbourne');
   const authored = Object.values(objects.chunks).flat();
   const unique = (kind) => [...new Map(authored.filter((object) => object.kind === kind)
     .map((object) => [object.sourceId, object])).values()];
-  const [cutting] = unique('terrain-cutting');
+  const [rail] = unique('rail-structure');
   const [canopy] = unique('station-canopy');
-  assert.equal(cutting.sourceId, 'terrain-cutting:flinders-street-station');
-  assert.equal(cutting.floorAhd, 4.1);
-  // The baked SRTM water datum is displayed as 1.05 m but is slightly higher
-  // internally, so the committed 0.1 m payload resolves to 3.0 m.
-  assert.equal(cutting.floorY, 3);
+  // The station is an independent open-cut rail structure, not a terrain carve.
+  assert.equal(rail.sourceId, 'rail-structure:flinders-street-station');
+  assert.equal(rail.structure, 'open-cut');
+  assert.equal(rail.railBedAhd, 4.1);
+  // The baked SRTM water datum resolves the 4.1 m AHD bed to 3.0 m game Y.
+  assert.equal(rail.railBedY, 3);
+  assert.ok(authored.some((object) => object.kind === 'rail-portal' && object.structureId === rail.structureId),
+    'rail portals no longer reference the structure');
   assert.equal(canopy.sourceId, 'building:804817:1139');
   assert.deepEqual({ floorY: canopy.floorY, roofY: canopy.roofY }, { floorY: 3, roofY: 9.3 });
   assert.ok(!authored.some((object) => object.kind === 'building' && object.sourceId === canopy.sourceId),
     'station canopy still compiles as a solid generic building');
-
-  const heights = readHeights();
-  const width = MAP_SIZE + 1;
-  assert.ok(cutting.terrainCorners.some(([, , raw]) => raw > 100), 'natural terrain provenance was not retained');
-  for (const [ix, iz] of cutting.terrainCorners) {
-    const value = heights[ix + MAP_SIZE / 2 + (iz + MAP_SIZE / 2) * width];
-    assert.equal(value, 3, `cutting corner ${ix},${iz} does not match surveyed grade`);
-  }
+  // No terrain carve survives. (That the ground now reads natural, not rail
+  // grade, is enforced by the terrainHeightAt invariant in compiled.test.mjs.)
+  assert.ok(!authored.some((object) => object.kind === 'terrain-cutting'), 'a terrain carve still exists');
+  assert.ok(!authored.some((object) => object.kind === 'terrain-portal'), 'a legacy terrain portal still exists');
 });
 
 test('HGT source selection includes every crossed one-degree tile', () => {

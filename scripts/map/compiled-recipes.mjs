@@ -971,7 +971,10 @@ export function createCompilerContext({ meta, grid, heights, coverage, transport
   const naturalTerrainHeightAt = (x, z) => interpolateHeight(x, z, naturalCornerRaw);
   const cuttingAt = (x, z) => terrainCuttings.find((cutting) => pointInOutline(x, z, cutting)) ?? null;
   const cuttingProfileHeightAt = (x, z) => cuttingAt(x, z)?.floorY ?? null;
-  const terrainHeightAt = (x, z) => cuttingProfileHeightAt(x, z) ?? naturalTerrainHeightAt(x, z);
+  // Terrain is only ever natural ground. Grade-separated rail lives on its own
+  // rail-structure surfaces and never carves the heightfield, so terrainHeightAt
+  // no longer consults a cutting profile (docs/grade-separation-plan.md phase 3).
+  const terrainHeightAt = (x, z) => naturalTerrainHeightAt(x, z);
   const bridgeSurfaceHeightAt = (x, z) => {
     let result = terrainHeightAt(x, z);
     const cx = Math.round(x / TILE);
@@ -1003,6 +1006,9 @@ export function createCompilerContext({ meta, grid, heights, coverage, transport
     // the bed (climbing to ground); elsewhere there is no structural surface.
     let result = inside && Number.isFinite(inside.railBedY) ? inside.railBedY : null;
     for (const portal of railPortals) {
+      // A covered portal feeds a continuing tunnel, not daylight: the bed does
+      // not ramp to ground there (the tunnel fallback carries it underground).
+      if (portal.covered) continue;
       const structure = railStructures.find((candidate) => candidate.structureId === portal.structureId);
       if (!structure || !Number.isFinite(structure.railBedY)) continue;
       const portalX = portal.x + portal.points.reduce((sum, point) => sum + point[0], 0) / portal.points.length;

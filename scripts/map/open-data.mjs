@@ -234,7 +234,7 @@ async function loadSource(cacheDir, key, options, report) {
 
 function addObject(chunks, object) {
   if (
-    (object.kind === 'terrain-cutting' || object.kind === 'station-canopy') &&
+    (object.kind === 'terrain-cutting' || object.kind === 'station-canopy' || object.kind === 'rail-structure') &&
     object.outline?.length >= 3
   ) {
     const absolute = object.outline.map(([x, z]) => [object.x + x, object.z + z]);
@@ -309,24 +309,26 @@ async function importReviewedTerrain(root, chunks, report) {
   for (const feature of features) {
     const properties = feature.properties ?? {};
     const record = textValue(properties, 'record');
-    if (record === 'terrain-cutting') {
+    if (record === 'rail-structure') {
+      // A grade-separated rail structure owns its own running surface and never
+      // carves the terrain heightfield (see docs/grade-separation-plan.md). The
+      // reviewed open cutting under Flinders Street becomes one of these.
       const polygon = polygons(feature.geometry)[0]?.[0];
       const world = simplifyWorldRing(polygon, 0.05, 256);
-      if (world.length < 3) throw new Error(`reviewed cutting ${properties.id ?? feature.id} has no polygon`);
+      if (world.length < 3) throw new Error(`reviewed rail structure ${properties.id ?? feature.id} has no polygon`);
       const x = world.reduce((sum, point) => sum + point.x, 0) / world.length;
       const z = world.reduce((sum, point) => sum + point.z, 0) / world.length;
-      const floorAhd = numeric(properties, 'floor_ahd');
-      if (floorAhd === null) throw new Error(`reviewed cutting ${properties.id ?? feature.id} has no floor_ahd`);
+      const railBedAhd = numeric(properties, 'rail_bed_ahd', 'floor_ahd');
+      if (railBedAhd === null) throw new Error(`reviewed rail structure ${properties.id ?? feature.id} has no rail_bed_ahd`);
       const id = textValue(properties, 'id') || String(feature.id ?? cuttings);
       addObject(chunks, {
-        kind: 'terrain-cutting',
-        sourceId: `terrain-cutting:${id}`,
-        cuttingId: id,
-        x: round(x),
-        z: round(z),
-        floorAhd: round(floorAhd),
+        kind: 'rail-structure',
+        sourceId: `rail-structure:${id}`,
+        structureId: id,
+        structure: textValue(properties, 'structure') || 'open-cut',
         surface: textValue(properties, 'surface') || 'ballast',
-        structureId: textValue(properties, 'structure_id'),
+        railBedAhd: round(railBedAhd),
+        vicmapStructureId: textValue(properties, 'structure_id'),
         provenance: {
           cityStructure: properties.city_structure_source,
           vicmap: properties.vicmap_source,
@@ -334,7 +336,11 @@ async function importReviewedTerrain(root, chunks, report) {
           review: properties.review,
         },
         outline: world.map((point) => [round(point.x - x), round(point.z - z)]),
+        x: round(x),
+        z: round(z),
       });
+      // The reviewed station head-house component still renders as an open canopy
+      // over the platforms rather than a solid mass.
       const structureId = textValue(properties, 'structure_id');
       const componentId = textValue(properties, 'canopy_component_id');
       if (structureId && componentId) {
@@ -343,7 +349,7 @@ async function importReviewedTerrain(root, chunks, report) {
         canopyComponents.set(structureId, components);
       }
       cuttings++;
-    } else if (record === 'terrain-portal') {
+    } else if (record === 'rail-portal') {
       const line = lineStrings(feature.geometry)[0];
       const world = (line ?? []).map(([lon, lat]) => toWorld(lat, lon));
       if (world.length < 2) throw new Error(`reviewed portal ${properties.id ?? feature.id} has no line`);
@@ -351,10 +357,10 @@ async function importReviewedTerrain(root, chunks, report) {
       const z = world.reduce((sum, point) => sum + point.z, 0) / world.length;
       const id = textValue(properties, 'id') || String(feature.id ?? portals);
       addObject(chunks, {
-        kind: 'terrain-portal',
-        sourceId: `terrain-portal:${id}`,
+        kind: 'rail-portal',
+        sourceId: `rail-portal:${id}`,
         portalId: id,
-        cuttingId: textValue(properties, 'cutting_id'),
+        structureId: textValue(properties, 'structure_ref', 'cutting_id'),
         side: textValue(properties, 'side') === 'west' ? 'west' : 'east',
         covered: properties.covered === true,
         approachLength: round(numeric(properties, 'approach_length') ?? 96),

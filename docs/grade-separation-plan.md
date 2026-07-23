@@ -179,6 +179,40 @@ Flinders Street is the acid test and should be the first corridor migrated.
   `platformY` bed. The "entrance above one level" problem disappears because the
   two levels are no longer competing for one heightfield value.
 
+## 6b. Status — phases 0–3 implemented
+
+Phases 0–3 are implemented and committed. The Flinders override is now a
+`rail-structure` (open-cut) plus `rail-portal`s; the runtime terrain carve is
+retired (`terrainHeightAt === naturalTerrainHeightAt` is an enforced test); the
+committed spawn map was migrated to match and recompiles clean (54/54 map tests,
+45/45 runtime, `tsc` clean, validator clean).
+
+**Rebuild note.** The committed binary map was migrated in place (heights
+un-carved from the reviewed pins, cutting/portal objects rewritten to
+rail-structure/rail-portal) because a full `npm run map:build` needs networked
+Overpass + Melbourne open-data that the CI sandbox cannot reach. The source
+(`open-data.mjs` importer + the geojson override + the terrain bake) was updated
+so a real rebuild reproduces the same result. One known follow-up: the two
+station head-house components that used to be dragged down into the carve
+(`804817:1145/1146`) keep their previously-baked bases in the committed map; a
+real rebuild recomputes them from the now-natural ground, which ties into the
+separate building base-elevation issue (§8b).
+
+![Flinders Street rail corridor on the rail-structure model](images/flinders-street-rail-structure.png)
+
+*After migration: the corridor renders on the rail-structure model with the
+terrain carve retired — visually consistent with the baseline, no regression.*
+
+## 8b. Separate issue — station building base elevations
+
+Investigation surfaced a defect independent of the rail carve: the Flinders
+head-house building components sit at base ~23–24 m while the natural ground
+there is ~16 m, so the ground appears to drop away before the building instead
+of meeting it. The cause is inflated `footprint_min_elevation` values in the
+source building data (roof/upper-floor returns), not the terrain. Fixing it is a
+building base-elevation correction in the build pipeline + a rebuild; it is
+tracked separately from grade separation.
+
 ## 7. Phased implementation
 
 Each phase is independently shippable and independently verifiable with the

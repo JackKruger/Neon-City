@@ -15,49 +15,85 @@
       "type": "Feature",
       "id": "flinders-street-cutting",
       "properties": {
-        "record": "terrain-cutting",
+        "record": "rail-structure",
         "id": "flinders-street-station",
-        "floor_ahd": 4.1,
         "structure_id": "804817",
         "canopy_component_id": "1139",
         "surface": "ballast",
         "city_structure_source": "building:804817:1139",
         "vicmap_source": "open-data-platform:tr_rail",
         "rail_envelope_method": "convex outer envelope of reviewed station train-bed polygons, clipped at the western throat and eastern rail_uground_o boundary",
-        "review": "reviewed-hybrid; station-only correction"
+        "review": "reviewed-hybrid; station-only correction",
+        "structure": "open-cut",
+        "rail_bed_ahd": 4.1
       },
       "geometry": {
         "type": "Polygon",
-        "coordinates": [[
-          [144.9626615601, -37.8192766798],
-          [144.9670440349, -37.8176908013],
-          [144.9674205205, -37.8178237513],
-          [144.9678293088, -37.8187116421],
-          [144.9678046268, -37.8187637442],
-          [144.9677377466, -37.8187753324],
-          [144.9626615601, -37.8195249731],
-          [144.9626615601, -37.8192766798]
-        ]]
+        "coordinates": [
+          [
+            [
+              144.9626615601,
+              -37.8192766798
+            ],
+            [
+              144.9670440349,
+              -37.8176908013
+            ],
+            [
+              144.9674205205,
+              -37.8178237513
+            ],
+            [
+              144.9678293088,
+              -37.8187116421
+            ],
+            [
+              144.9678046268,
+              -37.8187637442
+            ],
+            [
+              144.9677377466,
+              -37.8187753324
+            ],
+            [
+              144.9626615601,
+              -37.8195249731
+            ],
+            [
+              144.9626615601,
+              -37.8192766798
+            ]
+          ]
+        ]
       }
     },
     {
       "type": "Feature",
       "id": "flinders-street-western-portal",
       "properties": {
-        "record": "terrain-portal",
+        "record": "rail-portal",
         "id": "flinders-street-west",
-        "cutting_id": "flinders-street-station",
         "side": "west",
         "covered": false,
         "approach_length": 96,
         "max_grade": 0.05,
-        "source_ids": ["building:804817:1139", "Vicmap station throat"]
+        "source_ids": [
+          "building:804817:1139",
+          "Vicmap station throat"
+        ],
+        "structure_ref": "flinders-street-station"
       },
       "geometry": {
         "type": "LineString",
         "coordinates": [
-          [144.9626615601, -37.8192766798],
-          [144.9626615601, -37.8195249731]
+          [
+            144.9626615601,
+            -37.8192766798
+          ],
+          [
+            144.9626615601,
+            -37.8195249731
+          ]
         ]
       }
     },
@@ -65,9 +101,8 @@
       "type": "Feature",
       "id": "flinders-street-eastern-portal",
       "properties": {
-        "record": "terrain-portal",
+        "record": "rail-portal",
         "id": "flinders-street-east",
-        "cutting_id": "flinders-street-station",
         "side": "east",
         "covered": true,
         "approach_length": 160,
@@ -78,16 +113,32 @@
           "vicmap:pfi:24013526",
           "vicmap:pfi:24013524",
           "vicmap:feature_type_code:rail_uground_o"
-        ]
+        ],
+        "structure_ref": "flinders-street-station"
       },
       "geometry": {
         "type": "LineString",
         "coordinates": [
-          [144.9670440784, -37.8176907621],
-          [144.9674205464, -37.8178237109],
-          [144.9678292880, -37.8187116115],
-          [144.9678046555, -37.8187637294],
-          [144.9677377170, -37.8187753599]
+          [
+            144.9670440784,
+            -37.8176907621
+          ],
+          [
+            144.9674205464,
+            -37.8178237109
+          ],
+          [
+            144.967829288,
+            -37.8187116115
+          ],
+          [
+            144.9678046555,
+            -37.8187637294
+          ],
+          [
+            144.967737717,
+            -37.8187753599
+          ]
         ]
       }
     }

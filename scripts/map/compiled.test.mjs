@@ -571,8 +571,10 @@ test('committed Flinders corridor bed and road-above heights are the migration b
     [600, -1859, 3.0, 15.55],
     [624, -1859, 3.0, 14.37],
     [660, -1855, 3.0, 11.81],
-    [680, -1850, 3.24, 9.25],
-    [720, -1850, 3.0, 7.92],
+    // East of the station the covered portal feeds a continuing tunnel; the bed
+    // there resolves via the tunnel fallback (still >4.5 m under the road).
+    [680, -1850, 4.25, 9.25],
+    [720, -1850, 2.92, 7.92],
   ];
   for (const [x, z, bed, road] of corridor) {
     assert.ok(Math.abs(context.railSurfaceHeightAt(x, z, 'tunnel') - bed) <= 0.1,
@@ -586,21 +588,18 @@ test('committed Flinders corridor bed and road-above heights are the migration b
   }
 });
 
-// Phase 3 target invariant: terrain is only ever natural ground. This fails
-// today because terrain-cutting carves terrainHeightAt down to the rail floor
-// (that carve is "layers chopped out of the earth"). Flip to a required
-// assertion once the carve is retired in favor of rail-structure surfaces.
-test('terrainHeightAt equals naturalTerrainHeightAt across the Flinders cutting',
-  { todo: 'blocked until the terrain carve is retired (docs/grade-separation-plan.md Phase 3)' },
-  () => {
-    const { context } = committedCompilerContext();
-    for (let x = 540; x <= 680; x += 20) {
-      for (let z = -1880; z <= -1840; z += 20) {
-        assert.equal(context.terrainHeightAt(x, z), context.naturalTerrainHeightAt(x, z),
-          `terrain carved at ${x},${z}`);
-      }
+// Phase 3 invariant, now enforced: terrain is only ever natural ground. The
+// terrain-cutting carve is retired; grade separation lives on rail-structure
+// surfaces, so terrainHeightAt never drops below natural ground anywhere.
+test('terrainHeightAt equals naturalTerrainHeightAt across the Flinders station', () => {
+  const { context } = committedCompilerContext();
+  for (let x = 540; x <= 680; x += 20) {
+    for (let z = -1880; z <= -1840; z += 20) {
+      assert.equal(context.terrainHeightAt(x, z), context.naturalTerrainHeightAt(x, z),
+        `terrain carved at ${x},${z}`);
     }
-  });
+  }
+});
 
 // Phase 1 of docs/grade-separation-plan.md: a rail-structure builds its own bed,
 // walls, and roof as an independent mesh, and crucially never carves the terrain
@@ -747,7 +746,7 @@ test('every custom-terrain chunk has complete, non-overlapping projected collisi
       const triangles = collisionMeshTriangles(
         result.sections.COL1,
         sources,
-        'terrain-cutting:flinders-street-station'
+        'rail-structure:flinders-street-station'
       ).filter(([a, b, c]) => Math.abs(
         (b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0])
       ) > 1e-6);

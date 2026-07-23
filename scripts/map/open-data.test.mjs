@@ -176,8 +176,8 @@ test('open data enrichment emits all runtime contracts', async () => {
     assert.ok(authored.some((item) => item.kind === 'road-surface' && item.sourceId?.includes('vicmap-704')));
     assert.equal(result.report.results.reviewedTerrain.cuttings, 1);
     assert.equal(result.report.results.reviewedTerrain.portals, 2);
-    assert.ok(authored.some((item) => item.kind === 'terrain-cutting' && item.floorAhd === 4.1));
-    assert.ok(authored.some((item) => item.kind === 'terrain-portal' && item.covered === true));
+    assert.ok(authored.some((item) => item.kind === 'rail-structure' && item.railBedAhd === 4.1 && item.structure === 'open-cut'));
+    assert.ok(authored.some((item) => item.kind === 'rail-portal' && item.covered === true));
     assert.equal(result.suburbs?.[0]?.name, 'Melbourne');
 
     const buildingSnapshot = authored.filter((item) => item.kind === 'building');
