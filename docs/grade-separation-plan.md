@@ -203,6 +203,26 @@ separate building base-elevation issue (§8b).
 *After migration: the corridor renders on the rail-structure model with the
 terrain carve retired — visually consistent with the baseline, no regression.*
 
+**Phase 4 runtime verification (headless drive).** Dropped the player at points
+around the station and read where physics settles — 0 Rapier errors:
+
+| Location | Settled | Expected |
+| --- | --- | --- |
+| Beside the station building | ~18 m | natural ground (not the retired 3 m carve) |
+| Flinders Street road | ~17 m | natural road level |
+| Inside the platform trench | ~3 m | on the rail bed (open-cut hole catches you) |
+| West approach | ~16 m | natural ground |
+
+So at the physics level the ground now meets the buildings at natural height,
+and the trench is a real, enterable open cut with a bed collider — not a carve,
+not a bottomless hole.
+
+![Ground-level view of the Flinders open cut](images/flinders-street-trench.png)
+
+*Ground level: the open-cut retaining wall (with guardrail) rises to road grade,
+surface traffic runs above, and pedestrians stand on the intact ground beside
+the station.*
+
 ## 8b. Separate issue — station building base elevations
 
 Investigation surfaced a defect independent of the rail carve: the Flinders
