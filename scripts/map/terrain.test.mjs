@@ -17,12 +17,19 @@ test('infrastructure AHD levels normalize to the game sea datum', () => {
   const duplicatePiece = { kind: 'transport-structure', minAhd: 2.05, maxAhd: 4.95 };
   const cutting = { kind: 'terrain-cutting', floorAhd: 4.1 };
   const canopy = { kind: 'station-canopy', floorAhd: 4.1, roofAhd: 10.4 };
-  const count = normalizeInfrastructureElevations({ '0,0': [bridge, cutting, canopy], '1,0': [duplicatePiece] }, 1.05);
-  assert.equal(count, 4);
+  const railTunnel = { kind: 'rail-structure', structure: 'tunnel', railBedAhd: 4.1, roofAhd: 10.4 };
+  const railOpenCut = { kind: 'rail-structure', structure: 'open-cut', floorAhd: 4.1, parapetAhd: 6.05 };
+  const platform = { kind: 'station-platform', platformAhd: 4.1, concourseAhd: 12.05 };
+  const count = normalizeInfrastructureElevations(
+    { '0,0': [bridge, cutting, canopy, railTunnel, railOpenCut, platform], '1,0': [duplicatePiece] }, 1.05);
+  assert.equal(count, 7);
   assert.deepEqual({ baseY: bridge.baseY, topY: bridge.topY }, { baseY: 1, topY: 3.9 });
   assert.deepEqual({ baseY: duplicatePiece.baseY, topY: duplicatePiece.topY }, { baseY: 1, topY: 3.9 });
   assert.equal(cutting.floorY, 3.1);
   assert.deepEqual({ floorY: canopy.floorY, roofY: canopy.roofY }, { floorY: 3.1, roofY: 9.4 });
+  assert.deepEqual({ railBedY: railTunnel.railBedY, roofY: railTunnel.roofY }, { railBedY: 3.1, roofY: 9.4 });
+  assert.deepEqual({ railBedY: railOpenCut.railBedY, parapetY: railOpenCut.parapetY }, { railBedY: 3.1, parapetY: 5 });
+  assert.deepEqual({ platformY: platform.platformY, concourseY: platform.concourseY }, { platformY: 3.1, concourseY: 11 });
 });
 
 test('reviewed cutting pins only covered corners and preserves natural samples', () => {

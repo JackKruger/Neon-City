@@ -1214,6 +1214,75 @@ function addStationCanopyGeometry(object, kx, kz, buckets, cuboids, collisionMes
   }
 }
 
+// Retaining/tunnel walls around a rail structure's footprint. Edges are
+// subdivided and per-segment culled to the chunk (like station-canopy supports),
+// so a footprint spanning chunks never grows a wall along the chunk seam.
+function addRailWalls(object, outline, kx, kz, baseY, topY, bucket, collisionMeshes) {
+  if (!(topY > baseY + 0.2)) return;
+  const bounds = chunkBounds(kx, kz);
+  const capture = { positions: [], indices: [] };
+  const emit = (a, b, c) => {
+    addTriangle(bucket, a, b, c);
+    const start = capture.positions.length / 3;
+    capture.positions.push(...a, ...b, ...c);
+    capture.indices.push(start, start + 1, start + 2);
+  };
+  for (let edge = 0; edge < outline.length; edge++) {
+    const a = outline[edge];
+    const b = outline[(edge + 1) % outline.length];
+    const length = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const segments = Math.max(1, Math.ceil(length / 2));
+    for (let segment = 0; segment < segments; segment++) {
+      const t0 = segment / segments;
+      const t1 = (segment + 1) / segments;
+      const mx = a[0] + (b[0] - a[0]) * (t0 + t1) / 2;
+      const mz = a[1] + (b[1] - a[1]) * (t0 + t1) / 2;
+      if (mx < bounds.minX || mx >= bounds.maxX || mz < bounds.minZ || mz >= bounds.maxZ) continue;
+      const p0 = [a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0];
+      const p1 = [a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1];
+      emit([p0[0], baseY, p0[1]], [p1[0], baseY, p1[1]], [p1[0], topY, p1[1]]);
+      emit([p0[0], baseY, p0[1]], [p1[0], topY, p1[1]], [p0[0], topY, p0[1]]);
+    }
+  }
+  if (capture.indices.length > 0) collisionMeshes.push({ sourceId: object.sourceId, ...capture });
+}
+
+// A grade-separated rail corridor as an independent structure: the running
+// bed sits at object.railBedY and never carves the terrain heightfield.
+// - open-cut: bed + retaining walls up to parapetY (trench, no roof)
+// - tunnel:   bed + walls + roof slab at roofY (fully covered)
+// - viaduct:  bed on a supporting deck prism (elevated)
+// See docs/grade-separation-plan.md.
+function addRailStructureGeometry(object, kx, kz, buckets, cuboids, collisionMeshes) {
+  const railBedY = object.railBedY;
+  if (!Number.isFinite(railBedY) || !Array.isArray(object.outline) || object.outline.length < 3) return;
+  const outline = absoluteOutline(object);
+  const clipped = clipPolygonToChunk(outline, chunkBounds(kx, kz));
+  if (clipped.length < 3) return;
+  const surface = object.surface === 'concrete' ? 'concrete' : 'ballast';
+
+  const bed = { positions: [], indices: [] };
+  addPolygonTriangles(buckets.get(surface), bed, clipped, () => railBedY);
+  collisionMeshes.push({ sourceId: object.sourceId, ...bed });
+
+  if (object.structure === 'viaduct') {
+    const thickness = Math.max(0.6, Math.min(1.5, object.deckThickness ?? 0.8));
+    const baseY = railBedY - thickness;
+    addPrism(buckets.get('concrete'), clipped, baseY, thickness);
+    collisionMeshes.push({ sourceId: object.sourceId, ...prismTriangles(clipped, baseY, thickness) });
+    return;
+  }
+
+  const cap = object.structure === 'tunnel' ? object.roofY : object.parapetY;
+  if (Number.isFinite(cap)) addRailWalls(object, outline, kx, kz, railBedY, cap, buckets.get('concrete'), collisionMeshes);
+
+  if (object.structure === 'tunnel' && Number.isFinite(object.roofY) && object.roofY > railBedY + 0.5) {
+    const roof = { positions: [], indices: [] };
+    addPolygonTriangles(buckets.get('concrete'), roof, clipped, () => object.roofY);
+    collisionMeshes.push({ sourceId: object.sourceId, ...roof });
+  }
+}
+
 export function compileChunkRecipe(context, kx, kz) {
   if (kx < MIN_CHUNK || kx > MAX_CHUNK || kz < MIN_CHUNK || kz > MAX_CHUNK) throw new Error(`chunk ${kx},${kz} is outside Melbourne bounds`);
   const c0x = kx * CHUNK_TILES;
@@ -1469,6 +1538,8 @@ export function compileChunkRecipe(context, kx, kz) {
           cuboids.push({ sourceId: object.sourceId, ...box, rotation });
         }
       }
+    } else if (object.kind === 'rail-structure') {
+      addRailStructureGeometry(object, kx, kz, buckets, cuboids, collisionMeshes);
     } else if (object.kind === 'station-canopy') {
       addStationCanopyGeometry(object, kx, kz, buckets, cuboids, collisionMeshes);
     } else if (object.kind === 'building') {
@@ -1521,7 +1592,7 @@ export function compileChunkRecipe(context, kx, kz) {
       const base = stopHeight;
       addBox(buckets.get('prop'), object.x, base + 1.25, object.z, 0.07, 1.25, 0.07);
       addBox(buckets.get('prop'), object.x, base + 2.25, object.z, 0.28, 0.18, 0.04);
-    } else if (!['road-surface', 'nav-path', 'terrain-cutting', 'terrain-portal'].includes(object.kind)) {
+    } else if (!['road-surface', 'nav-path', 'terrain-cutting', 'terrain-portal', 'station-platform'].includes(object.kind)) {
       const base = context.bridgeSurfaceHeightAt(object.x, object.z);
       addPointPropRecipe(buckets, cuboids, object, base);
     }

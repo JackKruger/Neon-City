@@ -556,6 +556,89 @@ test('committed cutting never lowers Flinders Street or ordinary vehicle navigat
   assert.ok(maximumGrade <= 0.2, `ordinary station-area road discontinuity is ${(maximumGrade * 100).toFixed(1)}%`);
 });
 
+// Phase 0 of docs/grade-separation-plan.md: lock the current Flinders corridor
+// so the migration onto rail-structure surfaces can prove gameplay parity. The
+// train bed and the road-above ground here are the two surfaces that a
+// single-valued heightfield cannot hold at once; after migration each must land
+// on these same values, but reached through an independent structure instead of
+// a terrain carve.
+test('committed Flinders corridor bed and road-above heights are the migration baseline', () => {
+  const { context } = committedCompilerContext();
+  // [x, z, expected train bed (rail surface), expected road-above natural ground]
+  const corridor = [
+    [500, -1900, 11.7, 16.7],
+    [560, -1870, 3.0, 16.25],
+    [600, -1859, 3.0, 15.55],
+    [624, -1859, 3.0, 14.37],
+    [660, -1855, 3.0, 11.81],
+    [680, -1850, 3.24, 9.25],
+    [720, -1850, 3.0, 7.92],
+  ];
+  for (const [x, z, bed, road] of corridor) {
+    assert.ok(Math.abs(context.railSurfaceHeightAt(x, z, 'tunnel') - bed) <= 0.1,
+      `rail bed at ${x},${z} drifted from baseline ${bed}m`);
+    assert.ok(Math.abs(context.naturalTerrainHeightAt(x, z) - road) <= 0.1,
+      `road-above ground at ${x},${z} drifted from baseline ${road}m`);
+    // Rail must stay well below the road it passes under — the whole point of
+    // grade separation. Portals excepted: the bed ramps up to meet the ground.
+    if (bed <= 4) assert.ok(road - bed >= 4.5,
+      `clearance at ${x},${z} is ${(road - bed).toFixed(2)}m`);
+  }
+});
+
+// Phase 3 target invariant: terrain is only ever natural ground. This fails
+// today because terrain-cutting carves terrainHeightAt down to the rail floor
+// (that carve is "layers chopped out of the earth"). Flip to a required
+// assertion once the carve is retired in favor of rail-structure surfaces.
+test('terrainHeightAt equals naturalTerrainHeightAt across the Flinders cutting',
+  { todo: 'blocked until the terrain carve is retired (docs/grade-separation-plan.md Phase 3)' },
+  () => {
+    const { context } = committedCompilerContext();
+    for (let x = 540; x <= 680; x += 20) {
+      for (let z = -1880; z <= -1840; z += 20) {
+        assert.equal(context.terrainHeightAt(x, z), context.naturalTerrainHeightAt(x, z),
+          `terrain carved at ${x},${z}`);
+      }
+    }
+  });
+
+// Phase 1 of docs/grade-separation-plan.md: a rail-structure builds its own bed,
+// walls, and roof as an independent mesh, and crucially never carves the terrain
+// heightfield — the two surfaces (ground above, rail below) coexist because they
+// live on different objects, not on one impossible height value.
+test('rail-structure emits an independent bed/roof and leaves terrain uncarved', () => {
+  const grid = new Uint8Array(MAP_SIZE ** 2);
+  const heights = new Int16Array((MAP_SIZE + 1) ** 2);
+  for (let i = 0; i < heights.length; i++) heights[i] = 120; // natural ground ~12 m everywhere
+  const railStructure = {
+    kind: 'rail-structure', sourceId: 'rail:test:tunnel', structure: 'tunnel', surface: 'ballast',
+    railBedY: 3, roofY: 9, x: 45, z: 45, outline: [[-40, -3], [40, -3], [40, 3], [-40, 3]],
+  };
+  const context = createCompilerContext({
+    meta: {}, grid, heights,
+    coverage: new Uint8Array(MAP_SIZE ** 2), transport: new Uint8Array(MAP_SIZE ** 2),
+    speed: new Uint8Array(MAP_SIZE ** 2),
+    objectIndex: { chunks: { '0,0': [railStructure] } },
+  });
+
+  // No terrain carve: terrain stays the natural ground, no cutting profile.
+  assert.equal(context.cuttingProfileHeightAt(45, 45), null);
+  assert.equal(context.terrainHeightAt(45, 45), context.naturalTerrainHeightAt(45, 45));
+  assert.ok(Math.abs(context.naturalTerrainHeightAt(45, 45) - 12) < 0.01);
+
+  const result = compileChunkRecipe(context, 0, 0);
+  const yValues = (material) => {
+    const primitive = result.primitives.find((entry) => entry.material === material);
+    return primitive ? primitive.positions.filter((_, index) => index % 3 === 1) : [];
+  };
+  const ballast = yValues('ballast');
+  const concrete = yValues('concrete');
+  assert.ok(ballast.length > 0 && ballast.every((y) => Math.abs(y - 3) < 0.01),
+    'track bed is not a flat slab at railBedY');
+  assert.ok(concrete.some((y) => Math.abs(y - 9) < 0.01), 'tunnel roof is missing at roofY');
+  assert.ok(concrete.some((y) => Math.abs(y - 3) < 0.01), 'tunnel walls do not reach the bed');
+});
+
 test('every custom-terrain chunk has complete, non-overlapping projected collision coverage', () => {
   const { context } = committedCompilerContext();
   let checked = 0;

@@ -379,6 +379,27 @@ export function normalizeInfrastructureElevations(objectChunks, seaDatum) {
       count++;
       continue;
     }
+    // Grade-separated rail owns its own surfaces and never carves the terrain
+    // heightfield. railBedY is the running surface; roofY covers a tunnel and
+    // parapetY caps an open cutting's retaining walls. See
+    // docs/grade-separation-plan.md.
+    if (object.kind === 'rail-structure') {
+      const bedAhd = [object.railBedAhd, object.deckAhd, object.floorAhd].find(Number.isFinite);
+      if (Number.isFinite(bedAhd)) object.railBedY = relativeAhd(bedAhd);
+      if (Number.isFinite(object.roofAhd)) object.roofY = relativeAhd(object.roofAhd);
+      if (Number.isFinite(object.parapetAhd)) object.parapetY = relativeAhd(object.parapetAhd);
+      count++;
+      continue;
+    }
+    // A station platform stacks two authored levels at one footprint: the low
+    // platform (track grade) and the concourse/entrance above it. This is what
+    // a single-valued heightfield cannot represent.
+    if (object.kind === 'station-platform') {
+      if (Number.isFinite(object.platformAhd)) object.platformY = relativeAhd(object.platformAhd);
+      if (Number.isFinite(object.concourseAhd)) object.concourseY = relativeAhd(object.concourseAhd);
+      count++;
+      continue;
+    }
     if (object.kind !== 'transport-structure') continue;
     if (Number.isFinite(object.minAhd)) object.baseY = relativeAhd(object.minAhd);
     if (Number.isFinite(object.maxAhd)) object.topY = relativeAhd(object.maxAhd);
