@@ -1244,9 +1244,11 @@ function addStationCanopyGeometry(object, kx, kz, buckets, cuboids, collisionMes
 
 // Retaining/tunnel walls around a rail structure's footprint. Edges are
 // subdivided and per-segment culled to the chunk (like station-canopy supports),
-// so a footprint spanning chunks never grows a wall along the chunk seam.
-function addRailWalls(object, outline, kx, kz, baseY, topY, bucket, collisionMeshes) {
-  if (!(topY > baseY + 0.2)) return;
+// so a footprint spanning chunks never grows a wall along the chunk seam. topYFor
+// may vary with position so an open-cut wall rises to meet the actual ground it
+// retains rather than a flat parapet.
+function addRailWalls(object, outline, kx, kz, baseY, topYFor, bucket, collisionMeshes) {
+  const topAt = typeof topYFor === 'function' ? topYFor : () => topYFor;
   const bounds = chunkBounds(kx, kz);
   const capture = { positions: [], indices: [] };
   const emit = (a, b, c) => {
@@ -1268,8 +1270,10 @@ function addRailWalls(object, outline, kx, kz, baseY, topY, bucket, collisionMes
       if (mx < bounds.minX || mx >= bounds.maxX || mz < bounds.minZ || mz >= bounds.maxZ) continue;
       const p0 = [a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0];
       const p1 = [a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1];
-      emit([p0[0], baseY, p0[1]], [p1[0], baseY, p1[1]], [p1[0], topY, p1[1]]);
-      emit([p0[0], baseY, p0[1]], [p1[0], topY, p1[1]], [p0[0], topY, p0[1]]);
+      const top0 = Math.max(baseY + 0.2, topAt(p0[0], p0[1]));
+      const top1 = Math.max(baseY + 0.2, topAt(p1[0], p1[1]));
+      emit([p0[0], baseY, p0[1]], [p1[0], baseY, p1[1]], [p1[0], top1, p1[1]]);
+      emit([p0[0], baseY, p0[1]], [p1[0], top1, p1[1]], [p0[0], top0, p0[1]]);
     }
   }
   if (capture.indices.length > 0) collisionMeshes.push({ sourceId: object.sourceId, ...capture });
@@ -1281,7 +1285,7 @@ function addRailWalls(object, outline, kx, kz, baseY, topY, bucket, collisionMes
 // - tunnel:   bed + walls + roof slab at roofY (fully covered)
 // - viaduct:  bed on a supporting deck prism (elevated)
 // See docs/grade-separation-plan.md.
-function addRailStructureGeometry(object, kx, kz, buckets, cuboids, collisionMeshes) {
+function addRailStructureGeometry(context, object, kx, kz, buckets, cuboids, collisionMeshes) {
   const railBedY = object.railBedY;
   if (!Number.isFinite(railBedY) || !Array.isArray(object.outline) || object.outline.length < 3) return;
   const outline = absoluteOutline(object);
@@ -1301,8 +1305,16 @@ function addRailStructureGeometry(object, kx, kz, buckets, cuboids, collisionMes
     return;
   }
 
-  const cap = object.structure === 'tunnel' ? object.roofY : object.parapetY;
-  if (Number.isFinite(cap)) addRailWalls(object, outline, kx, kz, railBedY, cap, buckets.get('concrete'), collisionMeshes);
+  // Tunnel walls cap at the flat roof; open-cut retaining walls rise to meet the
+  // natural ground they hold back (clamped to parapetY if authored), so the
+  // trench edge joins the surrounding terrain instead of leaving a gap.
+  const cap = object.structure === 'tunnel'
+    ? object.roofY
+    : (x, z) => {
+        const ground = context.naturalTerrainHeightAt(x, z);
+        return Number.isFinite(object.parapetY) ? Math.min(object.parapetY, ground) : ground;
+      };
+  if (typeof cap === 'function' || Number.isFinite(cap)) addRailWalls(object, outline, kx, kz, railBedY, cap, buckets.get('concrete'), collisionMeshes);
 
   if (object.structure === 'tunnel' && Number.isFinite(object.roofY) && object.roofY > railBedY + 0.5) {
     const roof = { positions: [], indices: [] };
@@ -1617,7 +1629,7 @@ export function compileChunkRecipe(context, kx, kz) {
         }
       }
     } else if (object.kind === 'rail-structure') {
-      addRailStructureGeometry(object, kx, kz, buckets, cuboids, collisionMeshes);
+      addRailStructureGeometry(context, object, kx, kz, buckets, cuboids, collisionMeshes);
     } else if (object.kind === 'station-platform') {
       addStationPlatformGeometry(object, kx, kz, buckets, cuboids, collisionMeshes);
     } else if (object.kind === 'station-canopy') {
