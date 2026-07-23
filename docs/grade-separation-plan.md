@@ -158,6 +158,12 @@ transitions become structural, not emergent.
 
 Flinders Street is the acid test and should be the first corridor migrated.
 
+![Flinders Street Station rail corridor, current state](images/flinders-street-station.png)
+
+*Baseline capture of the Flinders Street rail corridor before the migration
+(headless runtime, 25/25 chunks, no Rapier errors).*
+
+
 - Replace `data/map-overrides/flinders-street-cutting.geojson` `terrain-cutting`
   records with `rail-structure` (`structure: 'open-cut'` under the platforms,
   `'tunnel'` where the concourse decks over the tracks) + `station-platform`.
