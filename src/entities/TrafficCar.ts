@@ -1,12 +1,25 @@
 import * as THREE from 'three';
 import type { Entity, Game } from '../core/Game';
 import { Vehicle } from './Vehicle';
-import { CellRef, lanePoint, nearestRoadPoint, nextRoadCell, pointWorld, roadNeighbors } from '../world/RoadGraph';
+import {
+  CellRef,
+  lanePoint,
+  nearestRoadPoint,
+  nextVehicleRoadCell,
+  pointWorld,
+  roadNeighbors,
+} from '../world/RoadGraph';
 import { speedLimitAt, worldToCell } from '../world/CityMap';
 import type { Outfit } from './HumanRig';
 import type { Drivable } from './Drivable';
+import {
+  NpcLaneFollower,
+  npcVehicleNavigationStats,
+} from './NpcLaneFollower';
 
 const TURN_SPEED = 4;
+const MAX_SAFE_CROSS_TRACK = 2.2;
+const MAX_RECOVERABLE_CROSS_TRACK = 4;
 
 export interface TrafficSpawnPose {
   x: number;
@@ -32,16 +45,15 @@ export function trafficSpawnPose(from: CellRef, to: CellRef): TrafficSpawnPose {
 export class TrafficCar implements Entity {
   readonly vehicle: Vehicle;
   crashed = false;
-  private from: CellRef;
-  private to: CellRef;
-  private waypoint = { x: 0, z: 0 };
+  private follower: NpcLaneFollower;
   private prevVel = new THREE.Vector3();
   private hasPrevVel = false;
   private stuckTime = 0;
   private reverseTime = 0;
   private exitRequested = false;
+  private outsideLane = false;
+  private terminalStopped = false;
   private nearbyVehicles: Drivable[] = [];
-  private sideVehicles: Drivable[] = [];
 
   constructor(
     private game: Game,
@@ -51,9 +63,8 @@ export class TrafficCar implements Entity {
     readonly driverProfile: { outfit: Outfit; heightScale: number },
     existingVehicle?: Vehicle
   ) {
-    this.from = from;
-    this.to = to;
-    this.waypoint = lanePoint(from, to, 0.18);
+    this.follower = new NpcLaneFollower(from, to);
+    this.fillRoute();
     // Spawn behind the first waypoint, facing along the real lane segment.
     // Adjacent compiled lane nodes routinely fall in the same tile, so cell
     // indices collapse to (0,0); derive heading and setback from exact world
@@ -111,29 +122,49 @@ export class TrafficCar implements Entity {
     this.hasPrevVel = true;
 
     const t = v.body.translation();
-    const dist = Math.hypot(this.waypoint.x - t.x, this.waypoint.z - t.z);
-    if (dist < 3.5) this.advance();
+    this.fillRoute();
+    for (let advances = 0; advances < 4 && this.follower.advanceIfNeeded(t.x, t.z); advances++) {
+      this.fillRoute();
+    }
+    const speed = v.forwardSpeed();
+    const sample = this.follower.sample(
+      t.x,
+      t.z,
+      THREE.MathUtils.clamp(3.5 + Math.abs(speed) * 0.45, 3.5, 9)
+    );
+    const edgeEnd = pointWorld(this.follower.to);
+    const dist = Math.hypot(edgeEnd.x - t.x, edgeEnd.z - t.z);
 
-    // Steering toward waypoint in local frame (forward = +Z, left = +X).
-    const local = new THREE.Vector3(this.waypoint.x - t.x, 0, this.waypoint.z - t.z)
+    // Pure-pursuit steering follows the route ahead instead of cutting directly
+    // from one sparse waypoint to the next.
+    const local = new THREE.Vector3(sample.target.x - t.x, 0, sample.target.z - t.z)
       .applyQuaternion(v.quaternion().invert());
     const angle = Math.atan2(local.x, Math.max(local.z, 0.01));
     let steer = -THREE.MathUtils.clamp(angle / 0.45, -1, 1);
 
-    const turning = Math.abs(angle) > 0.25;
+    const turning = Math.abs(angle) > 0.25 || sample.turnCosine < 0.86;
     // Preserve the existing 8 m/s feel for a 50 km/h street while allowing
     // authored limits to slow shopping strips and speed up arterials.
-    const roadLimit = Math.min(12, (this.to.speed ?? speedLimitAt(this.to.cx, this.to.cz)) * 0.16);
+    const roadLimit = Math.min(
+      12,
+      (this.follower.to.speed ?? speedLimitAt(this.follower.to.cx, this.follower.to.cz)) * 0.16
+    );
     let target = turning ? Math.min(TURN_SPEED, roadLimit) : roadLimit;
-    const obstacle = this.obstacleAhead();
-    if (obstacle.stop) target = 0;
-    else if (obstacle.steerBias !== 0) {
-      steer = THREE.MathUtils.clamp(steer + obstacle.steerBias, -1, 1);
-      target = Math.min(target, 5.5);
-    }
-    if (dist < 10 && !this.game.npcs.trafficSignalAllows(this.from, this.to, t.y + 0.75)) target = 0;
+    if (this.obstacleAhead()) target = 0;
+    if (
+      dist < 10 &&
+      !this.game.npcs.trafficSignalAllows(this.follower.from, this.follower.to, t.y + 0.75)
+    ) target = 0;
+    const terminalStop = this.follower.futureLength() === 0 && sample.distanceToRouteEnd < 4.5;
+    if (terminalStop) target = 0;
+    if (terminalStop && !this.terminalStopped) npcVehicleNavigationStats.terminalStops++;
+    this.terminalStopped = terminalStop;
+    if (sample.crossTrack > MAX_SAFE_CROSS_TRACK) target = Math.min(target, 2.2);
+    if (sample.crossTrack > MAX_RECOVERABLE_CROSS_TRACK) target = 0;
+    const outsideLane = sample.crossTrack > MAX_SAFE_CROSS_TRACK;
+    if (outsideLane && !this.outsideLane) npcVehicleNavigationStats.laneDepartures++;
+    this.outsideLane = outsideLane;
 
-    const speed = v.forwardSpeed();
     let throttle = 0;
     let brake = 0;
     if (this.reverseTime > 0) {
@@ -144,12 +175,14 @@ export class TrafficCar implements Entity {
     if (speed < target - 0.5) throttle = 0.5;
     else if (speed > target + 1) brake = target === 0 ? 0.8 : 0.3;
 
-    // Un-stick: if wanting to move but not moving, back up briefly.
-    if (target > 0 && Math.abs(speed) < 0.4) {
+    // Un-stick only while still close to the lane. Reversing a car that has
+    // already left the route tends to send it farther across the kerb.
+    if (target > 0 && sample.crossTrack <= MAX_SAFE_CROSS_TRACK && Math.abs(speed) < 0.4) {
       this.stuckTime += dt;
       if (this.stuckTime > 2.5) {
         this.stuckTime = 0;
         this.reverseTime = 1.2;
+        npcVehicleNavigationStats.recoveryAttempts++;
       }
     } else {
       this.stuckTime = 0;
@@ -158,17 +191,19 @@ export class TrafficCar implements Entity {
     v.command = { steer, throttle, brake, handbrake: false };
   }
 
-  private advance(): void {
-    const next = nextRoadCell(this.from, this.to, Math.random(), 'vehicle');
-    this.from = this.to;
-    this.to = next;
-    this.waypoint = lanePoint(this.from, this.to, 0.18);
+  private fillRoute(): void {
+    while (this.follower.futureLength() < 4) {
+      const edge = this.follower.lastEdge();
+      const next = nextVehicleRoadCell(edge.from, edge.to, Math.random());
+      if (!next) break;
+      this.follower.append(next);
+    }
   }
 
-  private obstacleAhead(): { stop: boolean; steerBias: number } {
+  private obstacleAhead(): boolean {
     const t = this.vehicle.body.translation();
     const f = this.vehicle.forward();
-    if (this.game.transitBlocksRoad(t.x + f.x * 5, t.z + f.z * 5)) return { stop: true, steerBias: 0 };
+    if (this.game.transitBlocksRoad(t.x + f.x * 5, t.z + f.z * 5)) return true;
     for (const other of this.game.vehiclesNear(t.x, t.z, 9, this.nearbyVehicles)) {
       if (other === this.vehicle) continue;
       const o = other.body.translation();
@@ -180,12 +215,9 @@ export class TrafficCar implements Entity {
       if (along < 1.5) continue;
       const side = Math.abs(dx * -f.z + dz * f.x);
       if (side < 2.2) {
-        // Keep a safe queue at close range. Farther back, gently move around a
-        // stopped obstacle when the adjacent space is clear.
-        if (along < 5.2 || other.getSpeed() > 2.5) return { stop: true, steerBias: 0 };
-        const passSide = dx * -f.z + dz * f.x >= 0 ? -1 : 1;
-        if (this.sideClear(passSide)) return { stop: false, steerBias: passSide * 0.32 };
-        return { stop: true, steerBias: 0 };
+        // Queue in-lane. Lateral passing is unsafe until the graph has explicit
+        // lane-change connectors.
+        return true;
       }
     }
     for (const p of this.game.players) {
@@ -195,7 +227,7 @@ export class TrafficCar implements Entity {
       const dz = pos.z - t.z;
       if (dx * dx + dz * dz > 64) continue;
       const along = dx * f.x + dz * f.z;
-      if (along > 1 && Math.abs(dx * -f.z + dz * f.x) < 2) return { stop: true, steerBias: 0 };
+      if (along > 1 && Math.abs(dx * -f.z + dz * f.x) < 2) return true;
     }
     for (const pedestrian of this.game.npcs.peds) {
       if (!pedestrian.alive()) continue;
@@ -204,24 +236,10 @@ export class TrafficCar implements Entity {
       const dz = pos.z - t.z;
       const along = dx * f.x + dz * f.z;
       if (along > 0.8 && along < 8 && Math.abs(dx * -f.z + dz * f.x) < 1.8) {
-        return { stop: true, steerBias: 0 };
+        return true;
       }
     }
-    return { stop: false, steerBias: 0 };
-  }
-
-  private sideClear(side: number): boolean {
-    const t = this.vehicle.body.translation();
-    const f = this.vehicle.forward();
-    const right = new THREE.Vector3(f.z, 0, -f.x).multiplyScalar(side);
-    const sampleX = t.x + f.x * 5 + right.x * 2.4;
-    const sampleZ = t.z + f.z * 5 + right.z * 2.4;
-    for (const other of this.game.vehiclesNear(sampleX, sampleZ, 3.2, this.sideVehicles)) {
-      if (other === this.vehicle) continue;
-      const o = other.body.translation();
-      if (Math.hypot(o.x - sampleX, o.z - sampleZ) < 3.2) return false;
-    }
-    return true;
+    return false;
   }
 
   crash(): void {

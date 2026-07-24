@@ -2,8 +2,12 @@ import * as THREE from 'three';
 import type { Game } from '../core/Game';
 import type { Player } from '../entities/Player';
 import { CopPed } from '../entities/CopPed';
-import { PoliceCar } from '../entities/PoliceCar';
-import { pointWorld, randomRoadCellNear } from '../world/RoadGraph';
+import { PoliceCar, policeSpawnPose } from '../entities/PoliceCar';
+import {
+  pointWorld,
+  randomRoadCellNear,
+  roadNeighbors,
+} from '../world/RoadGraph';
 
 const STAR_THRESHOLDS = [25, 55, 100];
 const SIGHT_RADIUS = 42;
@@ -200,9 +204,17 @@ export class Wanted {
       // to the containing tile centre can put responders on the wrong deck of
       // a bridge, beside the road, or inside nearby scenery.
       const { x, z } = pointWorld(cell);
-      const heading = Math.atan2(pos.x - x, pos.z - z) + (roadblock ? Math.PI / 2 : 0);
-      if (!this.game.vehicleSpawnIsClear(x, z, heading)) continue;
-      this.police.push(new PoliceCar(this.game, this.player, x, z, heading, roadblock));
+      const neighbors = [...roadNeighbors(cell, 'vehicle')]
+        .sort((left, right) => {
+          const a = pointWorld(left);
+          const b = pointWorld(right);
+          return Math.hypot(a.x - pos.x, a.z - pos.z) - Math.hypot(b.x - pos.x, b.z - pos.z);
+        });
+      const to = neighbors[0];
+      if (!to) continue;
+      const pose = policeSpawnPose(cell, to, roadblock);
+      if (!this.game.vehicleSpawnIsClear(x, z, pose.heading)) continue;
+      this.police.push(new PoliceCar(this.game, this.player, cell, to, roadblock));
       return;
     }
   }

@@ -18,9 +18,14 @@ const TRAM_DWELL = 12;
 const TRAIN_DWELL = 20;
 const MAX_TRAMS = 4;
 const MAX_TRAINS = 2;
+/** Model centres above the compiled track datum. Rail render surfaces sit
+ * 0.14/0.16 m above that datum, so include that lift as well as half-height. */
+const TRAM_RIDE_HEIGHT = 1.47;
+const TRAIN_RIDE_HEIGHT = 1.71;
 /** Spacing between recorded trail crumbs; the cars sample this path so they
  * pivot at their joins and lie along both the curve and the grade of the track. */
 const TRAIL_STEP = 1.0;
+const MAX_SEGMENTS_PER_STEP = 16;
 
 const UP = new THREE.Vector3(0, 1, 0);
 const _forward = new THREE.Vector3();
@@ -58,6 +63,8 @@ export class TransitVehicle {
   /** Track height (no ride offset) of the segment currently being traversed. */
   private fromWorld: { x: number; y: number; z: number };
   private waypoint: { x: number; y: number; z: number };
+  /** Rail datum at the leading nose. The rest of the consist samples its trail. */
+  private trackPosition: { x: number; y: number; z: number };
   private speed = 0;
   private dwell = 0;
   private stopCooldown = 0;
@@ -65,12 +72,12 @@ export class TransitVehicle {
   private doors: THREE.Mesh[] = [];
   private disposed = false;
   /** Individual cars, each pivoting on its own along the recorded trail. */
-  private cars: { group: THREE.Group; offset: number }[] = [];
+  private cars: { group: THREE.Group; arc: number; halfWheelbase: number }[] = [];
   /** Height the car centre rides above the rail head. */
   private readonly rideHeight: number;
   /** Distance from the vehicle centre to its nose. */
   private readonly halfLength: number;
-  /** Breadcrumbs the nose has passed through, newest first, sampled by the cars. */
+  /** Breadcrumbs the rail-following nose has passed, newest first. */
   private trail: { x: number; y: number; z: number }[] = [];
   private readonly maxTrailPoints: number;
 
@@ -78,13 +85,14 @@ export class TransitVehicle {
     this.mode = mode;
     this.from = from;
     this.to = to;
-    this.rideHeight = mode === 'tram' ? 1.25 : 1.55;
+    this.rideHeight = mode === 'tram' ? TRAM_RIDE_HEIGHT : TRAIN_RIDE_HEIGHT;
     const length = mode === 'tram' ? 24 : 138;
     this.halfLength = length / 2;
     this.maxTrailPoints = Math.ceil((length + 8) / TRAIL_STEP) + 4;
     this.fromWorld = this.point(from);
     this.waypoint = this.point(to);
     const start = this.fromWorld;
+    this.trackPosition = { ...start };
     this.heading = Math.atan2(this.waypoint.x - start.x, this.waypoint.z - start.z);
     const grade = this.segmentGrade();
     this.buildModel();
@@ -92,8 +100,15 @@ export class TransitVehicle {
     // carries an absolute world transform sampled from the trail.
     game.scene.add(this.root);
 
-    const centre = { x: start.x, y: start.y + this.rideHeight, z: start.z };
-    const orientation = this.orientation(this.heading, grade);
+    const nose = { x: start.x, y: start.y + this.rideHeight, z: start.z };
+    this.seedTrail(nose, this.heading, grade);
+    this.layoutCars();
+    const centre = { x: 0, y: 0, z: 0, fx: 0, fy: 0, fz: 0 };
+    this.sampleTrail(this.halfLength, centre);
+    const orientation = this.orientationFromForward(
+      _forward.set(centre.fx, centre.fy, centre.fz),
+      new THREE.Quaternion()
+    );
     const body = game.world.createRigidBody(
       RAPIER.RigidBodyDesc.kinematicPositionBased()
         .setTranslation(centre.x, centre.y, centre.z)
@@ -106,8 +121,6 @@ export class TransitVehicle {
       body
     );
     this.body = body;
-    this.seedTrail(centre, this.heading, grade);
-    this.layoutCars();
   }
 
   update(dt: number, stops: TransitStop[]): void {
@@ -120,15 +133,15 @@ export class TransitVehicle {
       return;
     }
     this.setDoors(false);
-    const position = this.body.translation();
-    const dx = this.waypoint.x - position.x;
-    const dz = this.waypoint.z - position.z;
-    const distance = Math.hypot(dx, dz);
-    if (distance < 2.2) this.advance();
+    const bodyPosition = this.body.translation();
+    const dx = this.waypoint.x - this.trackPosition.x;
+    const dz = this.waypoint.z - this.trackPosition.z;
 
     const targetSpeed = Math.min(this.mode === 'tram' ? 12 : 22, Math.max(4, (this.to.speed ?? 50) / 3.6));
-    const blocked = this.obstacleAhead(position.x, position.z, dx, dz);
-    const upcomingStop = this.stopCooldown <= 0 ? this.nearestStopAhead(stops, position.x, position.z, dx, dz) : null;
+    const blocked = this.obstacleAhead(bodyPosition.x, bodyPosition.z, dx, dz);
+    const upcomingStop = this.stopCooldown <= 0
+      ? this.nearestStopAhead(stops, bodyPosition.x, bodyPosition.z, dx, dz)
+      : null;
     const braking = blocked || (upcomingStop !== null && upcomingStop.distance < Math.max(8, this.speed * this.speed / 2.8));
     this.speed = THREE.MathUtils.clamp(this.speed + (braking ? -3.2 : 1.15) * dt, 0, targetSpeed);
     if (upcomingStop && upcomingStop.distance < 2.5 && this.speed < 0.7) {
@@ -137,35 +150,25 @@ export class TransitVehicle {
       this.stopCooldown = this.dwell + 8;
     }
 
-    const length = Math.hypot(dx, dz) || 1;
-    const step = Math.min(distance, this.speed * dt);
-    const nextX = position.x + dx / length * step;
-    const nextZ = position.z + dz / length * step;
-    // Interpolate height along the current track segment by horizontal progress
-    // so the body hugs the grade instead of lagging behind on a slope.
-    const segmentHoriz = Math.hypot(this.waypoint.x - this.fromWorld.x, this.waypoint.z - this.fromWorld.z) || 1;
-    const progress = THREE.MathUtils.clamp(
-      Math.hypot(nextX - this.fromWorld.x, nextZ - this.fromWorld.z) / segmentHoriz,
-      0,
-      1
-    );
-    const targetY = THREE.MathUtils.lerp(this.fromWorld.y, this.waypoint.y, progress) + this.rideHeight;
-    const nextY = THREE.MathUtils.lerp(position.y, targetY, Math.min(1, dt * 8));
-    this.heading = Math.atan2(dx, dz);
-    const grade = this.segmentGrade();
-
-    const orientation = this.orientation(this.heading, grade);
-    this.body.setNextKinematicTranslation({ x: nextX, y: nextY, z: nextZ });
-    this.body.setNextKinematicRotation({ x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w });
-
-    // Record where the nose now sits and let every car settle onto the trail.
-    _forward.set(0, 0, 1).applyQuaternion(orientation);
+    this.moveAlongTrack(this.speed * dt);
+    const nextDx = this.waypoint.x - this.trackPosition.x;
+    const nextDz = this.waypoint.z - this.trackPosition.z;
+    if (Math.hypot(nextDx, nextDz) > 1e-4) this.heading = Math.atan2(nextDx, nextDz);
     this.recordTrail({
-      x: nextX + _forward.x * this.halfLength,
-      y: nextY + _forward.y * this.halfLength,
-      z: nextZ + _forward.z * this.halfLength,
+      x: this.trackPosition.x,
+      y: this.trackPosition.y + this.rideHeight,
+      z: this.trackPosition.z,
     });
     this.layoutCars();
+
+    const centre = { x: 0, y: 0, z: 0, fx: 0, fy: 0, fz: 0 };
+    this.sampleTrail(this.halfLength, centre);
+    const orientation = this.orientationFromForward(
+      _forward.set(centre.fx, centre.fy, centre.fz),
+      new THREE.Quaternion()
+    );
+    this.body.setNextKinematicTranslation({ x: centre.x, y: centre.y, z: centre.z });
+    this.body.setNextKinematicRotation({ x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w });
   }
 
   afterPhysics(): void {
@@ -223,6 +226,34 @@ export class TransitVehicle {
     this.waypoint = this.point(next);
   }
 
+  /** Consume horizontal travel exactly along the compiled polyline, carrying
+   * any remainder across a node instead of switching segments early. */
+  private moveAlongTrack(distance: number): void {
+    let remaining = Math.max(0, distance);
+    for (let segment = 0; segment < MAX_SEGMENTS_PER_STEP; segment++) {
+      const dx = this.waypoint.x - this.trackPosition.x;
+      const dz = this.waypoint.z - this.trackPosition.z;
+      const horizontal = Math.hypot(dx, dz);
+      if (horizontal < 1e-5) {
+        this.trackPosition = { ...this.waypoint };
+        this.advance();
+        if (remaining <= 1e-5) return;
+        continue;
+      }
+      const step = Math.min(horizontal, remaining);
+      const t = step / horizontal;
+      this.trackPosition.x += dx * t;
+      this.trackPosition.y += (this.waypoint.y - this.trackPosition.y) * t;
+      this.trackPosition.z += dz * t;
+      remaining -= step;
+      if (step >= horizontal - 1e-5) {
+        this.trackPosition = { ...this.waypoint };
+        this.advance();
+      }
+      if (remaining <= 1e-5) return;
+    }
+  }
+
   private forward(): THREE.Vector3 {
     return new THREE.Vector3(Math.sin(this.heading), 0, Math.cos(this.heading));
   }
@@ -231,12 +262,6 @@ export class TransitVehicle {
   private segmentGrade(): number {
     const horiz = Math.hypot(this.waypoint.x - this.fromWorld.x, this.waypoint.z - this.fromWorld.z) || 1;
     return Math.atan2(this.waypoint.y - this.fromWorld.y, horiz);
-  }
-
-  /** Quaternion whose local +Z points along the heading, tilted by the grade. */
-  private orientation(heading: number, grade: number, out = new THREE.Quaternion()): THREE.Quaternion {
-    _forward.set(Math.sin(heading) * Math.cos(grade), Math.sin(grade), Math.cos(heading) * Math.cos(grade));
-    return this.orientationFromForward(_forward, out);
   }
 
   /** Build an orientation whose local +Z (car length) follows `forward`, keeping
@@ -253,13 +278,8 @@ export class TransitVehicle {
     return out.setFromRotationMatrix(_basis);
   }
 
-  private seedTrail(centre: { x: number; y: number; z: number }, heading: number, grade: number): void {
+  private seedTrail(nose: { x: number; y: number; z: number }, heading: number, grade: number): void {
     _forward.set(Math.sin(heading) * Math.cos(grade), Math.sin(grade), Math.cos(heading) * Math.cos(grade));
-    const nose = {
-      x: centre.x + _forward.x * this.halfLength,
-      y: centre.y + _forward.y * this.halfLength,
-      z: centre.z + _forward.z * this.halfLength,
-    };
     this.trail = [];
     for (let i = 0; i < this.maxTrailPoints; i++) {
       this.trail.push({
@@ -329,12 +349,19 @@ export class TransitVehicle {
   }
 
   private layoutCars(): void {
-    const sample = { x: 0, y: 0, z: 0, fx: 0, fy: 0, fz: 0 };
+    const front = { x: 0, y: 0, z: 0, fx: 0, fy: 0, fz: 0 };
+    const rear = { x: 0, y: 0, z: 0, fx: 0, fy: 0, fz: 0 };
     for (const car of this.cars) {
-      this.sampleTrail(this.halfLength - car.offset, sample);
-      _forward.set(sample.fx, sample.fy, sample.fz);
+      this.sampleTrail(car.arc - car.halfWheelbase, front);
+      this.sampleTrail(car.arc + car.halfWheelbase, rear);
+      _forward.set(front.x - rear.x, front.y - rear.y, front.z - rear.z);
+      if (_forward.lengthSq() < 1e-8) _forward.set(front.fx, front.fy, front.fz);
       this.orientationFromForward(_forward, car.group.quaternion);
-      car.group.position.set(sample.x, sample.y, sample.z);
+      car.group.position.set(
+        (front.x + rear.x) / 2,
+        (front.y + rear.y) / 2,
+        (front.z + rear.z) / 2
+      );
     }
   }
 
@@ -380,17 +407,22 @@ export class TransitVehicle {
   }
 
   /** Start a car body centred on its own origin so it can pivot at the joins. */
-  private addCar(offset: number): THREE.Group {
+  private addCar(arc: number, halfWheelbase: number): THREE.Group {
     const car = new THREE.Group();
     this.root.add(car);
-    this.cars.push({ group: car, offset });
+    this.cars.push({ group: car, arc, halfWheelbase });
     return car;
   }
 
   private buildModel(): void {
     if (this.mode === 'tram') {
-      for (const z of [-7.7, 0, 7.7]) {
-        const car = this.addCar(z);
+      const tramCars = [
+        { arc: 19, middle: false },
+        { arc: 11.3, middle: true },
+        { arc: 3.6, middle: false },
+      ];
+      for (const { arc, middle } of tramCars) {
+        const car = this.addCar(arc, 2.55);
         addBox(car, [2.55, 2.65, 7.2], [0, 0, 0], 0xe8e8dc);
         addBox(car, [2.59, 0.75, 5.8], [0, 0.55, 0], 0x263d56);
         for (const side of [-1, 1]) {
@@ -399,12 +431,13 @@ export class TransitVehicle {
           this.doors.push(door);
         }
         // The pantograph pole rides the centre section only.
-        if (z === 0) addBox(car, [0.06, 0.06, 8], [0, 2.15, 0], 0x22242a);
+        if (middle) addBox(car, [0.06, 0.06, 8], [0, 2.15, 0], 0x22242a);
       }
     } else {
       const carLength = 22.5;
       for (let i = 0; i < 6; i++) {
-        const car = this.addCar((i - 2.5) * carLength);
+        const arc = 11 + (5 - i) * carLength;
+        const car = this.addCar(arc, 8.2);
         addBox(car, [2.9, 3.1, carLength - 0.5], [0, 0, 0], 0xd7dbe0);
         addBox(car, [2.94, 0.8, carLength - 2], [0, 0.5, 0], 0x21364f);
         addBox(car, [2.96, 0.22, carLength - 0.8], [0, -1.25, 0], 0x135aa3);

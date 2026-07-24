@@ -1083,6 +1083,11 @@ function navigationFromPaths(context, objects, kx, kz) {
   const edges = [];
   const starts = [];
   const ends = [];
+  const drivableSurfaces = objects.filter((object) =>
+    object.kind === 'road-surface' &&
+    ['carriageway', 'street-area'].includes(object.role) &&
+    Array.isArray(object.outline)
+  );
   const owner = (x, z) => ({
     // Ownership must use the same centimetre precision written to NAV3.
     // Otherwise rounding a negative half-cell can move the encoded node into
@@ -1121,8 +1126,14 @@ function navigationFromPaths(context, objects, kx, kz) {
       }
     }
     for (const point of points) addNode(point, flags, object.speed ?? 0, heightAt);
-    starts.push({ point: points[0], next: points[1], flags, sourceId: object.sourceId });
-    ends.push({ point: points.at(-1), previous: points.at(-2), flags, sourceId: object.sourceId });
+    starts.push({
+      point: points[0], next: points[1], flags, speed: object.speed ?? 0,
+      structure: object.structure ?? null, sourceId: object.sourceId, heightAt,
+    });
+    ends.push({
+      point: points.at(-1), previous: points.at(-2), flags, speed: object.speed ?? 0,
+      structure: object.structure ?? null, sourceId: object.sourceId, heightAt,
+    });
     for (let i = 0; i + 1 < points.length; i++) {
       const from = points[i];
       const to = points[i + 1];
@@ -1135,6 +1146,65 @@ function navigationFromPaths(context, objects, kx, kz) {
   // OSM ways commonly end at an intersection. Join compatible directed lane
   // endpoints across the paved junction instead of leaving every source way
   // as an isolated route. The short limit avoids joining parallel streets.
+  const connectorPoint = (from, to, incoming, outgoing, amount) => {
+    const distance = Math.hypot(to.x - from.x, to.z - from.z);
+    const handle = Math.min(5, Math.max(1.25, distance * 0.42));
+    const p1 = { x: from.x + incoming.x * handle, z: from.z + incoming.z * handle };
+    const p2 = { x: to.x - outgoing.x * handle, z: to.z - outgoing.z * handle };
+    const inverse = 1 - amount;
+    return {
+      x: inverse ** 3 * from.x + 3 * inverse ** 2 * amount * p1.x +
+        3 * inverse * amount ** 2 * p2.x + amount ** 3 * to.x,
+      z: inverse ** 3 * from.z + 3 * inverse ** 2 * amount * p1.z +
+        3 * inverse * amount ** 2 * p2.z + amount ** 3 * to.z,
+    };
+  };
+  const surfaceHeight = (surface, x, z) => surface.structure === 'tunnel'
+    ? context.tunnelSurfaceHeightAt(x, z)
+    : context.bridgeSurfaceHeightAt(x, z);
+  const connectorIsDrivable = (points, fromHeight, toHeight) => points.every((point, index) => {
+    if (index === 0 || index === points.length - 1) return true;
+    const amount = index / (points.length - 1);
+    const expectedHeight = fromHeight + (toHeight - fromHeight) * amount;
+    return drivableSurfaces.some((surface) =>
+      pointInOutline(point.x, point.z, surface) &&
+      Math.abs(surfaceHeight(surface, point.x, point.z) - expectedHeight) <= 1.25
+    );
+  });
+  const addConnector = (end, candidate, incoming, incomingLength) => {
+    const start = candidate.start;
+    const outgoing = { x: start.next.x - start.point.x, z: start.next.z - start.point.z };
+    const outgoingLength = Math.hypot(outgoing.x, outgoing.z) || 1;
+    const incomingUnit = { x: incoming.x / incomingLength, z: incoming.z / incomingLength };
+    const outgoingUnit = { x: outgoing.x / outgoingLength, z: outgoing.z / outgoingLength };
+    const fromHeight = end.heightAt(end.point.x, end.point.z);
+    const toHeight = start.heightAt(start.point.x, start.point.z);
+    if (Math.abs(fromHeight - toHeight) > 1.25) return false;
+    const parts = Math.max(1, Math.ceil(candidate.distance / 2.5));
+    const points = Array.from(
+      { length: parts + 1 },
+      (_, index) => connectorPoint(end.point, start.point, incomingUnit, outgoingUnit, index / parts)
+    );
+    if (!connectorIsDrivable(points, fromHeight, toHeight)) return false;
+    const speed = Math.min(end.speed, start.speed);
+    for (const point of points.slice(1, -1)) {
+      addNode(point, end.flags, speed, (x, z) => {
+        const distance = Math.hypot(start.point.x - end.point.x, start.point.z - end.point.z) || 1;
+        const amount = Math.min(1, Math.hypot(x - end.point.x, z - end.point.z) / distance);
+        return fromHeight + (toHeight - fromHeight) * amount;
+      });
+    }
+    for (let index = 0; index + 1 < points.length; index++) {
+      const from = points[index];
+      const to = points[index + 1];
+      const owned = owner(from.x, from.z);
+      if (owned.kx === kx && owned.kz === kz) edges.push({
+        fromX: rounded(from.x), fromZ: rounded(from.z),
+        toX: rounded(to.x), toZ: rounded(to.z), flags: end.flags,
+      });
+    }
+    return true;
+  };
   for (const end of ends) {
     const owned = owner(end.point.x, end.point.z);
     if (owned.kx !== kx || owned.kz !== kz) continue;
@@ -1150,12 +1220,20 @@ function navigationFromPaths(context, objects, kx, kz) {
         return { start, distance, dot };
       })
       .filter((candidate) => candidate.distance > 0.05 && candidate.distance <= 15 && candidate.dot > -0.35)
-      .sort((a, b) => a.distance - b.distance || b.dot - a.dot)
-      .slice(0, 3);
-    for (const candidate of candidates) edges.push({
-      fromX: rounded(end.point.x), fromZ: rounded(end.point.z),
-      toX: rounded(candidate.start.point.x), toZ: rounded(candidate.start.point.z), flags: end.flags,
-    });
+      .sort((a, b) => a.distance - b.distance || b.dot - a.dot);
+    let connected = 0;
+    for (const candidate of candidates) {
+      if ((end.flags & NAV_VEHICLE) !== 0) {
+        if (addConnector(end, candidate, incoming, incomingLength)) connected++;
+      } else {
+        edges.push({
+          fromX: rounded(end.point.x), fromZ: rounded(end.point.z),
+          toX: rounded(candidate.start.point.x), toZ: rounded(candidate.start.point.z), flags: end.flags,
+        });
+        connected++;
+      }
+      if (connected >= 3) break;
+    }
   }
   return { nodes: [...nodes.values()], edges };
 }

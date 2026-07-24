@@ -2,13 +2,21 @@ import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { Entity, Game } from '../core/Game';
 import { HumanRig, Outfit } from './HumanRig';
+import {
+  ON_FOOT_HEIGHT,
+  ON_FOOT_RADIUS,
+} from '../world/CharacterPlacement';
+import { nearestClearRoadPose } from '../world/RoadGraph';
 
-const HEIGHT = 1.8;
-const RADIUS = 0.35;
+const HEIGHT = ON_FOOT_HEIGHT;
+const RADIUS = ON_FOOT_RADIUS;
 const HALF_HEIGHT = HEIGHT / 2;
 const GROUND_CLEARANCE = 0.05;
 const GROUND_CHECK_INTERVAL = 0.2;
 const MAX_GROUND_PENETRATION = 0.04;
+const CLEARANCE_INSET = 0.06;
+const LOCAL_RECOVERY_RADIUS = 12;
+const ROAD_RECOVERY_RADIUS = 48;
 const WALK_SPEED = 3.2;
 const RUN_SPEED = 6.5;
 const JUMP_SPEED = 8;
@@ -20,6 +28,10 @@ export class Character implements Entity {
   readonly root = new THREE.Group();
   readonly rig: HumanRig;
   private controller: RAPIER.KinematicCharacterController;
+  private clearanceShape = new RAPIER.Capsule(
+    HALF_HEIGHT - RADIUS - CLEARANCE_INSET,
+    RADIUS - CLEARANCE_INSET
+  );
   private vy = 0;
   private grounded = false;
   private facing = 0;
@@ -75,6 +87,7 @@ export class Character implements Entity {
 
     this.lastSafeGround.set(x, game.roadSurfaceHeightAt(x, z), z);
     this.snapToGround(1.25, 8);
+    this.recoverInvalidPlacement();
 
     this.syncVisuals();
   }
@@ -193,7 +206,10 @@ export class Character implements Entity {
     this.vy = 0;
     this.landingSpeed = 0;
     this.grounded = false;
-    if (!this.snapToGround(1.5, 8)) this.lastSafeGround.set(x, y, z);
+    if (!this.snapToGround(1.5, 8) && this.placementIsClear(x, y, z)) {
+      this.lastSafeGround.set(x, y, z);
+    }
+    this.recoverInvalidPlacement();
     this.syncVisuals();
   }
 
@@ -211,7 +227,17 @@ export class Character implements Entity {
 
   /** Restore the character to its most recent valid grounded position. */
   recoverToSafeGround(): void {
-    const p = this.lastSafeGround;
+    const current = this.position();
+    const p = [current.x, current.y, current.z].every(Number.isFinite)
+      ? this.findRecoveryGround(current.x, current.y, current.z)
+      : this.placementIsClear(
+          this.lastSafeGround.x,
+          this.lastSafeGround.y,
+          this.lastSafeGround.z
+        )
+        ? this.lastSafeGround.clone()
+        : null;
+    if (!p) return;
     this.body.setTranslation(
       new RAPIER.Vector3(p.x, p.y + HALF_HEIGHT + GROUND_CLEARANCE, p.z),
       true
@@ -219,7 +245,7 @@ export class Character implements Entity {
     this.vy = 0;
     this.landingSpeed = 0;
     this.grounded = false;
-    this.snapToGround(1.5, 8);
+    this.lastSafeGround.copy(p);
     this.syncVisuals();
   }
 
@@ -230,6 +256,29 @@ export class Character implements Entity {
 
   getFacing(): number {
     return this.facing;
+  }
+
+  /** True when the standing capsule can reach a point without crossing fixed geometry. */
+  hasClearPathTo(target: { x: number; z: number }, targetInset = RADIUS): boolean {
+    const origin = this.body.translation();
+    const dx = target.x - origin.x;
+    const dz = target.z - origin.z;
+    const distance = Math.hypot(dx, dz);
+    if (distance <= targetInset) return true;
+    const hit = this.game.world.castShape(
+      origin,
+      { x: 0, y: 0, z: 0, w: 1 },
+      new RAPIER.Vector3(dx / distance, 0, dz / distance),
+      this.clearanceShape,
+      0.02,
+      Math.max(0, distance - targetInset),
+      true,
+      RAPIER.QueryFilterFlags.ONLY_FIXED,
+      undefined,
+      this.collider,
+      this.body
+    );
+    return hit === null;
   }
 
   /** Return the latest downward landing speed once, then clear it. */
@@ -297,11 +346,6 @@ export class Character implements Entity {
     if (this.grounded) {
       if (!wasGrounded) this.landingSpeed = downwardSpeed;
       if (this.vy < 0) this.vy = 0;
-      this.lastSafeGround.set(
-        t.x + move.x,
-        t.y + move.y - HALF_HEIGHT,
-        t.z + move.z
-      );
     }
     const airTarget = this.grounded ? 0 : 1;
     this.airBlend += (airTarget - this.airBlend) * (1 - Math.exp(-14 * dt));
@@ -370,13 +414,17 @@ export class Character implements Entity {
     this.rig.root.rotation.set(0, 0, 0);
   }
 
-  /** Find the highest walkable fixed surface close to the capsule's feet. */
-  private groundHeight(maxRise: number, maxDrop: number): number | null {
-    const t = this.body.translation();
-    const footY = t.y - HALF_HEIGHT;
+  /** Find the highest walkable fixed surface close to a candidate position. */
+  private groundHeightAt(
+    x: number,
+    footY: number,
+    z: number,
+    maxRise: number,
+    maxDrop: number
+  ): number | null {
     const originY = footY + maxRise;
     const ray = new RAPIER.Ray(
-      new RAPIER.Vector3(t.x, originY, t.z),
+      new RAPIER.Vector3(x, originY, z),
       new RAPIER.Vector3(0, -1, 0)
     );
     let best = -Infinity;
@@ -399,6 +447,91 @@ export class Character implements Entity {
     return Number.isFinite(best) ? best : null;
   }
 
+  private groundHeight(maxRise: number, maxDrop: number): number | null {
+    const t = this.body.translation();
+    return this.groundHeightAt(t.x, t.y - HALF_HEIGHT, t.z, maxRise, maxDrop);
+  }
+
+  /**
+   * A closed triangle mesh blocks entry from outside but cannot report that a
+   * newly-created capsule is already enclosed. Check the compiled footprint
+   * index as well as a slightly inset physics capsule.
+   */
+  private placementIsClear(x: number, feetY: number, z: number): boolean {
+    if (this.game.city.blocksCharacterPlacement(x, feetY, z, RADIUS, HEIGHT)) return false;
+    return this.game.world.intersectionWithShape(
+      new RAPIER.Vector3(x, feetY + HALF_HEIGHT + GROUND_CLEARANCE, z),
+      { x: 0, y: 0, z: 0, w: 1 },
+      this.clearanceShape,
+      RAPIER.QueryFilterFlags.ONLY_FIXED,
+      undefined,
+      this.collider,
+      this.body
+    ) === null;
+  }
+
+  private clearGroundAt(
+    x: number,
+    z: number,
+    referenceFeetY: number,
+    maxRise = 1.5,
+    maxDrop = 4
+  ): THREE.Vector3 | null {
+    const groundY = this.groundHeightAt(x, referenceFeetY, z, maxRise, maxDrop);
+    return groundY !== null && this.placementIsClear(x, groundY, z)
+      ? new THREE.Vector3(x, groundY, z)
+      : null;
+  }
+
+  /** Deterministically search outward for nearby clear ground. */
+  private localRecoveryGround(x: number, feetY: number, z: number): THREE.Vector3 | null {
+    const center = this.clearGroundAt(x, z, feetY);
+    if (center) return center;
+    const spacing = RADIUS * 2 + 0.12;
+    for (let radius = spacing; radius <= LOCAL_RECOVERY_RADIUS; radius += spacing) {
+      const samples = Math.max(8, Math.ceil(Math.PI * 2 * radius / spacing));
+      for (let sample = 0; sample < samples; sample++) {
+        const angle = sample * Math.PI * 2 / samples;
+        const candidate = this.clearGroundAt(
+          x + Math.sin(angle) * radius,
+          z + Math.cos(angle) * radius,
+          feetY
+        );
+        if (candidate) return candidate;
+      }
+    }
+    return null;
+  }
+
+  private findRecoveryGround(x: number, feetY: number, z: number): THREE.Vector3 | null {
+    const local = this.localRecoveryGround(x, feetY, z);
+    if (local) return local;
+
+    let roadGround: THREE.Vector3 | null = null;
+    nearestClearRoadPose(
+      x,
+      z,
+      0,
+      ROAD_RECOVERY_RADIUS,
+      (roadX, roadZ) => {
+        const candidate = this.clearGroundAt(roadX, roadZ, feetY, 2.5, 8);
+        if (!candidate) return false;
+        roadGround = candidate;
+        return true;
+      },
+      'pedestrian'
+    );
+    if (roadGround) return roadGround;
+
+    return this.placementIsClear(
+      this.lastSafeGround.x,
+      this.lastSafeGround.y,
+      this.lastSafeGround.z
+    )
+      ? this.lastSafeGround.clone()
+      : null;
+  }
+
   /** Place the capsule exactly above a nearby walkable surface. */
   private snapToGround(maxRise: number, maxDrop: number): boolean {
     const groundY = this.groundHeight(maxRise, maxDrop);
@@ -408,7 +541,9 @@ export class Character implements Entity {
       new RAPIER.Vector3(t.x, groundY + HALF_HEIGHT + GROUND_CLEARANCE, t.z),
       true
     );
-    this.lastSafeGround.set(t.x, groundY, t.z);
+    if (this.placementIsClear(t.x, groundY, t.z)) {
+      this.lastSafeGround.set(t.x, groundY, t.z);
+    }
     this.vy = 0;
     return true;
   }
@@ -420,9 +555,13 @@ export class Character implements Entity {
       this.recoverToSafeGround();
       return;
     }
+    const footY = t.y - HALF_HEIGHT;
+    if (!this.placementIsClear(t.x, footY, t.z)) {
+      this.recoverToSafeGround();
+      return;
+    }
     const groundY = this.groundHeight(1.5, 4);
     if (groundY === null) return;
-    const footY = t.y - HALF_HEIGHT;
     if (footY < groundY - MAX_GROUND_PENETRATION) {
       this.body.setTranslation(
         new RAPIER.Vector3(t.x, groundY + HALF_HEIGHT + GROUND_CLEARANCE, t.z),
@@ -431,6 +570,10 @@ export class Character implements Entity {
       this.lastSafeGround.set(t.x, groundY, t.z);
       this.vy = 0;
       this.grounded = false;
+      return;
+    }
+    if (this.grounded || Math.abs(footY - groundY) <= GROUND_CLEARANCE + MAX_GROUND_PENETRATION) {
+      this.lastSafeGround.set(t.x, groundY, t.z);
     }
   }
 

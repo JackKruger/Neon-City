@@ -45,6 +45,7 @@ import { restoreAtomically, SaveController } from '../save/SaveController';
 import { createGameSave, type GameSaveV1, type SaveResult } from '../save/GameSave';
 import { SaveStorage } from '../save/SaveStorage';
 import { CheatMenu } from '../ui/CheatMenu';
+import { npcVehicleNavigationStats } from '../entities/NpcLaneFollower';
 
 export interface Entity {
   update(dt: number): void;
@@ -792,6 +793,7 @@ export class Game {
         weather: this.lighting.weatherKind,
         bodies: this.world.bodies.len(),
         colliders: this.world.colliders.len(),
+        vehicleNav: { ...npcVehicleNavigationStats },
       }
     );
   }

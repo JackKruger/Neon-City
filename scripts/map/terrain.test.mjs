@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import RAPIER from '@dimforge/rapier3d-compat';
 import { MAP_SIZE } from './geo.mjs';
 import { readObjectIndex } from './object-index.mjs';
@@ -86,7 +87,7 @@ test('baked Melbourne terrain pins water and caps urban surface spikes', () => {
 });
 
 test('committed Flinders override is a rail structure over intact natural terrain', () => {
-  const objects = readObjectIndex(new URL('../../public/maps', import.meta.url).pathname, 'melbourne');
+  const objects = readObjectIndex(fileURLToPath(new URL('../../public/maps', import.meta.url)), 'melbourne');
   const authored = Object.values(objects.chunks).flat();
   const unique = (kind) => [...new Map(authored.filter((object) => object.kind === kind)
     .map((object) => [object.sourceId, object])).values()];
@@ -197,7 +198,7 @@ test('multi-level building components retain source-relative elevation offsets',
 
 test('compiled map manifest and object index declare compatible formats', () => {
   const meta = JSON.parse(readFileSync(new URL('../../public/maps/melbourne.json', import.meta.url), 'utf8'));
-  const objects = readObjectIndex(new URL('../../public/maps', import.meta.url).pathname, 'melbourne');
+  const objects = readObjectIndex(fileURLToPath(new URL('../../public/maps', import.meta.url)), 'melbourne');
   assert.equal(meta.formatVersion, 4);
   assert.deepEqual(meta.heightGrid, {
     version: 1,

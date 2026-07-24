@@ -7,7 +7,14 @@ import { MeleeDef, PED_HEALTH, WEAPONS, WeaponDef } from '../gameplay/Weapons';
 import { Character } from './Character';
 import type { Outfit } from './HumanRig';
 import { Ragdoll } from './Ragdoll';
-import { CellRef, lanePoint, nextRoadCell, pointWorld } from '../world/RoadGraph';
+import {
+  CellRef,
+  lanePoint,
+  nextRoadCell,
+  pointWorld,
+  roadNeighbors,
+  roadPoints,
+} from '../world/RoadGraph';
 import { Vehicle } from './Vehicle';
 import type { TrafficCar } from './TrafficCar';
 import type { Drivable } from './Drivable';
@@ -56,6 +63,8 @@ export class Pedestrian implements Entity, CombatTarget {
   private from: CellRef;
   private to: CellRef;
   private waypoint = { x: 0, z: 0 };
+  private pathCheckTimer = Math.random() * 0.35;
+  private pathBlocked = false;
   private fleeDir: THREE.Vector3 | null = null;
   private fleeTime = 0;
   private impactCooldown = 0;
@@ -181,6 +190,19 @@ export class Pedestrian implements Entity, CombatTarget {
       this.from = this.to;
       this.to = next;
       this.waypoint = this.laneWaypoint();
+      this.pathCheckTimer = 0;
+      this.pathBlocked = false;
+    }
+    this.pathCheckTimer -= dt;
+    if (this.pathCheckTimer <= 0) {
+      this.pathCheckTimer = 0.35;
+      this.pathBlocked = !this.character.hasClearPathTo(this.waypoint, 0.2) &&
+        !this.rerouteAroundBlockedWaypoint(pos);
+    }
+    if (this.pathBlocked) {
+      this.character.setMove(new THREE.Vector3(), false);
+      this.character.update(dt);
+      return;
     }
     WALK_DIR.set(this.waypoint.x - pos.x, 0, this.waypoint.z - pos.z).normalize();
     this.character.setMove(this.shouldYieldToTraffic(pos, WALK_DIR) ? new THREE.Vector3() : WALK_DIR, false);
@@ -389,17 +411,69 @@ export class Pedestrian implements Entity, CombatTarget {
   /** Footpath target with a small perpendicular offset so pedestrians spread
    *  across the path instead of tracking its centreline single-file. */
   private laneWaypoint(): { x: number; z: number } {
-    const base = lanePoint(this.from, this.to, 0.4 + this.jitter);
+    return this.waypointFor(this.from, this.to);
+  }
+
+  private waypointFor(from: CellRef, to: CellRef): { x: number; z: number } {
+    const base = lanePoint(from, to, 0.4 + this.jitter);
     // Grid maps bake the sidewalk + jitter offset into lanePoint; the compiled
     // network returns the exact footpath node, so apply the spread here.
-    if (this.to.x === undefined) return base;
-    const a = pointWorld(this.from);
-    const b = pointWorld(this.to);
+    if (to.x === undefined) return base;
+    const a = pointWorld(from);
+    const b = pointWorld(to);
     const dx = b.x - a.x;
     const dz = b.z - a.z;
     const length = Math.hypot(dx, dz) || 1;
     const offset = this.jitter * TILE;
     return { x: base.x + (-dz / length) * offset, z: base.z + (dx / length) * offset };
+  }
+
+  /** Replace an obstructed graph edge without continuing to push into its wall. */
+  private rerouteAroundBlockedWaypoint(position: THREE.Vector3): boolean {
+    const blocked = pointWorld(this.to);
+    const anchors = roadPoints('pedestrian')
+      .map((point) => {
+        const world = pointWorld(point);
+        return {
+          point,
+          world,
+          distance: Math.hypot(world.x - position.x, world.z - position.z),
+        };
+      })
+      .filter((candidate) => candidate.distance <= 12)
+      .sort((left, right) =>
+        left.distance - right.distance ||
+        left.world.z - right.world.z ||
+        left.world.x - right.world.x
+      );
+    for (const anchor of anchors) {
+      const candidates = roadNeighbors(anchor.point, 'pedestrian')
+        .filter((candidate) => {
+          const world = pointWorld(candidate);
+          return Math.hypot(world.x - blocked.x, world.z - blocked.z) > 0.05;
+        })
+        .sort((left, right) => {
+          const a = pointWorld(left);
+          const b = pointWorld(right);
+          return a.z - b.z || a.x - b.x;
+        });
+      for (const candidate of candidates) {
+        const waypoint = this.waypointFor(anchor.point, candidate);
+        if (!this.character.hasClearPathTo(waypoint, 0.2)) continue;
+        this.from = anchor.point;
+        this.to = candidate;
+        this.waypoint = waypoint;
+        return true;
+      }
+    }
+
+    // A true dead-end may have no alternative. The edge already travelled is
+    // the safest escape direction while a neighboring chunk streams in.
+    const previous = this.from;
+    this.from = this.to;
+    this.to = previous;
+    this.waypoint = this.laneWaypoint();
+    return this.character.hasClearPathTo(this.waypoint, 0.2);
   }
 
   /** Chase the attacker and throw punches until they get away (or worse). */

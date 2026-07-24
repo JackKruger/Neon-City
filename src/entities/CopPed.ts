@@ -10,6 +10,13 @@ import type { Player } from './Player';
 import { Pickup } from './Pickup';
 import { Ragdoll } from './Ragdoll';
 import { buildWeaponMesh } from './WeaponMeshes';
+import {
+  findRoadRoute,
+  nearestRoadPoint,
+  pointWorld,
+  roadPoints,
+  type CellRef,
+} from '../world/RoadGraph';
 
 const COP_OUTFIT: Outfit = {
   skin: 0xe0ac69,
@@ -61,6 +68,8 @@ export class CopPed implements Entity, CombatTarget {
   private punchCooldown = 0;
   private pendingPunch = false;
   private tackle: TackleTransition | null = null;
+  private pursuitRoute: CellRef[] = [];
+  private pursuitRouteTimer = 0;
 
   constructor(
     private game: Game,
@@ -187,10 +196,9 @@ export class CopPed implements Entity, CombatTarget {
       // an empty point. A later sighting clears `searching` and resumes combat.
       this.pendingPunch = false;
       this.character.setAimPose('none');
-      this.character.setMove(
-        dist > 1.2 ? DIR.clone().divideScalar(Math.max(dist, 0.1)) : new THREE.Vector3(),
-        false
-      );
+      this.character.setMove(dist > 1.2
+        ? this.pursuitDirection(pos, targetPos, dt)
+        : new THREE.Vector3(), false);
       this.character.update(dt);
       return;
     }
@@ -247,11 +255,87 @@ export class CopPed implements Entity, CombatTarget {
         this.game.audio.gunshot('pistol', dist);
       }
     } else {
-      // Chase.
+      // Chase directly across open ground, or use the pedestrian graph when
+      // fixed geometry blocks the target. This avoids treating a wall as a
+      // permanent steering target.
       this.character.setAimPose('none');
-      this.character.setMove(DIR.clone().divideScalar(Math.max(dist, 0.1)), true);
+      this.character.setMove(this.pursuitDirection(pos, targetPos, dt), true);
     }
     this.character.update(dt);
+  }
+
+  private pursuitDirection(
+    position: THREE.Vector3,
+    target: THREE.Vector3,
+    dt: number
+  ): THREE.Vector3 {
+    const direct = new THREE.Vector3(target.x - position.x, 0, target.z - position.z);
+    if (direct.lengthSq() <= 0.01) return direct.set(0, 0, 0);
+    if (this.character.hasClearPathTo(target)) {
+      this.pursuitRoute = [];
+      this.pursuitRouteTimer = 0;
+      return direct.normalize();
+    }
+
+    this.pursuitRouteTimer -= dt;
+    if (this.pursuitRouteTimer <= 0 || this.pursuitRoute.length === 0) {
+      this.replanPursuit(position, target);
+    }
+    while (this.pursuitRoute.length > 0) {
+      const waypoint = pointWorld(this.pursuitRoute[0]);
+      if (Math.hypot(waypoint.x - position.x, waypoint.z - position.z) > 1.05) break;
+      this.pursuitRoute.shift();
+    }
+    const next = this.pursuitRoute[0];
+    if (!next) return direct.set(0, 0, 0);
+    const waypoint = pointWorld(next);
+    if (!this.character.hasClearPathTo(waypoint, 0.2)) {
+      this.pursuitRoute = [];
+      this.pursuitRouteTimer = 0;
+      return direct.set(0, 0, 0);
+    }
+    return direct.set(waypoint.x - position.x, 0, waypoint.z - position.z).normalize();
+  }
+
+  private replanPursuit(position: THREE.Vector3, target: THREE.Vector3): void {
+    this.pursuitRouteTimer = 0.65;
+    this.pursuitRoute = [];
+    const start = this.nearestReachablePedestrianPoint(position);
+    const goal = nearestRoadPoint(target.x, target.z, 'pedestrian');
+    if (!start || !goal) return;
+    const route = findRoadRoute(start, goal, 'pedestrian', { maxVisited: 2500 });
+    if (route) this.pursuitRoute = route;
+  }
+
+  /**
+   * The geometrically nearest footpath can be on the far side of the same
+   * building. Prefer a slightly farther node that the capsule can actually
+   * reach from its current side.
+   */
+  private nearestReachablePedestrianPoint(position: THREE.Vector3): CellRef | null {
+    const nearest = nearestRoadPoint(position.x, position.z, 'pedestrian');
+    if (nearest) {
+      const waypoint = pointWorld(nearest);
+      if (this.character.hasClearPathTo(waypoint, 0.2)) return nearest;
+    }
+    const candidates = roadPoints('pedestrian')
+      .map((point) => {
+        const waypoint = pointWorld(point);
+        return {
+          point,
+          waypoint,
+          distance: Math.hypot(waypoint.x - position.x, waypoint.z - position.z),
+        };
+      })
+      .filter((candidate) => candidate.distance <= 18)
+      .sort((left, right) =>
+        left.distance - right.distance ||
+        left.waypoint.z - right.waypoint.z ||
+        left.waypoint.x - right.waypoint.x
+      );
+    return candidates.find((candidate) =>
+      this.character.hasClearPathTo(candidate.waypoint, 0.2)
+    )?.point ?? null;
   }
 
   private lineOfSight(from: THREE.Vector3, to: THREE.Vector3): boolean {

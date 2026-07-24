@@ -18,6 +18,11 @@ import {
 import { CompiledRoadNetwork, setRoadNetwork } from './RoadGraph';
 import { CHUNK_SIZE, CHUNK_TILES, TILE_SIZE as TILE } from './MapContract';
 import { TransitManager } from './Transit';
+import {
+  CharacterPlacementIndex,
+  ON_FOOT_HEIGHT,
+  ON_FOOT_RADIUS,
+} from './CharacterPlacement';
 
 const LOAD_RADIUS = 2;
 const UNLOAD_RADIUS = 3;
@@ -59,6 +64,7 @@ export class CompiledCity implements CityStreamer {
   private wanted = new Set<string>();
   private centers: { kx: number; kz: number }[] = [];
   private roadNetwork = new CompiledRoadNetwork();
+  private characterPlacement = new CharacterPlacementIndex();
   private disposed = false;
   private failure: Error | null = null;
   private safetyBody: RAPIER.RigidBody;
@@ -139,6 +145,17 @@ export class CompiledCity implements CityStreamer {
     this.transit.afterPhysics();
   }
 
+  /** True when an upright character volume would be enclosed by a building. */
+  blocksCharacterPlacement(
+    x: number,
+    feetY: number,
+    z: number,
+    radius = ON_FOOT_RADIUS,
+    height = ON_FOOT_HEIGHT
+  ): boolean {
+    return this.characterPlacement.blocks(x, feetY, z, radius, height);
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -149,6 +166,7 @@ export class CompiledCity implements CityStreamer {
     this.managedVehicles.clear();
     this.transit.dispose();
     this.roadNetwork.clear();
+    this.characterPlacement.clear();
     setRoadNetwork(null);
     this.game.world.removeRigidBody(this.safetyBody);
   }
@@ -221,7 +239,14 @@ export class CompiledCity implements CityStreamer {
     this.game.fx.registerSurfaceRoot(root);
     this.game.lighting.registerWetSurfaces(root);
     this.spawnVehicles(data);
-    this.roadNetwork.registerChunk(key, data.navNodes, data.navEdges);
+    this.characterPlacement.registerChunk(key, data);
+    const navigation = this.characterPlacement.filterPedestrianNavigation(
+      data.navNodes,
+      data.navEdges,
+      ON_FOOT_RADIUS,
+      ON_FOOT_HEIGHT
+    );
+    this.roadNetwork.registerChunk(key, navigation.nodes, navigation.edges);
     this.transit.registerChunk(key, data.transitStops, data.sources);
     this.chunks.set(key, { kx: entry.kx, kz: entry.kz, root, body, renderBytes: entry.renderBytes, dataBytes: entry.dataBytes });
     const elapsed = performance.now() - started;
@@ -290,6 +315,7 @@ export class CompiledCity implements CityStreamer {
     const key = chunkKey(chunk.kx, chunk.kz);
     this.transit.unregisterChunk(key);
     this.roadNetwork.unregisterChunk(key);
+    this.characterPlacement.unregisterChunk(key);
     this.game.lighting.unregisterWetSurfaces(chunk.root);
     this.game.fx.unregisterSurfaceRoot(chunk.root);
     this.game.scene.remove(chunk.root);

@@ -274,6 +274,73 @@ test('negative boundary navigation ownership follows encoded centimetres', () =>
   );
 });
 
+test('vehicle junction links use drivable turn curves and reject reversals or footpath shortcuts', () => {
+  const surfaces = [
+    {
+      kind: 'road-surface', sourceId: 'road:west:carriageway', role: 'carriageway',
+      surface: 'asphalt', elevation: 0.06, x: 32.5, z: 50,
+      outline: [[-22.5, -5], [22.5, -5], [22.5, 5], [-22.5, 5]],
+    },
+    {
+      kind: 'road-surface', sourceId: 'road:south:carriageway', role: 'carriageway',
+      surface: 'asphalt', elevation: 0.06, x: 50, z: 67.5,
+      outline: [[-5, -22.5], [5, -22.5], [5, 22.5], [-5, 22.5]],
+    },
+  ];
+  const paths = [
+    {
+      kind: 'nav-path', sourceId: 'nav:incoming', mode: 'vehicle', speed: 50,
+      x: 34, z: 50, points: [[-14, 0], [14, 0]],
+    },
+    {
+      kind: 'nav-path', sourceId: 'nav:turn', mode: 'vehicle', speed: 50,
+      x: 50, z: 66, points: [[0, -14], [0, 14]],
+    },
+    {
+      kind: 'nav-path', sourceId: 'nav:reverse', mode: 'vehicle', speed: 50,
+      x: 32, z: 50, points: [[14, 0], [-14, 0]],
+    },
+    {
+      kind: 'nav-path', sourceId: 'nav:off-road', mode: 'vehicle', speed: 50,
+      x: 60, z: 72, points: [[0, -14], [0, 14]],
+    },
+  ];
+  const context = createCompilerContext({
+    meta: {},
+    grid: new Uint8Array(MAP_SIZE ** 2),
+    heights: new Int16Array((MAP_SIZE + 1) ** 2),
+    coverage: new Uint8Array(MAP_SIZE ** 2),
+    transport: new Uint8Array(MAP_SIZE ** 2),
+    speed: new Uint8Array(MAP_SIZE ** 2),
+    objectIndex: { roadSurfaces: true, chunks: { '0,0': [...surfaces, ...paths] } },
+  });
+  const navigation = compileChunkRecipe(context, 0, 0).sections.NAV3;
+  const nodeCount = navigation.readUInt16LE(2);
+  const edgeCount = navigation.readUInt32LE(4);
+  const edgeOffset = 8 + nodeCount * 16;
+  const edges = Array.from({ length: edgeCount }, (_, index) => {
+    const offset = edgeOffset + index * 20;
+    return {
+      fromX: navigation.readInt32LE(offset),
+      fromZ: navigation.readInt32LE(offset + 4),
+      toX: navigation.readInt32LE(offset + 8),
+      toZ: navigation.readInt32LE(offset + 12),
+      flags: navigation.readUInt16LE(offset + 16),
+    };
+  });
+  const junctionEdges = edges.filter((edge) => edge.fromX === 4800 && edge.fromZ === 5000);
+  assert.equal(junctionEdges.length, 1, 'junction gained a reverse or off-road shortcut');
+  assert.notDeepEqual(
+    [junctionEdges[0].toX, junctionEdges[0].toZ],
+    [5000, 5200],
+    'turn remained a single kerb-cutting chord'
+  );
+  assert.ok(
+    Math.hypot(junctionEdges[0].toX - 4800, junctionEdges[0].toZ - 5000) <= 250,
+    'first turn-curve sample is too far from the incoming lane'
+  );
+});
+
 test('transit stops compile into named mode-specific TRN1 records', () => {
   const stop = {
     kind: 'transit-stop', sourceId: 'stop:flinders', mode: 'train',
